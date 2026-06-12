@@ -1,0 +1,3 @@
+import { DEFAULT_SETTINGS, migrateSettings, type BuddyBridgeSettings } from '../src/types';
+describe('DEFAULT_SETTINGS', () => { it('should have valid gateway URL', () => { expect(DEFAULT_SETTINGS.gatewayUrl).toMatch(/^https?:\/\/.*:\d+$/); }); it('should have sensible maxConversations', () => { expect(DEFAULT_SETTINGS.maxConversations).toBeGreaterThan(0); }); });
+describe('migrateSettings', () => { it('should return defaults for null input', () => { const r = migrateSettings(null); expect(r.gatewayUrl).toBe(DEFAULT_SETTINGS.gatewayUrl); }); it('should merge stored values', () => { const r = migrateSettings({ gatewayUrl: 'http://localhost:9999', maxConversations: 10 }); expect(r.gatewayUrl).toBe('http://localhost:9999'); expect(r.maxConversations).toBe(10); }); });

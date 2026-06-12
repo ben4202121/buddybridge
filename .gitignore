@@ -1,0 +1,8 @@
+node_modules/
+*.js
+!main.js
+*.js.map
+.DS_Store
+.obsidian/
+.hotreload
+coverage/
