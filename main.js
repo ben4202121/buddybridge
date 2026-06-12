@@ -43,36 +43,118 @@ var import_obsidian3 = require("obsidian");
 var import_child_process = require("child_process");
 var path = __toESM(require("path"));
 var fs = __toESM(require("fs"));
-var TIMEOUT = 12e4;
-function resolveCodebuddyPath() {
-  if (process.env.CODEBUDDY_PATH) {
+var TIMEOUT = 3e5;
+var NODE_EXECUTABLE = process.platform === "win32" ? "node.exe" : "node";
+function findNodeExecutable() {
+  const home = process.env.HOME || process.env.USERPROFILE || "";
+  const nodeDirs = [];
+  if (process.platform === "win32") {
+    nodeDirs.push(path.dirname(process.execPath));
+    const appData = process.env.APPDATA || "";
+    if (appData) {
+      nodeDirs.push(appData);
+      nodeDirs.push(path.join(appData, "npm"));
+    }
+    const programFiles = process.env.ProgramFiles || "C:\\Program Files";
+    const programFilesX86 = process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)";
+    const localAppData = process.env.LOCALAPPDATA || "";
+    nodeDirs.push(
+      path.join(programFiles, "nodejs"),
+      path.join(programFilesX86, "nodejs")
+    );
+    if (localAppData) {
+      nodeDirs.push(path.join(localAppData, "Programs", "nodejs"));
+    }
+    const nvmSymlink = process.env.NVM_SYMLINK;
+    if (nvmSymlink) {
+      nodeDirs.push(nvmSymlink);
+    }
+  } else {
+    nodeDirs.push(
+      path.join(home, ".local", "bin"),
+      path.join(home, ".npm-global", "bin"),
+      path.join(home, ".volta", "bin"),
+      "/usr/local/bin",
+      "/opt/homebrew/bin"
+    );
+    const nvmBin = process.env.NVM_BIN;
+    if (nvmBin) {
+      nodeDirs.push(nvmBin);
+    }
+  }
+  for (const dir of nodeDirs) {
+    if (!dir)
+      continue;
+    try {
+      const nodePath = path.join(dir, NODE_EXECUTABLE);
+      if (fs.existsSync(nodePath) && fs.statSync(nodePath).isFile()) {
+        console.log("[BB] found node at:", nodePath);
+        return nodePath;
+      }
+    } catch (e) {
+    }
+  }
+  return "node";
+}
+function resolveCodebuddyPath(customPath) {
+  if (customPath && fs.existsSync(customPath)) {
+    return customPath;
+  }
+  if (process.env.CODEBUDDY_PATH && fs.existsSync(process.env.CODEBUDDY_PATH)) {
     return process.env.CODEBUDDY_PATH;
   }
+  const home = process.env.HOME || process.env.USERPROFILE || "";
   const localAppData = process.env.LOCALAPPDATA || "";
-  const defaultPath = path.join(
-    localAppData,
-    "Programs",
-    "WorkBuddy",
-    "resources",
-    "app.asar.unpacked",
-    "cli",
-    "bin",
-    "codebuddy"
-  );
-  if (fs.existsSync(defaultPath)) {
-    return defaultPath;
+  const appData = process.env.APPDATA || "";
+  const programFiles = process.env.ProgramFiles || "C:\\Program Files";
+  const programFilesX86 = process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)";
+  const candidates = [];
+  if (process.platform === "win32") {
+    candidates.push(
+      path.join(localAppData, "Programs", "WorkBuddy", "resources", "app.asar.unpacked", "cli", "bin", "codebuddy"),
+      path.join(localAppData, "Programs", "WorkBuddy", "resources", "app.asar.unpacked", "cli", "bin", "codebuddy.cmd")
+    );
+    if (appData) {
+      candidates.push(path.join(appData, "npm", "codebuddy"));
+      candidates.push(path.join(appData, "npm", "codebuddy.cmd"));
+    }
+    candidates.push(
+      path.join(programFiles, "nodejs", "codebuddy.cmd"),
+      path.join(programFiles, "nodejs", "node_modules", ".bin", "codebuddy.cmd"),
+      path.join(programFilesX86, "nodejs", "node_modules", ".bin", "codebuddy.cmd")
+    );
+  } else {
+    candidates.push(
+      path.join(home, ".local", "bin", "codebuddy"),
+      path.join(home, ".npm-global", "bin", "codebuddy"),
+      path.join(home, ".volta", "bin", "codebuddy"),
+      path.join(home, "bin", "codebuddy"),
+      "/usr/local/bin/codebuddy",
+      "/opt/homebrew/bin/codebuddy"
+    );
+  }
+  const nvmBin = process.env.NVM_BIN;
+  if (nvmBin) {
+    candidates.push(path.join(nvmBin, "codebuddy"));
+  }
+  const npmPrefix = process.env.npm_config_prefix;
+  if (npmPrefix) {
+    candidates.push(path.join(npmPrefix, "bin", "codebuddy"));
+  }
+  for (const p of candidates) {
+    if (fs.existsSync(p))
+      return p;
   }
   return "codebuddy";
 }
-var CODEBUDDY = resolveCodebuddyPath();
 var BuddyBridgeAPI = class {
-  constructor(url, timeout = TIMEOUT) {
+  constructor(timeout = TIMEOUT) {
     this.rid = 1;
-    this.url = url;
     this.timeout = timeout;
+    this.scriptPath = resolveCodebuddyPath("");
   }
-  setGatewayUrl(u) {
-    this.url = u;
+  setCodebuddyPath(p) {
+    this.scriptPath = resolveCodebuddyPath(p);
   }
   generateId() {
     return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
@@ -81,14 +163,19 @@ var BuddyBridgeAPI = class {
       return v.toString(16);
     });
   }
-  async *sendMessage(_sessionId, text) {
-    const scriptPath = CODEBUDDY;
+  async *sendMessage(_sessionId, text, vaultPath) {
+    const scriptPath = this.scriptPath;
     let resolveNext = null;
     let done = false;
-    const proc = (0, import_child_process.spawn)("node", [scriptPath, text], {
+    const nodeBin = findNodeExecutable() || "node";
+    const procOptions = {
       timeout: this.timeout,
       stdio: ["ignore", "pipe", "pipe"]
-    });
+    };
+    if (vaultPath) {
+      procOptions.cwd = vaultPath;
+    }
+    const proc = (0, import_child_process.spawn)(nodeBin, [scriptPath, text], procOptions);
     let out = "";
     let errOut = "";
     proc.stdout.on("data", (d) => {
@@ -104,9 +191,12 @@ var BuddyBridgeAPI = class {
       errOut += d.toString();
       console.log("[BB] stderr:", errOut);
     });
-    proc.on("close", (code) => {
-      console.log("[BB] exit:", code, "| err:", errOut.substring(0, 200));
+    proc.on("close", (code, signal) => {
+      console.log("[BB] exit:", code, signal ? "signal:" + signal : "", "| err:", errOut.substring(0, 200));
       done = true;
+      if (signal && !errOut) {
+        errOut = code === null ? "\u8FDB\u7A0B\u88AB\u7EC8\u6B62\uFF0C\u53EF\u80FD\u8D85\u65F6\u6216\u5185\u5B58\u4E0D\u8DB3" : `\u8FDB\u7A0B\u5F02\u5E38\u9000\u51FA (signal: ${signal})`;
+      }
       if (errOut && !out) {
         const next = resolveNext;
         if (next) {
@@ -279,8 +369,13 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
   constructor(leaf, api) {
     super(leaf);
     this.isStreaming = false;
+    this.streamingMsgId = null;
     this.api = api;
     this.manager = new ConversationManager();
+  }
+  get vaultPath() {
+    const adapter = this.app.vault.adapter;
+    return adapter.basePath;
   }
   getViewType() {
     return VIEW_TYPE_CHAT;
@@ -381,8 +476,21 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
       cls: `buddybridge-message-row buddybridge-message-${msg.role}`
     });
     const bubble = row.createDiv({ cls: "buddybridge-bubble" });
-    bubble.createSpan({ text: msg.content });
+    const isWaiting = msg.role === "assistant" && msg.content === "" && msg.id === this.streamingMsgId;
+    if (isWaiting) {
+      this.renderThinkingIndicator(bubble);
+    } else {
+      bubble.createSpan({ text: msg.content });
+    }
     return row;
+  }
+  renderThinkingIndicator(bubble) {
+    const thinking = bubble.createDiv({ cls: "buddybridge-thinking" });
+    thinking.createSpan({ cls: "buddybridge-thinking-text", text: "\u601D\u8003\u4E2D" });
+    const dots = thinking.createDiv({ cls: "buddybridge-thinking-dots" });
+    for (let i = 0; i < 3; i++) {
+      dots.createSpan({ cls: "buddybridge-dot" });
+    }
   }
   async handleKeydown(e) {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -408,28 +516,52 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
     const aiMsg = this.manager.addMessage(convId, "assistant", "");
     if (!aiMsg)
       return;
-    this.renderMessages();
-    const aiBubble = this.messageContainer.querySelector(
-      `.buddybridge-message-assistant:last-child .buddybridge-bubble span`
-    );
+    this.streamingMsgId = aiMsg.id;
     this.isStreaming = true;
+    this.renderMessages();
+    let firstChunk = true;
     try {
+      const contextText = this.vaultPath ? `\u5F53\u524D Obsidian Vault \u8DEF\u5F84: ${this.vaultPath}
+\u5DE5\u4F5C\u76EE\u5F55\u5373 vault \u6839\u76EE\u5F55\uFF0C\u8BF7\u57FA\u4E8E vault \u4E2D\u7684\u6587\u4EF6\u56DE\u7B54\u95EE\u9898\u3002
+
+---
+
+${text}` : text;
       let fullContent = "";
-      for await (const chunk of this.api.sendMessage(conv.sessionId, text)) {
+      for await (const chunk of this.api.sendMessage(conv.sessionId, contextText, this.vaultPath)) {
         fullContent += chunk;
         this.manager.updateMessage(convId, aiMsg.id, fullContent);
-        if (aiBubble) {
-          aiBubble.textContent = fullContent;
+        const bubble = this.messageContainer.querySelector(
+          `.buddybridge-message-assistant:last-child .buddybridge-bubble`
+        );
+        if (!bubble)
+          continue;
+        if (firstChunk) {
+          firstChunk = false;
+          const thinking = bubble.querySelector(".buddybridge-thinking");
+          if (thinking) {
+            thinking.addClass("buddybridge-thinking-fadeout");
+            await new Promise((r) => setTimeout(r, 200));
+            thinking.remove();
+          }
+          bubble.createSpan({ text: fullContent });
+        } else {
+          const span = bubble.querySelector("span");
+          if (span) {
+            span.textContent = fullContent;
+          }
         }
       }
       this.manager.updateMessage(convId, aiMsg.id, fullContent);
-      if (!conv.sessionId && fullContent) {
+      if (!fullContent) {
+        this.manager.updateMessage(convId, aiMsg.id, "\uFF08\u65E0\u54CD\u5E94\uFF0C\u8BF7\u91CD\u8BD5\uFF09");
       }
     } catch (error) {
       this.manager.updateMessage(convId, aiMsg.id, `\u9519\u8BEF: ${error.message}`);
       new import_obsidian.Notice(`\u8BF7\u6C42\u5931\u8D25: ${error.message}`);
     } finally {
       this.isStreaming = false;
+      this.streamingMsgId = null;
       this.renderMessages();
       this.renderTabs();
     }
@@ -440,9 +572,9 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
 };
 
 // src/types.ts
-var CURRENT_SETTINGS_VERSION = 1;
+var CURRENT_SETTINGS_VERSION = 3;
 var DEFAULT_SETTINGS = {
-  gatewayUrl: "http://127.0.0.1:55808",
+  codebuddyPath: "",
   maxConversations: 20,
   version: CURRENT_SETTINGS_VERSION
 };
@@ -450,9 +582,8 @@ function migrateSettings(stored) {
   if (!stored || typeof stored !== "object") {
     return { ...DEFAULT_SETTINGS };
   }
-  const version = typeof stored.version === "number" ? stored.version : 0;
   const settings = {
-    gatewayUrl: typeof stored.gatewayUrl === "string" ? stored.gatewayUrl : DEFAULT_SETTINGS.gatewayUrl,
+    codebuddyPath: typeof stored.codebuddyPath === "string" ? stored.codebuddyPath : DEFAULT_SETTINGS.codebuddyPath,
     maxConversations: typeof stored.maxConversations === "number" && stored.maxConversations > 0 ? stored.maxConversations : DEFAULT_SETTINGS.maxConversations,
     version: CURRENT_SETTINGS_VERSION
   };
@@ -470,9 +601,9 @@ var BuddyBridgeSettingTab = class extends import_obsidian2.PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     containerEl.createEl("h2", { text: "BuddyBridge \u8BBE\u7F6E" });
-    new import_obsidian2.Setting(containerEl).setName("Gateway URL").setDesc("\u672C\u5730 WorkBuddy/CodeBuddy Gateway \u5730\u5740").addText((text) => text.setPlaceholder("http://127.0.0.1:55808").setValue(this.plugin.settings.gatewayUrl).onChange(async (value) => {
-      this.plugin.settings.gatewayUrl = value;
-      this.plugin.api.setGatewayUrl(value);
+    new import_obsidian2.Setting(containerEl).setName("CodeBuddy \u8DEF\u5F84").setDesc("codebuddy CLI \u53EF\u6267\u884C\u6587\u4EF6\u8DEF\u5F84\uFF08\u7559\u7A7A\u5219\u81EA\u52A8\u67E5\u627E\uFF09").addText((text) => text.setPlaceholder("\u81EA\u52A8\u68C0\u6D4B").setValue(this.plugin.settings.codebuddyPath).onChange(async (value) => {
+      this.plugin.settings.codebuddyPath = value;
+      this.plugin.api.setCodebuddyPath(value);
       await this.plugin.saveSettings();
     }));
     new import_obsidian2.Setting(containerEl).setName("\u6700\u5927\u5BF9\u8BDD\u6570").setDesc("\u6700\u591A\u4FDD\u7559\u591A\u5C11\u4E2A\u5BF9\u8BDD\uFF08\u65E7\u5BF9\u8BDD\u5C06\u88AB\u81EA\u52A8\u5220\u9664\uFF09").addText((text) => text.setPlaceholder("20").setValue(String(this.plugin.settings.maxConversations)).onChange(async (value) => {
@@ -493,7 +624,8 @@ var BuddyBridgePlugin = class extends import_obsidian3.Plugin {
   }
   async onload() {
     await this.loadSettings();
-    this.api = new BuddyBridgeAPI(this.settings.gatewayUrl);
+    this.api = new BuddyBridgeAPI();
+    this.api.setCodebuddyPath(this.settings.codebuddyPath);
     this.registerView(
       VIEW_TYPE_CHAT,
       (leaf) => {
@@ -550,6 +682,6 @@ var BuddyBridgePlugin = class extends import_obsidian3.Plugin {
     const existingData = await this.loadData() || {};
     const merged = { ...existingData, ...this.settings };
     await this.saveData(merged);
-    this.api.setGatewayUrl(this.settings.gatewayUrl);
+    this.api.setCodebuddyPath(this.settings.codebuddyPath);
   }
 };

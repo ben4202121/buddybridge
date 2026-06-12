@@ -12,7 +12,8 @@ export default class BuddyBridgePlugin extends Plugin {
     async onload() {
         await this.loadSettings();
 
-        this.api = new BuddyBridgeAPI(this.settings.gatewayUrl);
+        this.api = new BuddyBridgeAPI();
+        this.api.setCodebuddyPath(this.settings.codebuddyPath);
 
         // 注册聊天视图
         this.registerView(
@@ -75,7 +76,6 @@ export default class BuddyBridgePlugin extends Plugin {
     async loadPersistedConversations() {
         const data = await this.loadData();
         if (this.chatView) {
-            // loadConversations 内部已处理空数据情况(自动创建默认对话)
             this.chatView.loadConversations(data?.conversations || []);
         }
     }
@@ -89,6 +89,6 @@ export default class BuddyBridgePlugin extends Plugin {
         const existingData = (await this.loadData()) || {};
         const merged = { ...existingData, ...this.settings };
         await this.saveData(merged);
-        this.api.setGatewayUrl(this.settings.gatewayUrl);
+        this.api.setCodebuddyPath(this.settings.codebuddyPath);
     }
 }

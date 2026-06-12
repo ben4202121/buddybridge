@@ -12,6 +12,12 @@ export class BuddyBridgeChatView extends ItemView {
     private inputEl!: HTMLTextAreaElement;
     private tabBar!: HTMLElement;
     private isStreaming: boolean = false;
+    private streamingMsgId: string | null = null;
+
+    private get vaultPath(): string | undefined {
+        const adapter = this.app.vault.adapter as { basePath?: string };
+        return adapter.basePath;
+    }
 
     constructor(leaf: WorkspaceLeaf, api: BuddyBridgeAPI) {
         super(leaf);
@@ -133,8 +139,24 @@ export class BuddyBridgeChatView extends ItemView {
             cls: `buddybridge-message-row buddybridge-message-${msg.role}`
         });
         const bubble = row.createDiv({ cls: 'buddybridge-bubble' });
-        bubble.createSpan({ text: msg.content });
+
+        // 仅当前正在等待回复的消息显示思考指示器
+        const isWaiting = msg.role === 'assistant' && msg.content === '' && msg.id === this.streamingMsgId;
+        if (isWaiting) {
+            this.renderThinkingIndicator(bubble);
+        } else {
+            bubble.createSpan({ text: msg.content });
+        }
         return row;
+    }
+
+    private renderThinkingIndicator(bubble: HTMLElement) {
+        const thinking = bubble.createDiv({ cls: 'buddybridge-thinking' });
+        thinking.createSpan({ cls: 'buddybridge-thinking-text', text: '思考中' });
+        const dots = thinking.createDiv({ cls: 'buddybridge-thinking-dots' });
+        for (let i = 0; i < 3; i++) {
+            dots.createSpan({ cls: 'buddybridge-dot' });
+        }
     }
 
     private async handleKeydown(e: KeyboardEvent) {
@@ -163,38 +185,67 @@ export class BuddyBridgeChatView extends ItemView {
         this.inputEl.value = '';
         this.renderMessages();
 
-        // 创建 AI 消息占位
+        // 创建 AI 消息占位，标记为等待回复中
         const aiMsg = this.manager.addMessage(convId, 'assistant', '');
         if (!aiMsg) return;
 
-        // 渲染占位气泡
+        this.streamingMsgId = aiMsg.id;
+        this.isStreaming = true;
         this.renderMessages();
-        const aiBubble = this.messageContainer.querySelector(
-            `.buddybridge-message-assistant:last-child .buddybridge-bubble span`
-        ) as HTMLElement;
 
         // 流式发送
-        this.isStreaming = true;
+        let firstChunk = true;
         try {
+            // 注入 vault 上下文，让 codebuddy 知道知识库在哪
+            const contextText = this.vaultPath
+                ? `当前 Obsidian Vault 路径: ${this.vaultPath}
+工作目录即 vault 根目录，请基于 vault 中的文件回答问题。
+
+---
+
+${text}`
+                : text;
+
             let fullContent = '';
-            for await (const chunk of this.api.sendMessage(conv.sessionId, text)) {
+            for await (const chunk of this.api.sendMessage(conv.sessionId, contextText, this.vaultPath)) {
                 fullContent += chunk;
                 this.manager.updateMessage(convId, aiMsg.id, fullContent);
                 // 增量更新气泡内容
-                if (aiBubble) {
-                    aiBubble.textContent = fullContent;
+                const bubble = this.messageContainer.querySelector(
+                    `.buddybridge-message-assistant:last-child .buddybridge-bubble`
+                ) as HTMLElement;
+                if (!bubble) continue;
+
+                if (firstChunk) {
+                    // 首个 token：替换思考指示器为实际内容
+                    firstChunk = false;
+                    const thinking = bubble.querySelector('.buddybridge-thinking') as HTMLElement;
+                    if (thinking) {
+                        thinking.addClass('buddybridge-thinking-fadeout');
+                        // 等待淡出动画结束后替换
+                        await new Promise(r => setTimeout(r, 200));
+                        thinking.remove();
+                    }
+                    bubble.createSpan({ text: fullContent });
+                } else {
+                    const span = bubble.querySelector('span');
+                    if (span) {
+                        span.textContent = fullContent;
+                    }
                 }
             }
             this.manager.updateMessage(convId, aiMsg.id, fullContent);
-            // 提取 Gateway sessionId（如果还没设置）
-            if (!conv.sessionId && fullContent) {
-                // sessionId 在首次响应中可能不可用；发送第二条消息时会携带
+
+            // 无响应：可能超时或进程异常退出
+            if (!fullContent) {
+                this.manager.updateMessage(convId, aiMsg.id, '（无响应，请重试）');
             }
         } catch (error: any) {
             this.manager.updateMessage(convId, aiMsg.id, `错误: ${error.message}`);
             new Notice(`请求失败: ${error.message}`);
         } finally {
             this.isStreaming = false;
+            this.streamingMsgId = null;
             this.renderMessages();
             this.renderTabs();
         }

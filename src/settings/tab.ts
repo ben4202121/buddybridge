@@ -16,14 +16,14 @@ export class BuddyBridgeSettingTab extends PluginSettingTab {
         containerEl.createEl('h2', { text: 'BuddyBridge 设置' });
 
         new Setting(containerEl)
-            .setName('Gateway URL')
-            .setDesc('本地 WorkBuddy/CodeBuddy Gateway 地址')
+            .setName('CodeBuddy 路径')
+            .setDesc('codebuddy CLI 可执行文件路径（留空则自动查找）')
             .addText(text => text
-                .setPlaceholder('http://127.0.0.1:55808')
-                .setValue(this.plugin.settings.gatewayUrl)
+                .setPlaceholder('自动检测')
+                .setValue(this.plugin.settings.codebuddyPath)
                 .onChange(async (value) => {
-                    this.plugin.settings.gatewayUrl = value;
-                    this.plugin.api.setGatewayUrl(value);
+                    this.plugin.settings.codebuddyPath = value;
+                    this.plugin.api.setCodebuddyPath(value);
                     await this.plugin.saveSettings();
                 }));
 

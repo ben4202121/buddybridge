@@ -2,48 +2,159 @@ import { spawn } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 
-const TIMEOUT = 120_000;
+const TIMEOUT = 300_000; // 5 分钟，复杂知识库问题可能需要较长时间
 
-function resolveCodebuddyPath(): string {
-    // 1. 显式环境变量优先
-    if (process.env.CODEBUDDY_PATH) {
+// ===== Node.js 可执行文件查找 =====
+
+const NODE_EXECUTABLE = process.platform === 'win32' ? 'node.exe' : 'node';
+
+function findNodeExecutable(): string | null {
+    const home = process.env.HOME || process.env.USERPROFILE || '';
+    const nodeDirs: string[] = [];
+
+    if (process.platform === 'win32') {
+        // Electron 进程同级目录（Obsidian 便携版可能有 node）
+        nodeDirs.push(path.dirname(process.execPath));
+
+        // npm 全局安装路径
+        const appData = process.env.APPDATA || '';
+        if (appData) {
+            nodeDirs.push(appData);
+            nodeDirs.push(path.join(appData, 'npm'));
+        }
+
+        // Node.js 安装路径
+        const programFiles = process.env.ProgramFiles || 'C:\\Program Files';
+        const programFilesX86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
+        const localAppData = process.env.LOCALAPPDATA || '';
+
+        nodeDirs.push(
+            path.join(programFiles, 'nodejs'),
+            path.join(programFilesX86, 'nodejs'),
+        );
+        if (localAppData) {
+            nodeDirs.push(path.join(localAppData, 'Programs', 'nodejs'));
+        }
+
+        // NVM for Windows
+        const nvmSymlink = process.env.NVM_SYMLINK;
+        if (nvmSymlink) {
+            nodeDirs.push(nvmSymlink);
+        }
+    } else {
+        nodeDirs.push(
+            path.join(home, '.local', 'bin'),
+            path.join(home, '.npm-global', 'bin'),
+            path.join(home, '.volta', 'bin'),
+            '/usr/local/bin',
+            '/opt/homebrew/bin',
+        );
+
+        // NVM
+        const nvmBin = process.env.NVM_BIN;
+        if (nvmBin) {
+            nodeDirs.push(nvmBin);
+        }
+    }
+
+    // 扫描候选目录
+    for (const dir of nodeDirs) {
+        if (!dir) continue;
+        try {
+            const nodePath = path.join(dir, NODE_EXECUTABLE);
+            if (fs.existsSync(nodePath) && fs.statSync(nodePath).isFile()) {
+                console.log('[BB] found node at:', nodePath);
+                return nodePath;
+            }
+        } catch {
+            // 目录不可访问
+        }
+    }
+
+    // 兜底: 系统 PATH
+    return 'node';
+}
+
+// ===== CodeBuddy CLI 路径查找 =====
+
+function resolveCodebuddyPath(customPath: string): string {
+    // 1. 用户在设置中指定的路径
+    if (customPath && fs.existsSync(customPath)) {
+        return customPath;
+    }
+
+    // 2. 环境变量
+    if (process.env.CODEBUDDY_PATH && fs.existsSync(process.env.CODEBUDDY_PATH)) {
         return process.env.CODEBUDDY_PATH;
     }
 
-    // 2. Windows 默认安装路径
+    // 3. 按平台搜索常见路径
+    const home = process.env.HOME || process.env.USERPROFILE || '';
     const localAppData = process.env.LOCALAPPDATA || '';
-    const defaultPath = path.join(
-        localAppData,
-        'Programs',
-        'WorkBuddy',
-        'resources',
-        'app.asar.unpacked',
-        'cli',
-        'bin',
-        'codebuddy'
-    );
-    if (fs.existsSync(defaultPath)) {
-        return defaultPath;
+    const appData = process.env.APPDATA || '';
+    const programFiles = process.env.ProgramFiles || 'C:\\Program Files';
+    const programFilesX86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
+
+    const candidates: string[] = [];
+
+    if (process.platform === 'win32') {
+        // WorkBuddy 安装路径
+        candidates.push(
+            path.join(localAppData, 'Programs', 'WorkBuddy', 'resources', 'app.asar.unpacked', 'cli', 'bin', 'codebuddy'),
+            path.join(localAppData, 'Programs', 'WorkBuddy', 'resources', 'app.asar.unpacked', 'cli', 'bin', 'codebuddy.cmd'),
+        );
+        // npm 全局安装 (Windows)
+        if (appData) {
+            candidates.push(path.join(appData, 'npm', 'codebuddy'));
+            candidates.push(path.join(appData, 'npm', 'codebuddy.cmd'));
+        }
+        candidates.push(
+            path.join(programFiles, 'nodejs', 'codebuddy.cmd'),
+            path.join(programFiles, 'nodejs', 'node_modules', '.bin', 'codebuddy.cmd'),
+            path.join(programFilesX86, 'nodejs', 'node_modules', '.bin', 'codebuddy.cmd'),
+        );
+    } else {
+        // macOS / Linux
+        candidates.push(
+            path.join(home, '.local', 'bin', 'codebuddy'),
+            path.join(home, '.npm-global', 'bin', 'codebuddy'),
+            path.join(home, '.volta', 'bin', 'codebuddy'),
+            path.join(home, 'bin', 'codebuddy'),
+            '/usr/local/bin/codebuddy',
+            '/opt/homebrew/bin/codebuddy',
+        );
     }
 
-    // 3. 兜底：寄希望于系统 PATH
+    // 跨平台: NVM / npm prefix
+    const nvmBin = process.env.NVM_BIN;
+    if (nvmBin) {
+        candidates.push(path.join(nvmBin, 'codebuddy'));
+    }
+    const npmPrefix = process.env.npm_config_prefix;
+    if (npmPrefix) {
+        candidates.push(path.join(npmPrefix, 'bin', 'codebuddy'));
+    }
+
+    for (const p of candidates) {
+        if (fs.existsSync(p)) return p;
+    }
+
+    // 4. 兜底: 系统 PATH
     return 'codebuddy';
 }
 
-const CODEBUDDY = resolveCodebuddyPath();
-
 export class BuddyBridgeAPI {
     private rid = 1;
-    private url: string;
     private timeout: number;
+    private scriptPath: string;
 
-    constructor(url: string, timeout: number = TIMEOUT) {
-        this.url = url;
+    constructor(timeout: number = TIMEOUT) {
         this.timeout = timeout;
+        this.scriptPath = resolveCodebuddyPath('');
     }
 
-    setGatewayUrl(u: string): void {
-        this.url = u;
+    setCodebuddyPath(p: string): void {
+        this.scriptPath = resolveCodebuddyPath(p);
     }
 
     generateId(): string {
@@ -54,16 +165,24 @@ export class BuddyBridgeAPI {
         });
     }
 
-    async *sendMessage(_sessionId: string, text: string): AsyncGenerator<string> {
-        const scriptPath = CODEBUDDY;
+    async *sendMessage(sessionId: string, text: string, vaultPath?: string): AsyncGenerator<string> {
+        const scriptPath = this.scriptPath;
         let resolveNext: ((r: IteratorResult<string>) => void) | null = null;
         let done = false;
 
-        // Windows 上 spawn 无法解析 shebang，必须通过 node 执行脚本
-        const proc = spawn('node', [scriptPath, text], {
+        // 查找真正的 Node.js 可执行文件（Electron 里 process.execPath 不是 node）
+        const nodeBin = findNodeExecutable() || 'node';
+        const procOptions: any = {
             timeout: this.timeout,
             stdio: ['ignore', 'pipe', 'pipe'],
-        });
+        };
+        if (vaultPath) {
+            procOptions.cwd = vaultPath;
+        }
+
+        // 会话管理: 始终指定 session-id 保持上下文连贯
+        const args = [scriptPath, '--session-id', sessionId, text];
+        const proc = spawn(nodeBin, args, procOptions);
 
         let out = '';
         let errOut = '';
@@ -83,9 +202,13 @@ export class BuddyBridgeAPI {
             console.log('[BB] stderr:', errOut);
         });
 
-        proc.on('close', (code) => {
-            console.log('[BB] exit:', code, '| err:', errOut.substring(0, 200));
+        proc.on('close', (code, signal) => {
+            console.log('[BB] exit:', code, signal ? 'signal:' + signal : '', '| err:', errOut.substring(0, 200));
             done = true;
+            // 被信号杀死（如超时）— 记录错误
+            if (signal && !errOut) {
+                errOut = code === null ? '进程被终止，可能超时或内存不足' : `进程异常退出 (signal: ${signal})`;
+            }
             if (errOut && !out) {
                 const next = resolveNext;
                 if (next) {

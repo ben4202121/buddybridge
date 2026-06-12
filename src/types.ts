@@ -17,15 +17,15 @@ export interface Conversation {
 
 // ==================== 设置类型 ====================
 export interface BuddyBridgeSettings {
-    gatewayUrl: string;
+    codebuddyPath: string;
     maxConversations: number;
     version: number;
 }
 
-const CURRENT_SETTINGS_VERSION = 1;
+const CURRENT_SETTINGS_VERSION = 3;
 
 export const DEFAULT_SETTINGS: BuddyBridgeSettings = {
-    gatewayUrl: 'http://127.0.0.1:55808',
+    codebuddyPath: '',
     maxConversations: 20,
     version: CURRENT_SETTINGS_VERSION
 };
@@ -39,19 +39,17 @@ export function migrateSettings(stored: any): BuddyBridgeSettings {
         return { ...DEFAULT_SETTINGS };
     }
 
-    const version = typeof stored.version === 'number' ? stored.version : 0;
-
     const settings: BuddyBridgeSettings = {
-        gatewayUrl: typeof stored.gatewayUrl === 'string'
-            ? stored.gatewayUrl
-            : DEFAULT_SETTINGS.gatewayUrl,
+        codebuddyPath: typeof stored.codebuddyPath === 'string'
+            ? stored.codebuddyPath
+            : DEFAULT_SETTINGS.codebuddyPath,
         maxConversations: typeof stored.maxConversations === 'number' && stored.maxConversations > 0
             ? stored.maxConversations
             : DEFAULT_SETTINGS.maxConversations,
         version: CURRENT_SETTINGS_VERSION
     };
 
-    // 迁移路径 v0 → v1: 旧版可能有额外字段，自动忽略
+    // 迁移 v0→v1→v2→v3: 新增 codebuddyPath, 移除 gatewayUrl
 
     return settings;
 }
