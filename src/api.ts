@@ -2,7 +2,16 @@ import { spawn } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 
-const TIMEOUT = 300_000; // 5 分钟，复杂知识库问题可能需要较长时间
+const TIMEOUT = 300_000; // 5 分钟
+
+// ===== 流式事件类型 =====
+
+export interface StreamChunk {
+    type: 'thinking' | 'text' | 'tool' | 'error' | 'done';
+    content: string;
+    toolName?: string;
+    toolDetail?: string;
+}
 
 // ===== Node.js 可执行文件查找 =====
 
@@ -13,21 +22,15 @@ function findNodeExecutable(): string | null {
     const nodeDirs: string[] = [];
 
     if (process.platform === 'win32') {
-        // Electron 进程同级目录（Obsidian 便携版可能有 node）
         nodeDirs.push(path.dirname(process.execPath));
-
-        // npm 全局安装路径
         const appData = process.env.APPDATA || '';
         if (appData) {
             nodeDirs.push(appData);
             nodeDirs.push(path.join(appData, 'npm'));
         }
-
-        // Node.js 安装路径
         const programFiles = process.env.ProgramFiles || 'C:\\Program Files';
         const programFilesX86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
         const localAppData = process.env.LOCALAPPDATA || '';
-
         nodeDirs.push(
             path.join(programFiles, 'nodejs'),
             path.join(programFilesX86, 'nodejs'),
@@ -35,8 +38,6 @@ function findNodeExecutable(): string | null {
         if (localAppData) {
             nodeDirs.push(path.join(localAppData, 'Programs', 'nodejs'));
         }
-
-        // NVM for Windows
         const nvmSymlink = process.env.NVM_SYMLINK;
         if (nvmSymlink) {
             nodeDirs.push(nvmSymlink);
@@ -49,15 +50,12 @@ function findNodeExecutable(): string | null {
             '/usr/local/bin',
             '/opt/homebrew/bin',
         );
-
-        // NVM
         const nvmBin = process.env.NVM_BIN;
         if (nvmBin) {
             nodeDirs.push(nvmBin);
         }
     }
 
-    // 扫描候选目录
     for (const dir of nodeDirs) {
         if (!dir) continue;
         try {
@@ -67,43 +65,34 @@ function findNodeExecutable(): string | null {
                 return nodePath;
             }
         } catch {
-            // 目录不可访问
         }
     }
 
-    // 兜底: 系统 PATH
     return 'node';
 }
 
 // ===== CodeBuddy CLI 路径查找 =====
 
 function resolveCodebuddyPath(customPath: string): string {
-    // 1. 用户在设置中指定的路径
     if (customPath && fs.existsSync(customPath)) {
         return customPath;
     }
-
-    // 2. 环境变量
     if (process.env.CODEBUDDY_PATH && fs.existsSync(process.env.CODEBUDDY_PATH)) {
         return process.env.CODEBUDDY_PATH;
     }
 
-    // 3. 按平台搜索常见路径
     const home = process.env.HOME || process.env.USERPROFILE || '';
     const localAppData = process.env.LOCALAPPDATA || '';
     const appData = process.env.APPDATA || '';
     const programFiles = process.env.ProgramFiles || 'C:\\Program Files';
     const programFilesX86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
-
     const candidates: string[] = [];
 
     if (process.platform === 'win32') {
-        // WorkBuddy 安装路径
         candidates.push(
             path.join(localAppData, 'Programs', 'WorkBuddy', 'resources', 'app.asar.unpacked', 'cli', 'bin', 'codebuddy'),
             path.join(localAppData, 'Programs', 'WorkBuddy', 'resources', 'app.asar.unpacked', 'cli', 'bin', 'codebuddy.cmd'),
         );
-        // npm 全局安装 (Windows)
         if (appData) {
             candidates.push(path.join(appData, 'npm', 'codebuddy'));
             candidates.push(path.join(appData, 'npm', 'codebuddy.cmd'));
@@ -114,7 +103,6 @@ function resolveCodebuddyPath(customPath: string): string {
             path.join(programFilesX86, 'nodejs', 'node_modules', '.bin', 'codebuddy.cmd'),
         );
     } else {
-        // macOS / Linux
         candidates.push(
             path.join(home, '.local', 'bin', 'codebuddy'),
             path.join(home, '.npm-global', 'bin', 'codebuddy'),
@@ -125,26 +113,85 @@ function resolveCodebuddyPath(customPath: string): string {
         );
     }
 
-    // 跨平台: NVM / npm prefix
     const nvmBin = process.env.NVM_BIN;
-    if (nvmBin) {
-        candidates.push(path.join(nvmBin, 'codebuddy'));
-    }
+    if (nvmBin) candidates.push(path.join(nvmBin, 'codebuddy'));
     const npmPrefix = process.env.npm_config_prefix;
-    if (npmPrefix) {
-        candidates.push(path.join(npmPrefix, 'bin', 'codebuddy'));
-    }
+    if (npmPrefix) candidates.push(path.join(npmPrefix, 'bin', 'codebuddy'));
 
     for (const p of candidates) {
         if (fs.existsSync(p)) return p;
     }
 
-    // 4. 兜底: 系统 PATH
     return 'codebuddy';
 }
 
+// ===== JSON 行解析 =====
+
+function parseStreamLine(line: string): StreamChunk | null {
+    if (!line.trim()) return null;
+    try {
+        const obj = JSON.parse(line);
+        const event = obj.event || obj;
+
+        if (obj.type === 'assistant') {
+            const msg = obj.message;
+            if (!msg || !Array.isArray(msg.content)) return null;
+
+            for (const block of msg.content) {
+                if (block.type === 'thinking') {
+                    return { type: 'thinking', content: block.text || '' };
+                }
+                if (block.type === 'text') {
+                    return { type: 'text', content: block.text || '' };
+                }
+                if (block.type === 'tool_call') {
+                    return {
+                        type: 'tool',
+                        content: '',
+                        toolName: block.name || 'unknown',
+                        toolDetail: typeof block.input === 'string' ? block.input : JSON.stringify(block.input || {}),
+                    };
+                }
+            }
+            return null;
+        }
+
+        if (event.type === 'thinking') {
+            return { type: 'thinking', content: event.text || '' };
+        }
+        if (event.type === 'message_delta') {
+            return { type: 'text', content: event.text || '' };
+        }
+        if (event.type === 'tool_call') {
+            return {
+                type: 'tool',
+                content: '',
+                toolName: event.name || 'unknown',
+                toolDetail: typeof event.input === 'string' ? event.input : JSON.stringify(event.input || {}),
+            };
+        }
+        if (obj.type === 'result') {
+            return { type: 'done', content: obj.result || '' };
+        }
+        if (obj.type === 'error') {
+            return { type: 'error', content: obj.error || obj.message || '未知错误' };
+        }
+
+        // 未知事件类型, 输出原始 JSON 便于调试
+        console.log('[BB] unknown event:', line.substring(0, 200));
+        // 尝试提取文本字段，如果是对象则序列化
+        const fallbackText = event.text || event.content || event.message || '';
+        if (fallbackText) {
+            const display = typeof fallbackText === 'string' ? fallbackText : JSON.stringify(fallbackText);
+            return { type: 'text', content: display };
+        }
+        return null;
+    } catch {
+        return { type: 'text', content: line };
+    }
+}
+
 export class BuddyBridgeAPI {
-    private rid = 1;
     private timeout: number;
     private scriptPath: string;
 
@@ -165,12 +212,8 @@ export class BuddyBridgeAPI {
         });
     }
 
-    async *sendMessage(sessionId: string, text: string, vaultPath?: string): AsyncGenerator<string> {
+    async *sendMessage(sessionId: string, text: string, vaultPath?: string): AsyncGenerator<StreamChunk> {
         const scriptPath = this.scriptPath;
-        let resolveNext: ((r: IteratorResult<string>) => void) | null = null;
-        let done = false;
-
-        // 查找真正的 Node.js 可执行文件（Electron 里 process.execPath 不是 node）
         const nodeBin = findNodeExecutable() || 'node';
         const procOptions: any = {
             timeout: this.timeout,
@@ -180,20 +223,34 @@ export class BuddyBridgeAPI {
             procOptions.cwd = vaultPath;
         }
 
-        // 会话管理: 始终指定 session-id 保持上下文连贯
-        const args = [scriptPath, '--session-id', sessionId, text];
+        // --print --output-format stream-json: 结构化流式输出
+        const args = [scriptPath, '--print', '--output-format', 'stream-json', '--session-id', sessionId, text];
         const proc = spawn(nodeBin, args, procOptions);
 
-        let out = '';
+        let buffer = '';
         let errOut = '';
+        let hasOutput = false;
+        const chunkQueue: StreamChunk[] = [];
+        let resolveQueue: ((r: IteratorResult<StreamChunk>) => void) | null = null;
+        let closed = false;
 
         proc.stdout.on('data', (d: Buffer) => {
-            const s = d.toString();
-            out += s;
-            console.log('[BB] stdout:', s);
-            if (resolveNext) {
-                resolveNext({ value: s, done: false });
-                resolveNext = null;
+            buffer += d.toString();
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+            for (const line of lines) {
+                const chunk = parseStreamLine(line);
+                if (chunk) {
+                    hasOutput = true;
+                    const preview = typeof chunk.content === 'string' ? chunk.content.substring(0, 80) : JSON.stringify(chunk.content).substring(0, 80);
+                    console.log('[BB] chunk:', chunk.type, preview);
+                    if (resolveQueue) {
+                        resolveQueue({ value: chunk, done: false });
+                        resolveQueue = null;
+                    } else {
+                        chunkQueue.push(chunk);
+                    }
+                }
             }
         });
 
@@ -204,52 +261,49 @@ export class BuddyBridgeAPI {
 
         proc.on('close', (code, signal) => {
             console.log('[BB] exit:', code, signal ? 'signal:' + signal : '', '| err:', errOut.substring(0, 200));
-            done = true;
-            // 被信号杀死（如超时）— 记录错误
-            if (signal && !errOut) {
-                errOut = code === null ? '进程被终止，可能超时或内存不足' : `进程异常退出 (signal: ${signal})`;
-            }
-            if (errOut && !out) {
-                const next = resolveNext;
-                if (next) {
-                    next({ value: undefined as unknown as string, done: true });
-                    resolveNext = null;
+            closed = true;
+            if (resolveQueue) {
+                if (errOut && !hasOutput) {
+                    resolveQueue({ value: { type: 'error', content: errOut }, done: true });
+                } else {
+                    resolveQueue({ value: { type: 'done', content: '' }, done: true });
                 }
-            } else if (resolveNext) {
-                resolveNext({ value: out, done: true });
-                resolveNext = null;
+                resolveQueue = null;
             }
         });
 
         proc.on('error', (e) => {
             console.log('[BB] spawn err:', e.message);
-            done = true;
-            if (resolveNext) {
-                resolveNext({ value: undefined as unknown as string, done: true });
-                resolveNext = null;
+            closed = true;
+            if (resolveQueue) {
+                resolveQueue({ value: { type: 'error', content: e.message }, done: true });
+                resolveQueue = null;
             }
         });
 
+        // 主循环
         while (true) {
-            if (done) {
-                if (errOut && !out) {
-                    throw new Error(errOut);
-                }
-                if (out) {
-                    yield out;
-                    break;
+            if (chunkQueue.length > 0) {
+                yield chunkQueue.shift()!;
+                continue;
+            }
+            if (closed) {
+                if (buffer.trim()) {
+                    const chunk = parseStreamLine(buffer);
+                    if (chunk) yield chunk;
                 }
                 break;
             }
-            const next = await new Promise<IteratorResult<string>>((r) => {
-                resolveNext = r;
+            const next = await new Promise<IteratorResult<StreamChunk>>((r) => {
+                resolveQueue = r;
             });
-            if (next.done) break;
+            if (next.done) {
+                if (next.value.type === 'error') throw new Error(next.value.content);
+                break;
+            }
             yield next.value;
         }
     }
 
-    cancel(): void {
-        // 预留取消逻辑
-    }
+    cancel(): void {}
 }

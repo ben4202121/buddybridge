@@ -190,6 +190,30 @@
     }
 }
 
+/* ==================== 思考块 ==================== */
+.buddybridge-thinking-block {
+    margin: 4px 0;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+.buddybridge-thinking-toggle {
+    display: none;
+}
+
+
+/* ==================== 工具调用 ==================== */
+.buddybridge-tool-call {
+    padding: 3px 8px;
+    margin: 2px 0;
+    font-size: 12px;
+    color: var(--text-muted);
+    border-left: 2px solid var(--interactive-accent);
+    background: var(--background-primary-alt);
+    border-radius: 0 4px 4px 0;
+}
+
 /* ==================== 输入区 ==================== */
 .buddybridge-input-area {
     display: flex;
@@ -250,4 +274,33 @@
 .buddybridge-tab-bar::-webkit-scrollbar-thumb {
     background: var(--background-modifier-border);
     border-radius: 2px;
+}
+
+/* 不可见辅助类 */
+.buddybridge-hidden { display: none !important; }
+/* ==================== 思考块 ==================== */
+.buddybridge-thinking-block {
+    margin: 4px 0;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+.buddybridge-thinking-header {
+    padding: 4px 8px;
+    font-size: 12px;
+    color: var(--text-muted);
+    background: var(--background-primary);
+    border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.buddybridge-thinking-body {
+    padding: 6px 8px;
+    font-size: 12px;
+    color: var(--text-muted);
+    background: var(--background-primary-alt);
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 200px;
+    overflow-y: auto;
 }

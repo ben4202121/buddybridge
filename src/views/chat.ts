@@ -1,6 +1,6 @@
 import { ItemView, WorkspaceLeaf, Notice } from 'obsidian';
 import { ConversationManager } from '../chat/manager';
-import { BuddyBridgeAPI } from '../api';
+import { BuddyBridgeAPI, type StreamChunk } from '../api';
 import type { Conversation, ChatMessage } from '../types';
 
 export const VIEW_TYPE_CHAT = "buddybridge-panel";
@@ -179,6 +179,11 @@ export class BuddyBridgeChatView extends ItemView {
             this.renderTabs();
         }
 
+        // 首次对话自动生成 sessionId，后续多轮对话保持上下文连贯
+        if (!conv.sessionId) {
+            conv.sessionId = this.api.generateId();
+        }
+
         // 添加用户消息
         const convId = conv.id;
         this.manager.addMessage(convId, 'user', text);
@@ -195,8 +200,10 @@ export class BuddyBridgeChatView extends ItemView {
 
         // 流式发送
         let firstChunk = true;
+        let thinkingContent = '';
+        let textContent = '';
         try {
-            // 注入 vault 上下文，让 codebuddy 知道知识库在哪
+            // 注入 vault 上下文
             const contextText = this.vaultPath
                 ? `当前 Obsidian Vault 路径: ${this.vaultPath}
 工作目录即 vault 根目录，请基于 vault 中的文件回答问题。
@@ -206,48 +213,70 @@ export class BuddyBridgeChatView extends ItemView {
 ${text}`
                 : text;
 
-            let fullContent = '';
             for await (const chunk of this.api.sendMessage(conv.sessionId, contextText, this.vaultPath)) {
-                fullContent += chunk;
-                this.manager.updateMessage(convId, aiMsg.id, fullContent);
-                // 增量更新气泡内容
                 const bubble = this.messageContainer.querySelector(
                     `.buddybridge-message-assistant:last-child .buddybridge-bubble`
                 ) as HTMLElement;
                 if (!bubble) continue;
 
                 if (firstChunk) {
-                    // 首个 token：替换思考指示器为实际内容
                     firstChunk = false;
+                    // 移除思考指示器
                     const thinking = bubble.querySelector('.buddybridge-thinking') as HTMLElement;
                     if (thinking) {
                         thinking.addClass('buddybridge-thinking-fadeout');
-                        // 等待淡出动画结束后替换
                         await new Promise(r => setTimeout(r, 200));
                         thinking.remove();
                     }
-                    bubble.createSpan({ text: fullContent });
-                } else {
-                    const span = bubble.querySelector('span');
-                    if (span) {
-                        span.textContent = fullContent;
+                }
+
+                if (chunk.type === 'thinking') {
+                    thinkingContent += chunk.content;
+                    let block = bubble.querySelector('.buddybridge-thinking-block') as HTMLElement;
+                    if (!block) {
+                        block = bubble.createDiv({ cls: 'buddybridge-thinking-block' });
+                        block.createDiv({ cls: 'buddybridge-thinking-header', text: '思考过程' });
+                        block.createDiv({ cls: 'buddybridge-thinking-body' });
                     }
+                    const body = block.querySelector('.buddybridge-thinking-body') as HTMLElement;
+                    if (body) {
+                        body.setText(thinkingContent);
+                    }
+                } else if (chunk.type === 'tool') {
+                    // 工具调用行
+                    bubble.createDiv({
+                        cls: 'buddybridge-tool-call',
+                        text: `🔧 ${chunk.toolName || ''} ${chunk.toolDetail || ''}`
+                    });
+                } else if (chunk.type === 'text') {
+                    textContent += chunk.content;
+                    this.manager.updateMessage(convId, aiMsg.id, textContent);
+                    let span = bubble.querySelector(':scope > span') as HTMLElement;
+                    if (!span) {
+                        span = bubble.createSpan({ text: '' });
+                    }
+                    span.textContent = textContent;
+                } else if (chunk.type === 'error') {
+                    this.manager.updateMessage(convId, aiMsg.id, `错误: ${chunk.content}`);
+                    new Notice(`请求失败: ${chunk.content}`);
                 }
             }
-            this.manager.updateMessage(convId, aiMsg.id, fullContent);
 
-            // 无响应：可能超时或进程异常退出
-            if (!fullContent) {
+            const finalContent = textContent || thinkingContent;
+            this.manager.updateMessage(convId, aiMsg.id, finalContent);
+
+            if (!finalContent) {
                 this.manager.updateMessage(convId, aiMsg.id, '（无响应，请重试）');
             }
         } catch (error: any) {
             this.manager.updateMessage(convId, aiMsg.id, `错误: ${error.message}`);
             new Notice(`请求失败: ${error.message}`);
+            this.renderMessages();
         } finally {
             this.isStreaming = false;
             this.streamingMsgId = null;
-            this.renderMessages();
-            this.renderTabs();
+            // 不在 finally 中 renderMessages(), 避免清除思考块
+            // 仅在出错时重新渲染
         }
     }
 

@@ -134,22 +134,78 @@ function resolveCodebuddyPath(customPath) {
     );
   }
   const nvmBin = process.env.NVM_BIN;
-  if (nvmBin) {
+  if (nvmBin)
     candidates.push(path.join(nvmBin, "codebuddy"));
-  }
   const npmPrefix = process.env.npm_config_prefix;
-  if (npmPrefix) {
+  if (npmPrefix)
     candidates.push(path.join(npmPrefix, "bin", "codebuddy"));
-  }
   for (const p of candidates) {
     if (fs.existsSync(p))
       return p;
   }
   return "codebuddy";
 }
+function parseStreamLine(line) {
+  if (!line.trim())
+    return null;
+  try {
+    const obj = JSON.parse(line);
+    const event = obj.event || obj;
+    if (obj.type === "assistant") {
+      const msg = obj.message;
+      if (!msg || !Array.isArray(msg.content))
+        return null;
+      for (const block of msg.content) {
+        if (block.type === "thinking") {
+          return { type: "thinking", content: block.text || "" };
+        }
+        if (block.type === "text") {
+          return { type: "text", content: block.text || "" };
+        }
+        if (block.type === "tool_call") {
+          return {
+            type: "tool",
+            content: "",
+            toolName: block.name || "unknown",
+            toolDetail: typeof block.input === "string" ? block.input : JSON.stringify(block.input || {})
+          };
+        }
+      }
+      return null;
+    }
+    if (event.type === "thinking") {
+      return { type: "thinking", content: event.text || "" };
+    }
+    if (event.type === "message_delta") {
+      return { type: "text", content: event.text || "" };
+    }
+    if (event.type === "tool_call") {
+      return {
+        type: "tool",
+        content: "",
+        toolName: event.name || "unknown",
+        toolDetail: typeof event.input === "string" ? event.input : JSON.stringify(event.input || {})
+      };
+    }
+    if (obj.type === "result") {
+      return { type: "done", content: obj.result || "" };
+    }
+    if (obj.type === "error") {
+      return { type: "error", content: obj.error || obj.message || "\u672A\u77E5\u9519\u8BEF" };
+    }
+    console.log("[BB] unknown event:", line.substring(0, 200));
+    const fallbackText = event.text || event.content || event.message || "";
+    if (fallbackText) {
+      const display = typeof fallbackText === "string" ? fallbackText : JSON.stringify(fallbackText);
+      return { type: "text", content: display };
+    }
+    return null;
+  } catch (e) {
+    return { type: "text", content: line };
+  }
+}
 var BuddyBridgeAPI = class {
   constructor(timeout = TIMEOUT) {
-    this.rid = 1;
     this.timeout = timeout;
     this.scriptPath = resolveCodebuddyPath("");
   }
@@ -163,10 +219,8 @@ var BuddyBridgeAPI = class {
       return v.toString(16);
     });
   }
-  async *sendMessage(_sessionId, text, vaultPath) {
+  async *sendMessage(sessionId, text, vaultPath) {
     const scriptPath = this.scriptPath;
-    let resolveNext = null;
-    let done = false;
     const nodeBin = findNodeExecutable() || "node";
     const procOptions = {
       timeout: this.timeout,
@@ -175,16 +229,31 @@ var BuddyBridgeAPI = class {
     if (vaultPath) {
       procOptions.cwd = vaultPath;
     }
-    const proc = (0, import_child_process.spawn)(nodeBin, [scriptPath, text], procOptions);
-    let out = "";
+    const args = [scriptPath, "--print", "--output-format", "stream-json", "--session-id", sessionId, text];
+    const proc = (0, import_child_process.spawn)(nodeBin, args, procOptions);
+    let buffer = "";
     let errOut = "";
+    let hasOutput = false;
+    const chunkQueue = [];
+    let resolveQueue = null;
+    let closed = false;
     proc.stdout.on("data", (d) => {
-      const s = d.toString();
-      out += s;
-      console.log("[BB] stdout:", s);
-      if (resolveNext) {
-        resolveNext({ value: s, done: false });
-        resolveNext = null;
+      buffer += d.toString();
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      for (const line of lines) {
+        const chunk = parseStreamLine(line);
+        if (chunk) {
+          hasOutput = true;
+          const preview = typeof chunk.content === "string" ? chunk.content.substring(0, 80) : JSON.stringify(chunk.content).substring(0, 80);
+          console.log("[BB] chunk:", chunk.type, preview);
+          if (resolveQueue) {
+            resolveQueue({ value: chunk, done: false });
+            resolveQueue = null;
+          } else {
+            chunkQueue.push(chunk);
+          }
+        }
       }
     });
     proc.stderr.on("data", (d) => {
@@ -193,45 +262,45 @@ var BuddyBridgeAPI = class {
     });
     proc.on("close", (code, signal) => {
       console.log("[BB] exit:", code, signal ? "signal:" + signal : "", "| err:", errOut.substring(0, 200));
-      done = true;
-      if (signal && !errOut) {
-        errOut = code === null ? "\u8FDB\u7A0B\u88AB\u7EC8\u6B62\uFF0C\u53EF\u80FD\u8D85\u65F6\u6216\u5185\u5B58\u4E0D\u8DB3" : `\u8FDB\u7A0B\u5F02\u5E38\u9000\u51FA (signal: ${signal})`;
-      }
-      if (errOut && !out) {
-        const next = resolveNext;
-        if (next) {
-          next({ value: void 0, done: true });
-          resolveNext = null;
+      closed = true;
+      if (resolveQueue) {
+        if (errOut && !hasOutput) {
+          resolveQueue({ value: { type: "error", content: errOut }, done: true });
+        } else {
+          resolveQueue({ value: { type: "done", content: "" }, done: true });
         }
-      } else if (resolveNext) {
-        resolveNext({ value: out, done: true });
-        resolveNext = null;
+        resolveQueue = null;
       }
     });
     proc.on("error", (e) => {
       console.log("[BB] spawn err:", e.message);
-      done = true;
-      if (resolveNext) {
-        resolveNext({ value: void 0, done: true });
-        resolveNext = null;
+      closed = true;
+      if (resolveQueue) {
+        resolveQueue({ value: { type: "error", content: e.message }, done: true });
+        resolveQueue = null;
       }
     });
     while (true) {
-      if (done) {
-        if (errOut && !out) {
-          throw new Error(errOut);
-        }
-        if (out) {
-          yield out;
-          break;
+      if (chunkQueue.length > 0) {
+        yield chunkQueue.shift();
+        continue;
+      }
+      if (closed) {
+        if (buffer.trim()) {
+          const chunk = parseStreamLine(buffer);
+          if (chunk)
+            yield chunk;
         }
         break;
       }
       const next = await new Promise((r) => {
-        resolveNext = r;
+        resolveQueue = r;
       });
-      if (next.done)
+      if (next.done) {
+        if (next.value.type === "error")
+          throw new Error(next.value.content);
         break;
+      }
       yield next.value;
     }
   }
@@ -344,6 +413,7 @@ var ConversationManager = class {
       return false;
     msg.content = content;
     conv.updatedAt = Date.now();
+    this.save();
     return true;
   }
   /** 设置对话的 Gateway sessionId */
@@ -509,6 +579,9 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
       conv = this.manager.createConversation();
       this.renderTabs();
     }
+    if (!conv.sessionId) {
+      conv.sessionId = this.api.generateId();
+    }
     const convId = conv.id;
     this.manager.addMessage(convId, "user", text);
     this.inputEl.value = "";
@@ -520,6 +593,8 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
     this.isStreaming = true;
     this.renderMessages();
     let firstChunk = true;
+    let thinkingContent = "";
+    let textContent = "";
     try {
       const contextText = this.vaultPath ? `\u5F53\u524D Obsidian Vault \u8DEF\u5F84: ${this.vaultPath}
 \u5DE5\u4F5C\u76EE\u5F55\u5373 vault \u6839\u76EE\u5F55\uFF0C\u8BF7\u57FA\u4E8E vault \u4E2D\u7684\u6587\u4EF6\u56DE\u7B54\u95EE\u9898\u3002
@@ -527,10 +602,7 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
 ---
 
 ${text}` : text;
-      let fullContent = "";
       for await (const chunk of this.api.sendMessage(conv.sessionId, contextText, this.vaultPath)) {
-        fullContent += chunk;
-        this.manager.updateMessage(convId, aiMsg.id, fullContent);
         const bubble = this.messageContainer.querySelector(
           `.buddybridge-message-assistant:last-child .buddybridge-bubble`
         );
@@ -544,26 +616,49 @@ ${text}` : text;
             await new Promise((r) => setTimeout(r, 200));
             thinking.remove();
           }
-          bubble.createSpan({ text: fullContent });
-        } else {
-          const span = bubble.querySelector("span");
-          if (span) {
-            span.textContent = fullContent;
+        }
+        if (chunk.type === "thinking") {
+          thinkingContent += chunk.content;
+          let block = bubble.querySelector(".buddybridge-thinking-block");
+          if (!block) {
+            block = bubble.createDiv({ cls: "buddybridge-thinking-block" });
+            block.createDiv({ cls: "buddybridge-thinking-header", text: "\u601D\u8003\u8FC7\u7A0B" });
+            block.createDiv({ cls: "buddybridge-thinking-body" });
           }
+          const body = block.querySelector(".buddybridge-thinking-body");
+          if (body) {
+            body.setText(thinkingContent);
+          }
+        } else if (chunk.type === "tool") {
+          bubble.createDiv({
+            cls: "buddybridge-tool-call",
+            text: `\u{1F527} ${chunk.toolName || ""} ${chunk.toolDetail || ""}`
+          });
+        } else if (chunk.type === "text") {
+          textContent += chunk.content;
+          this.manager.updateMessage(convId, aiMsg.id, textContent);
+          let span = bubble.querySelector(":scope > span");
+          if (!span) {
+            span = bubble.createSpan({ text: "" });
+          }
+          span.textContent = textContent;
+        } else if (chunk.type === "error") {
+          this.manager.updateMessage(convId, aiMsg.id, `\u9519\u8BEF: ${chunk.content}`);
+          new import_obsidian.Notice(`\u8BF7\u6C42\u5931\u8D25: ${chunk.content}`);
         }
       }
-      this.manager.updateMessage(convId, aiMsg.id, fullContent);
-      if (!fullContent) {
+      const finalContent = textContent || thinkingContent;
+      this.manager.updateMessage(convId, aiMsg.id, finalContent);
+      if (!finalContent) {
         this.manager.updateMessage(convId, aiMsg.id, "\uFF08\u65E0\u54CD\u5E94\uFF0C\u8BF7\u91CD\u8BD5\uFF09");
       }
     } catch (error) {
       this.manager.updateMessage(convId, aiMsg.id, `\u9519\u8BEF: ${error.message}`);
       new import_obsidian.Notice(`\u8BF7\u6C42\u5931\u8D25: ${error.message}`);
+      this.renderMessages();
     } finally {
       this.isStreaming = false;
       this.streamingMsgId = null;
-      this.renderMessages();
-      this.renderTabs();
     }
   }
   scrollToBottom() {

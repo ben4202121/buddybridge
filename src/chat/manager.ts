@@ -109,6 +109,7 @@ export class ConversationManager {
         if (!msg) return false;
         msg.content = content;
         conv.updatedAt = Date.now();
+        this.save();
         return true;
     }
 
