@@ -213,11 +213,13 @@ export class BuddyBridgeChatView extends ItemView {
 ${text}`
                 : text;
 
+            const streamingBubble = this.messageContainer.querySelector(
+                `.buddybridge-message-assistant:last-child .buddybridge-bubble`
+            ) as HTMLElement;
+
             for await (const chunk of this.api.sendMessage(conv.sessionId, contextText, this.vaultPath)) {
-                const bubble = this.messageContainer.querySelector(
-                    `.buddybridge-message-assistant:last-child .buddybridge-bubble`
-                ) as HTMLElement;
-                if (!bubble) continue;
+                if (!streamingBubble) continue;
+                const bubble = streamingBubble;
 
                 if (firstChunk) {
                     firstChunk = false;
@@ -256,14 +258,14 @@ ${text}`
                     });
                 } else if (chunk.type === 'text') {
                     textContent += chunk.content;
-                    this.manager.updateMessage(convId, aiMsg.id, textContent);
+                    this.manager.updateMessage(convId, aiMsg.id, textContent, true);
                     let span = bubble.querySelector(':scope > span') as HTMLElement;
                     if (!span) {
                         span = bubble.createSpan({ text: '' });
                     }
                     span.textContent = textContent;
                 } else if (chunk.type === 'error') {
-                    this.manager.updateMessage(convId, aiMsg.id, `错误: ${chunk.content}`);
+                    this.manager.updateMessage(convId, aiMsg.id, `错误: ${chunk.content}`, true);
                     new Notice(`请求失败: ${chunk.content}`);
                 }
             }
@@ -274,6 +276,7 @@ ${text}`
             if (!finalContent) {
                 this.manager.updateMessage(convId, aiMsg.id, '（无响应，请重试）');
             }
+            await this.manager.flush();
         } catch (error: any) {
             this.manager.updateMessage(convId, aiMsg.id, `错误: ${error.message}`);
             new Notice(`请求失败: ${error.message}`);

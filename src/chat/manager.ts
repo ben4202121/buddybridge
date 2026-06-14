@@ -1,4 +1,5 @@
 import type { Conversation, ChatMessage } from '../types';
+import { generateId } from '../types';
 
 export class ConversationManager {
     private conversations: Map<string, Conversation> = new Map();
@@ -9,10 +10,15 @@ export class ConversationManager {
         this.persistCallback = callback;
     }
 
-    private async save() {
+    private async persist() {
         if (this.persistCallback) {
             await this.persistCallback(this.getAll());
         }
+    }
+
+    /** 显式触发持久化（流式结束后调用） */
+    async flush(): Promise<void> {
+        await this.persist();
     }
 
     /** 从持久化数据加载对话 */
@@ -31,7 +37,7 @@ export class ConversationManager {
 
     /** 创建新对话 */
     createConversation(title?: string): Conversation {
-        const id = this.generateId();
+        const id = generateId();
         const conv: Conversation = {
             id,
             title: title || '新对话',
@@ -42,7 +48,7 @@ export class ConversationManager {
         };
         this.conversations.set(id, conv);
         this.activeId = id;
-        this.save();
+        this.persist();
         return conv;
     }
 
@@ -54,7 +60,7 @@ export class ConversationManager {
             const remaining = this.getAll();
             this.activeId = remaining.length > 0 ? remaining[0].id : null;
         }
-        this.save();
+        this.persist();
         return true;
     }
 
@@ -84,7 +90,7 @@ export class ConversationManager {
         if (!conv) return null;
 
         const msg: ChatMessage = {
-            id: this.generateId(),
+            id: generateId(),
             role,
             content,
             timestamp: Date.now()
@@ -97,19 +103,19 @@ export class ConversationManager {
             conv.title = content.substring(0, 30) + (content.length > 30 ? '...' : '');
         }
 
-        this.save();
+        this.persist();
         return msg;
     }
 
     /** 更新指定消息内容（用于流式追加） */
-    updateMessage(convId: string, msgId: string, content: string): boolean {
+    updateMessage(convId: string, msgId: string, content: string, skipSave = false): boolean {
         const conv = this.conversations.get(convId);
         if (!conv) return false;
         const msg = conv.messages.find(m => m.id === msgId);
         if (!msg) return false;
         msg.content = content;
         conv.updatedAt = Date.now();
-        this.save();
+        if (!skipSave) this.persist();
         return true;
     }
 
@@ -121,11 +127,4 @@ export class ConversationManager {
         return true;
     }
 
-    private generateId(): string {
-        return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-            const r = Math.random() * 16 | 0;
-            const v = c === 'x' ? r : (r & 0x3 | 0x8);
-            return v.toString(16);
-        });
-    }
 }
