@@ -65,6 +65,23 @@ function findNodeExecutable() {
     if (localAppData) {
       nodeDirs.push(path.join(localAppData, "Programs", "nodejs"));
     }
+    // Managed WorkBuddy Node.js (scan version directories)
+    if (home) {
+      const wbNodeVersionsDir = path.join(home, ".workbuddy", "binaries", "node", "versions");
+      try {
+        const versions = fs.readdirSync(wbNodeVersionsDir);
+        for (const v of versions) {
+          nodeDirs.push(path.join(wbNodeVersionsDir, v));
+        }
+      } catch (e) {
+      }
+    }
+    // Scan common drive letters for nodejs (handles non-C: installs)
+    for (const drive of ["C:", "D:", "E:"]) {
+      if (drive + "\\" !== path.parse(programFiles).root.toUpperCase()) {
+        nodeDirs.push(path.join(drive + "\\Program Files", "nodejs"));
+      }
+    }
     const nvmSymlink = process.env.NVM_SYMLINK;
     if (nvmSymlink) {
       nodeDirs.push(nvmSymlink);
@@ -94,6 +111,7 @@ function findNodeExecutable() {
     } catch (e) {
     }
   }
+  console.log("[BB] WARNING: node not found in any search path, falling back to 'node'");
   return "node";
 }
 function resolveCodebuddyPath(customPath) {
@@ -112,8 +130,21 @@ function resolveCodebuddyPath(customPath) {
   if (process.platform === "win32") {
     candidates.push(
       path.join(localAppData, "Programs", "WorkBuddy", "resources", "app.asar.unpacked", "cli", "bin", "codebuddy"),
-      path.join(localAppData, "Programs", "WorkBuddy", "resources", "app.asar.unpacked", "cli", "bin", "codebuddy.cmd")
+      path.join(localAppData, "Programs", "WorkBuddy", "resources", "app.asar.unpacked", "cli", "bin", "codebuddy.cmd"),
+      path.join(programFiles, "WorkBuddy", "resources", "app.asar.unpacked", "cli", "bin", "codebuddy"),
+      path.join(programFiles, "WorkBuddy", "resources", "app.asar.unpacked", "cli", "bin", "codebuddy.cmd"),
+      path.join(programFilesX86, "WorkBuddy", "resources", "app.asar.unpacked", "cli", "bin", "codebuddy"),
+      path.join(programFilesX86, "WorkBuddy", "resources", "app.asar.unpacked", "cli", "bin", "codebuddy.cmd")
     );
+    // Scan common drive letters for WorkBuddy installation
+    const wbDriveCandidates = [];
+    for (const drive of ["C:", "D:", "E:"]) {
+      wbDriveCandidates.push(
+        path.join(drive + "\\Program Files", "WorkBuddy", "resources", "app.asar.unpacked", "cli", "bin", "codebuddy"),
+        path.join(drive + "\\Program Files", "WorkBuddy", "resources", "app.asar.unpacked", "cli", "bin", "codebuddy.cmd")
+      );
+    }
+    candidates.push(...wbDriveCandidates);
     if (appData) {
       candidates.push(path.join(appData, "npm", "codebuddy"));
       candidates.push(path.join(appData, "npm", "codebuddy.cmd"));
@@ -140,8 +171,25 @@ function resolveCodebuddyPath(customPath) {
   if (npmPrefix)
     candidates.push(path.join(npmPrefix, "bin", "codebuddy"));
   for (const p of candidates) {
-    if (fs.existsSync(p))
+    if (fs.existsSync(p)) {
+      console.log("[BB] resolved codebuddy path:", p);
       return p;
+    }
+  }
+  const envPath = process.env.PATH || "";
+  const pathSep = process.platform === "win32" ? ";" : ":";
+  const exeNames = process.platform === "win32" ? ["codebuddy.cmd", "codebuddy.exe", "codebuddy"] : ["codebuddy"];
+  for (const dir of envPath.split(pathSep)) {
+    if (!dir)
+      continue;
+    for (const name of exeNames) {
+      try {
+        const p = path.join(dir, name);
+        if (fs.existsSync(p))
+          return p;
+      } catch (e) {
+      }
+    }
   }
   return "codebuddy";
 }
@@ -157,7 +205,7 @@ function parseStreamLine(line) {
         return null;
       for (const block of msg.content) {
         if (block.type === "thinking") {
-          return { type: "thinking", content: block.text || "" };
+          return { type: "thinking", content: block.thinking || "" };
         }
         if (block.type === "text") {
           return { type: "text", content: block.text || "" };
@@ -174,7 +222,7 @@ function parseStreamLine(line) {
       return null;
     }
     if (event.type === "thinking") {
-      return { type: "thinking", content: event.text || "" };
+      return { type: "thinking", content: event.thinking || "" };
     }
     if (event.type === "message_delta") {
       return { type: "text", content: event.text || "" };
@@ -204,6 +252,12 @@ function parseStreamLine(line) {
     return { type: "text", content: line };
   }
 }
+function isWindowsWrapper(scriptPath) {
+  return scriptPath.endsWith(".cmd") || scriptPath.endsWith(".exe") || scriptPath.endsWith(".bat");
+}
+function isBareFallback(scriptPath) {
+  return scriptPath === "codebuddy" || !path.isAbsolute(scriptPath);
+}
 var BuddyBridgeAPI = class {
   constructor(timeout = TIMEOUT) {
     this.timeout = timeout;
@@ -221,7 +275,6 @@ var BuddyBridgeAPI = class {
   }
   async *sendMessage(sessionId, text, vaultPath) {
     const scriptPath = this.scriptPath;
-    const nodeBin = findNodeExecutable() || "node";
     const procOptions = {
       timeout: this.timeout,
       stdio: ["ignore", "pipe", "pipe"]
@@ -229,8 +282,14 @@ var BuddyBridgeAPI = class {
     if (vaultPath) {
       procOptions.cwd = vaultPath;
     }
-    const args = [scriptPath, "--print", "--output-format", "stream-json", "--session-id", sessionId, text];
-    const proc = (0, import_child_process.spawn)(nodeBin, args, procOptions);
+    const cliArgs = ["--print", "--output-format", "stream-json", "--session-id", sessionId, text];
+    let proc;
+    if (isWindowsWrapper(scriptPath) || isBareFallback(scriptPath)) {
+      proc = (0, import_child_process.spawn)(scriptPath, cliArgs, procOptions);
+    } else {
+      const nodeBin = findNodeExecutable() || "node";
+      proc = (0, import_child_process.spawn)(nodeBin, [scriptPath, ...cliArgs], procOptions);
+    }
     let buffer = "";
     let errOut = "";
     let hasOutput = false;
@@ -273,10 +332,18 @@ var BuddyBridgeAPI = class {
       }
     });
     proc.on("error", (e) => {
-      console.log("[BB] spawn err:", e.message);
+      console.log("[BB] spawn err:", e.message, "| scriptPath:", scriptPath);
       closed = true;
+      let hint = e.message;
+      if (e.message.includes("ENOENT")) {
+        if (scriptPath === "codebuddy") {
+          hint = "找不到 codebuddy CLI。请确认已安装 WorkBuddy 桌面版，或在插件设置中指定 codebuddy 路径。";
+        } else if (!isWindowsWrapper(scriptPath) && !isBareFallback(scriptPath)) {
+          hint = `找不到 Node.js 来运行 codebuddy (路径: ${scriptPath})。请确认已安装 Node.js。`;
+        }
+      }
       if (resolveQueue) {
-        resolveQueue({ value: { type: "error", content: e.message }, done: true });
+        resolveQueue({ value: { type: "error", content: hint }, done: true });
         resolveQueue = null;
       }
     });
@@ -622,13 +689,21 @@ ${text}` : text;
           let block = bubble.querySelector(".buddybridge-thinking-block");
           if (!block) {
             block = bubble.createDiv({ cls: "buddybridge-thinking-block" });
-            block.createDiv({ cls: "buddybridge-thinking-header", text: "\u601D\u8003\u8FC7\u7A0B" });
-            block.createDiv({ cls: "buddybridge-thinking-body" });
+            const header2 = block.createDiv({ cls: "buddybridge-thinking-header", text: "\u601D\u8003\u8FC7\u7A0B \u25BE" });
+            header2.style.cursor = "pointer";
+            const body2 = block.createDiv({ cls: "buddybridge-thinking-body" });
+            header2.addEventListener("click", () => {
+              const isHidden = body2.style.display === "none";
+              body2.style.display = isHidden ? "" : "none";
+              header2.textContent = isHidden ? "\u601D\u8003\u8FC7\u7A0B \u25BE" : "\u601D\u8003\u8FC7\u7A0B \u25B8";
+            });
           }
           const body = block.querySelector(".buddybridge-thinking-body");
           if (body) {
+            console.log('[BB] thinkingContent length:', thinkingContent.length, 'preview:', thinkingContent.substring(0, 50));
             body.setText(thinkingContent);
           }
+          this.scrollToBottom();
         } else if (chunk.type === "tool") {
           bubble.createDiv({
             cls: "buddybridge-tool-call",
@@ -642,6 +717,7 @@ ${text}` : text;
             span = bubble.createSpan({ text: "" });
           }
           span.textContent = textContent;
+          this.scrollToBottom();
         } else if (chunk.type === "error") {
           this.manager.updateMessage(convId, aiMsg.id, `\u9519\u8BEF: ${chunk.content}`);
           new import_obsidian.Notice(`\u8BF7\u6C42\u5931\u8D25: ${chunk.content}`);

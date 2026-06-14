@@ -235,8 +235,14 @@ ${text}`
                     let block = bubble.querySelector('.buddybridge-thinking-block') as HTMLElement;
                     if (!block) {
                         block = bubble.createDiv({ cls: 'buddybridge-thinking-block' });
-                        block.createDiv({ cls: 'buddybridge-thinking-header', text: '思考过程' });
-                        block.createDiv({ cls: 'buddybridge-thinking-body' });
+                        const header = block.createDiv({ cls: 'buddybridge-thinking-header', text: '思考过程 ▾' });
+                        header.style.cursor = 'pointer';
+                        const bodyDiv = block.createDiv({ cls: 'buddybridge-thinking-body' });
+                        header.addEventListener('click', () => {
+                            const hidden = bodyDiv.style.display === 'none';
+                            bodyDiv.style.display = hidden ? '' : 'none';
+                            header.textContent = hidden ? '思考过程 ▾' : '思考过程 ▸';
+                        });
                     }
                     const body = block.querySelector('.buddybridge-thinking-body') as HTMLElement;
                     if (body) {

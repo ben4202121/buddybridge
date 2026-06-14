@@ -1,5 +1,4 @@
 // Mock Obsidian API for testing
-// 参考 Claudian 的实现模式
 
 // ==================== 辅助：模拟 Obsidian 的 HTMLElement 扩展方法 ====================
 function createObsidianEl(tag: string): HTMLElement {

@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "minAppVersion": "0.15.0",
   "description": "在 Obsidian 中与 WorkBuddy/CodeBuddy 聊天，多轮对话，流式输出。",
-  "author": "",
-  "authorUrl": "",
+  "author": "BuddyBridge",
+  "authorUrl": "https://github.com/buddybridge/buddybridge",
   "isDesktopOnly": true
 }

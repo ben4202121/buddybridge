@@ -6,4 +6,5 @@ node_modules/
 .obsidian/
 .hotreload
 coverage/
-claudian-main/
+*.zip
+.codegraph/daemon.pid

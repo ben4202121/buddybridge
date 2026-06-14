@@ -42,6 +42,24 @@ function findNodeExecutable(): string | null {
         if (nvmSymlink) {
             nodeDirs.push(nvmSymlink);
         }
+
+        // Managed WorkBuddy Node.js (scan version directories)
+        if (home) {
+            const wbNodeVersionsDir = path.join(home, '.workbuddy', 'binaries', 'node', 'versions');
+            try {
+                const versions = fs.readdirSync(wbNodeVersionsDir);
+                for (const v of versions) {
+                    nodeDirs.push(path.join(wbNodeVersionsDir, v));
+                }
+            } catch {}
+        }
+
+        // Scan common drive letters for nodejs (handles non-C: installs)
+        for (const drive of ['C:', 'D:', 'E:']) {
+            if (drive + '\\' !== path.parse(programFiles).root.toUpperCase()) {
+                nodeDirs.push(path.join(drive + '\\Program Files', 'nodejs'));
+            }
+        }
     } else {
         nodeDirs.push(
             path.join(home, '.local', 'bin'),
@@ -68,6 +86,7 @@ function findNodeExecutable(): string | null {
         }
     }
 
+    console.log("[BB] WARNING: node not found in any search path, falling back to 'node'");
     return 'node';
 }
 
@@ -101,7 +120,19 @@ function resolveCodebuddyPath(customPath: string): string {
             path.join(programFiles, 'nodejs', 'codebuddy.cmd'),
             path.join(programFiles, 'nodejs', 'node_modules', '.bin', 'codebuddy.cmd'),
             path.join(programFilesX86, 'nodejs', 'node_modules', '.bin', 'codebuddy.cmd'),
+            path.join(programFiles, 'WorkBuddy', 'resources', 'app.asar.unpacked', 'cli', 'bin', 'codebuddy'),
+            path.join(programFiles, 'WorkBuddy', 'resources', 'app.asar.unpacked', 'cli', 'bin', 'codebuddy.cmd'),
+            path.join(programFilesX86, 'WorkBuddy', 'resources', 'app.asar.unpacked', 'cli', 'bin', 'codebuddy'),
+            path.join(programFilesX86, 'WorkBuddy', 'resources', 'app.asar.unpacked', 'cli', 'bin', 'codebuddy.cmd'),
         );
+
+        // Scan common drive letters for WorkBuddy installation
+        for (const drive of ['C:', 'D:', 'E:']) {
+            candidates.push(
+                path.join(drive + '\\Program Files', 'WorkBuddy', 'resources', 'app.asar.unpacked', 'cli', 'bin', 'codebuddy'),
+                path.join(drive + '\\Program Files', 'WorkBuddy', 'resources', 'app.asar.unpacked', 'cli', 'bin', 'codebuddy.cmd'),
+            );
+        }
     } else {
         candidates.push(
             path.join(home, '.local', 'bin', 'codebuddy'),
@@ -119,7 +150,24 @@ function resolveCodebuddyPath(customPath: string): string {
     if (npmPrefix) candidates.push(path.join(npmPrefix, 'bin', 'codebuddy'));
 
     for (const p of candidates) {
-        if (fs.existsSync(p)) return p;
+        if (fs.existsSync(p)) {
+            console.log('[BB] resolved codebuddy path:', p);
+            return p;
+        }
+    }
+
+    // 搜索系统 PATH
+    const envPath = process.env.PATH || '';
+    const pathSep = process.platform === 'win32' ? ';' : ':';
+    const exeNames = process.platform === 'win32' ? ['codebuddy.cmd', 'codebuddy.exe', 'codebuddy'] : ['codebuddy'];
+    for (const dir of envPath.split(pathSep)) {
+        if (!dir) continue;
+        for (const name of exeNames) {
+            try {
+                const p = path.join(dir, name);
+                if (fs.existsSync(p)) return p;
+            } catch {}
+        }
     }
 
     return 'codebuddy';
@@ -139,7 +187,7 @@ function parseStreamLine(line: string): StreamChunk | null {
 
             for (const block of msg.content) {
                 if (block.type === 'thinking') {
-                    return { type: 'thinking', content: block.text || '' };
+                    return { type: 'thinking', content: block.thinking || '' };
                 }
                 if (block.type === 'text') {
                     return { type: 'text', content: block.text || '' };
@@ -157,7 +205,7 @@ function parseStreamLine(line: string): StreamChunk | null {
         }
 
         if (event.type === 'thinking') {
-            return { type: 'thinking', content: event.text || '' };
+            return { type: 'thinking', content: event.thinking || '' };
         }
         if (event.type === 'message_delta') {
             return { type: 'text', content: event.text || '' };
@@ -191,6 +239,17 @@ function parseStreamLine(line: string): StreamChunk | null {
     }
 }
 
+// ===== 判断是否需要 node 来执行 =====
+
+function isWindowsWrapper(scriptPath: string): boolean {
+    return scriptPath.endsWith('.cmd') || scriptPath.endsWith('.exe') || scriptPath.endsWith('.bat');
+}
+
+function isBareFallback(scriptPath: string): boolean {
+    // 兜底值 'codebuddy' 不是真实文件路径，让 OS 在 PATH 里找
+    return scriptPath === 'codebuddy' || !path.isAbsolute(scriptPath);
+}
+
 export class BuddyBridgeAPI {
     private timeout: number;
     private scriptPath: string;
@@ -214,7 +273,6 @@ export class BuddyBridgeAPI {
 
     async *sendMessage(sessionId: string, text: string, vaultPath?: string): AsyncGenerator<StreamChunk> {
         const scriptPath = this.scriptPath;
-        const nodeBin = findNodeExecutable() || 'node';
         const procOptions: any = {
             timeout: this.timeout,
             stdio: ['ignore', 'pipe', 'pipe'],
@@ -224,8 +282,19 @@ export class BuddyBridgeAPI {
         }
 
         // --print --output-format stream-json: 结构化流式输出
-        const args = [scriptPath, '--print', '--output-format', 'stream-json', '--session-id', sessionId, text];
-        const proc = spawn(nodeBin, args, procOptions);
+        const cliArgs = ['--print', '--output-format', 'stream-json', '--session-id', sessionId, text];
+
+        // 根据实际路径类型选择启动方式：
+        // - .cmd/.exe/.bat → 直接 spawn（Windows 可执行/包装脚本）
+        // - 兜底 'codebuddy' → 直接 spawn（让 OS 在 PATH 中查找）
+        // - 纯脚本文件（无扩展名或 .js）→ spawn via node
+        let proc;
+        if (isWindowsWrapper(scriptPath) || isBareFallback(scriptPath)) {
+            proc = spawn(scriptPath, cliArgs, procOptions);
+        } else {
+            const nodeBin = findNodeExecutable() || 'node';
+            proc = spawn(nodeBin, [scriptPath, ...cliArgs], procOptions);
+        }
 
         let buffer = '';
         let errOut = '';
@@ -273,10 +342,18 @@ export class BuddyBridgeAPI {
         });
 
         proc.on('error', (e) => {
-            console.log('[BB] spawn err:', e.message);
+            console.log('[BB] spawn err:', e.message, '| scriptPath:', scriptPath);
             closed = true;
             if (resolveQueue) {
-                resolveQueue({ value: { type: 'error', content: e.message }, done: true });
+                let hint = e.message;
+                if (e.message.includes('ENOENT')) {
+                    if (scriptPath === 'codebuddy') {
+                        hint = '找不到 codebuddy CLI。请确认已安装 WorkBuddy 桌面版，或在插件设置中指定 codebuddy 路径。';
+                    } else if (!isWindowsWrapper(scriptPath) && !isBareFallback(scriptPath)) {
+                        hint = `找不到 Node.js 来运行 codebuddy (路径: ${scriptPath})。请确认已安装 Node.js。`;
+                    }
+                }
+                resolveQueue({ value: { type: 'error', content: hint }, done: true });
                 resolveQueue = null;
             }
         });

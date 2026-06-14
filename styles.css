@@ -190,18 +190,6 @@
     }
 }
 
-/* ==================== 思考块 ==================== */
-.buddybridge-thinking-block {
-    margin: 4px 0;
-    border: 1px solid var(--background-modifier-border);
-    border-radius: 6px;
-    overflow: hidden;
-}
-
-.buddybridge-thinking-toggle {
-    display: none;
-}
-
 
 /* ==================== 工具调用 ==================== */
 .buddybridge-tool-call {
@@ -276,8 +264,13 @@
     border-radius: 2px;
 }
 
-/* 不可见辅助类 */
-.buddybridge-hidden { display: none !important; }
+/* ==================== 回答正文 ==================== */
+.buddybridge-bubble > span {
+    font-size: 14px !important;
+    color: var(--text-normal) !important;
+    line-height: 1.7 !important;
+}
+
 /* ==================== 思考块 ==================== */
 .buddybridge-thinking-block {
     margin: 4px 0;
@@ -288,19 +281,36 @@
 
 .buddybridge-thinking-header {
     padding: 4px 8px;
-    font-size: 12px;
-    color: var(--text-muted);
+    font-size: 11px;
+    color: var(--text-faint);
     background: var(--background-primary);
     border-bottom: 1px solid var(--background-modifier-border);
 }
 
+.buddybridge-thinking-header {
+    padding: 4px 8px;
+    font-size: 11px !important;
+    color: var(--text-faint) !important;
+    background: var(--background-primary) !important;
+    border-bottom: 1px solid var(--background-modifier-border);
+    cursor: pointer;
+    user-select: none;
+}
+
 .buddybridge-thinking-body {
-    padding: 6px 8px;
-    font-size: 12px;
-    color: var(--text-muted);
-    background: var(--background-primary-alt);
-    white-space: pre-wrap;
+    display: block;
+    padding: 8px 10px;
+    font-size: 11px !important;
+    font-family: "Cascadia Code", "Fira Code", Consolas, monospace !important;
+    color: var(--text-muted) !important;
+    background: var(--background-primary) !important;
+    white-space: pre-wrap !important;
     word-break: break-word;
     max-height: 200px;
     overflow-y: auto;
+    border-left: 3px solid var(--text-faint);
+    line-height: 1.4 !important;
 }
+
+/* 不可见辅助类 */
+.buddybridge-hidden { display: none !important; }
