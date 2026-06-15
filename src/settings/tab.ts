@@ -13,7 +13,7 @@ export class BuddyBridgeSettingTab extends PluginSettingTab {
         const { containerEl } = this;
         containerEl.empty();
 
-        new Setting(containerEl).setName('Settings').setHeading();
+        new Setting(containerEl).setName('Configuration').setHeading();
 
         new Setting(containerEl)
             .setName('CodeBuddy 路径')
