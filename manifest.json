@@ -1,7 +1,7 @@
 {
   "id": "buddybridge",
   "name": "BuddyBridge",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "minAppVersion": "1.0.0",
   "description": "Chat with WorkBuddy/CodeBuddy AI. Multi-turn conversation, streaming output, thinking process visualization.",
   "author": "BuddyBridge",
