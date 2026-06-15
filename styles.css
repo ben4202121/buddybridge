@@ -269,6 +269,9 @@
     font-size: 14px !important;
     color: var(--text-normal) !important;
     line-height: 1.7 !important;
+    overflow-wrap: break-word !important;
+    word-break: break-word !important;
+    max-width: 100% !important;
 }
 
 /* ==================== 思考块 ==================== */
