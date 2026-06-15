@@ -61,7 +61,7 @@ export default class BuddyBridgePlugin extends Plugin {
         let leaf = workspace.getLeavesOfType(VIEW_TYPE_CHAT)[0];
 
         if (!leaf) {
-            const rightLeaf = workspace.getRightLeaf(false);
+            const rightLeaf = workspace.getRightLeaf();
             if (rightLeaf) {
                 await rightLeaf.setViewState({ type: VIEW_TYPE_CHAT });
                 leaf = rightLeaf;
@@ -69,7 +69,7 @@ export default class BuddyBridgePlugin extends Plugin {
         }
 
         if (leaf) {
-            workspace.revealLeaf(leaf);
+            workspace.setActiveLeaf(leaf, { focus: true });
         }
     }
 
