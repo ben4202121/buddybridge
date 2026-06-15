@@ -199,7 +199,7 @@ function parseStreamLine(line) {
   try {
     const obj = JSON.parse(line);
     const event = obj.event || obj;
-    if (obj.type === "assistant") {
+    if (obj.type === "assistant" || obj.type === "user") {
       const msg = obj.message;
       if (!msg || !Array.isArray(msg.content))
         return null;
@@ -210,7 +210,16 @@ function parseStreamLine(line) {
         if (block.type === "text") {
           return { type: "text", content: block.text || "" };
         }
-        if (block.type === "tool_call") {
+        if (block.type === "tool_result") {
+              var rt = "";
+              if (Array.isArray(block.content)) {
+                for (var ci = 0; ci < block.content.length; ci++) {
+                  if (block.content[ci].type === "text") rt += (block.content[ci].text || "");
+                }
+              }
+              return { type: "tool", content: "", toolName: "结果", toolDetail: rt.substring(0, 200) + (rt.length > 200 ? "..." : "") };
+            }
+            if (block.type === "tool_call") {
           return {
             type: "tool",
             content: "",
@@ -705,10 +714,27 @@ ${text}` : text;
           }
           this.scrollToBottom();
         } else if (chunk.type === "tool") {
-          bubble.createDiv({
-            cls: "buddybridge-tool-call",
-            text: `\u{1F527} ${chunk.toolName || ""} ${chunk.toolDetail || ""}`
-          });
+          let toolsBlock = bubble.querySelector(".buddybridge-tools-block");
+          if (!toolsBlock) {
+            toolsBlock = bubble.createDiv({ cls: "buddybridge-tools-block" });
+            var thdr = toolsBlock.createDiv({ cls: "buddybridge-tools-header" });
+            thdr.style.cursor = "pointer";
+            thdr.textContent = "\u{1F527} 工具调用 \u25B8";
+            var tlist = toolsBlock.createDiv({ cls: "buddybridge-tools-list" });
+            tlist.style.display = "none";
+            thdr.addEventListener("click", function() {
+              var hidden = tlist.style.display === "none";
+              tlist.style.display = hidden ? "" : "none";
+              thdr.textContent = hidden ? "\u{1F527} 工具调用 \u25BE" : "\u{1F527} 工具调用 \u25B8";
+            });
+          }
+          var list = toolsBlock.querySelector(".buddybridge-tools-list");
+          if (list) {
+            list.createDiv({
+              cls: "buddybridge-tool-call",
+              text: chunk.toolName ? chunk.toolName + " " + (chunk.toolDetail || "") : (chunk.toolDetail || "")
+            });
+          }
         } else if (chunk.type === "text") {
           textContent += chunk.content;
           this.manager.updateMessage(convId, aiMsg.id, textContent);

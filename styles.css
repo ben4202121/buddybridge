@@ -314,3 +314,34 @@
 
 /* 不可见辅助类 */
 .buddybridge-hidden { display: none !important; }
+
+/* ==================== 工具调用块 ==================== */
+.buddybridge-tools-block {
+    margin: 4px 0;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 6px;
+    overflow: hidden;
+}
+.buddybridge-tools-header {
+    padding: 4px 8px;
+    font-size: 11px;
+    color: var(--text-faint);
+    background: var(--background-primary);
+    border-bottom: 1px solid var(--background-modifier-border);
+    cursor: pointer;
+    user-select: none;
+}
+.buddybridge-tools-list {
+    padding: 4px 0;
+}
+.buddybridge-tools-list .buddybridge-tool-call {
+    padding: 2px 8px;
+    margin: 1px 0;
+    font-size: 11px;
+    color: var(--text-faint);
+    border-left: 2px solid var(--text-faint);
+    border-radius: 0 4px 4px 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}

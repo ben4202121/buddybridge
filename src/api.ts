@@ -181,7 +181,7 @@ function parseStreamLine(line: string): StreamChunk | null {
         const obj = JSON.parse(line);
         const event = obj.event || obj;
 
-        if (obj.type === 'assistant') {
+        if (obj.type === 'assistant' || obj.type === 'user') {
             const msg = obj.message;
             if (!msg || !Array.isArray(msg.content)) return null;
 

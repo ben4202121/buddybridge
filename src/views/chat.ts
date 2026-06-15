@@ -251,11 +251,28 @@ ${text}`
                         body.setText(thinkingContent);
                     }
                 } else if (chunk.type === 'tool') {
-                    // 工具调用行
-                    bubble.createDiv({
-                        cls: 'buddybridge-tool-call',
-                        text: `🔧 ${chunk.toolName || ''} ${chunk.toolDetail || ''}`
-                    });
+                    let toolsBlock = bubble.querySelector('.buddybridge-tools-block') as HTMLElement;
+                    if (!toolsBlock) {
+                        toolsBlock = bubble.createDiv({ cls: 'buddybridge-tools-block' });
+                        const hdr = toolsBlock.createDiv({ cls: 'buddybridge-tools-header', text: '🔧 工具调用 ▾' });
+                        hdr.style.cursor = 'pointer';
+                        hdr.addEventListener('click', () => {
+                            const list = toolsBlock.querySelector('.buddybridge-tools-list') as HTMLElement;
+                            if (list) {
+                                const hidden = list.style.display === 'none';
+                                list.style.display = hidden ? '' : 'none';
+                                hdr.textContent = hidden ? '🔧 工具调用 ▾' : '🔧 工具调用 ▸';
+                            }
+                        });
+                        toolsBlock.createDiv({ cls: 'buddybridge-tools-list' });
+                    }
+                    const list = toolsBlock.querySelector('.buddybridge-tools-list') as HTMLElement;
+                    if (list) {
+                        list.createDiv({
+                            cls: 'buddybridge-tool-call',
+                            text: `${chunk.toolName || ''} ${chunk.toolDetail || ''}`
+                        });
+                    }
                 } else if (chunk.type === 'text') {
                     textContent += chunk.content;
                     this.manager.updateMessage(convId, aiMsg.id, textContent, true);
@@ -284,8 +301,6 @@ ${text}`
         } finally {
             this.isStreaming = false;
             this.streamingMsgId = null;
-            // 不在 finally 中 renderMessages(), 避免清除思考块
-            // 仅在出错时重新渲染
         }
     }
 
