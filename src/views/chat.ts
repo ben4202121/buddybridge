@@ -255,7 +255,6 @@ ${text}`
                     if (!toolsBlock) {
                         toolsBlock = bubble.createDiv({ cls: 'buddybridge-tools-block' });
                         const hdr = toolsBlock.createDiv({ cls: 'buddybridge-tools-header', text: '🔧 工具调用 ▾' });
-                        hdr.style.cursor = 'pointer';
                         hdr.addEventListener('click', () => {
                             const list = toolsBlock.querySelector('.buddybridge-tools-list') as HTMLElement;
                             if (list) {
