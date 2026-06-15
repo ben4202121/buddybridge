@@ -238,7 +238,7 @@ ${text}`
                     if (!block) {
                         block = bubble.createDiv({ cls: 'buddybridge-thinking-block' });
                         const header = block.createDiv({ cls: 'buddybridge-thinking-header', text: '思考过程 ▾' });
-                        header.style.cursor = 'pointer';
+                        
                         const bodyDiv = block.createDiv({ cls: 'buddybridge-thinking-body' });
                         header.addEventListener('click', () => {
                             const hidden = bodyDiv.style.display === 'none';

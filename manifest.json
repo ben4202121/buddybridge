@@ -2,9 +2,9 @@
   "id": "buddybridge",
   "name": "BuddyBridge",
   "version": "1.0.0",
-  "minAppVersion": "0.15.0",
-  "description": "在 Obsidian 中与 WorkBuddy/CodeBuddy 聊天，多轮对话，流式输出。",
+  "minAppVersion": "1.0.0",
+  "description": "Chat with WorkBuddy/CodeBuddy AI. Multi-turn conversation, streaming output, thinking process visualization.",
   "author": "BuddyBridge",
-  "authorUrl": "https://github.com/buddybridge/buddybridge",
+  "authorUrl": "https://github.com/ben4202121",
   "isDesktopOnly": true
 }

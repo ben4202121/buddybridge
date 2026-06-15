@@ -283,6 +283,7 @@
 }
 
 .buddybridge-thinking-header {
+    cursor: pointer;
     padding: 4px 8px;
     font-size: 11px;
     color: var(--text-faint);
@@ -291,6 +292,7 @@
 }
 
 .buddybridge-thinking-header {
+    cursor: pointer;
     padding: 4px 8px;
     font-size: 11px !important;
     color: var(--text-faint) !important;
