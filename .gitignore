@@ -8,3 +8,4 @@ node_modules/
 coverage/
 *.zip
 .codegraph/daemon.pid
+fix.mjs
