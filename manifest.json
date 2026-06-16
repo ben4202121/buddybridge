@@ -1,9 +1,9 @@
 {
   "id": "buddybridge",
   "name": "BuddyBridge",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "minAppVersion": "1.5.0",
-  "description": "Chat with WorkBuddy/CodeBuddy AI. Multi-turn conversation, streaming output, thinking process visualization.",
+  "description": "An unofficial bridge for WorkBuddy and CodeBuddy, featuring multi-turn chat and streaming responses.",
   "author": "ben4202121",
   "authorUrl": "https://github.com/ben4202121",
   "isDesktopOnly": true
