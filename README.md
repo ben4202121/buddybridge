@@ -64,7 +64,7 @@
 
 | 现象                          | 原因                       | 解决                         |
 | --------------------------- | ------------------------ | -------------------------- |
-| `找不到 codebuddy CLI`         | 未安装 WorkBuddy 或不在 PATH 中 | 完成上方的「环境初始化」，或在插件设置中手动指定路径 |
+| `找不到 codebuddy CLI`         | 自动检测未找到（如自定义安装路径） | 在插件设置中手动填写路径。默认路径：`WorkBuddy安装目录\resources\app.asar.unpacked\cli\bin\codebuddy`。右键 WorkBuddy 快捷方式 → 打开文件位置 可找到安装目录 |
 | `找不到 Node.js 来运行 codebuddy` | Node.js 未正确配置            | 完成上方的「环境初始化」               |
 
 ## 安装

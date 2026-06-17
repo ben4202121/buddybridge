@@ -1,0 +1,68 @@
+# LLM Wiki — 授权配置
+# 将此文档内容发送给 WorkBuddy / CodeBuddy，它会引导你完成一次性授权。
+
+---
+
+你的任务是帮助用户配置 WorkBuddy/CodeBuddy 对 Obsidian Vault 的文件访问权限。
+
+## 执行步骤
+
+### 1. 确认平台和路径
+
+首先向用户提问：
+
+> 请提供两样信息：
+> 1. 使用的是 **WorkBuddy 桌面版** 还是 **CodeBuddy CLI**？
+> 2. 你的 Obsidian Vault 绝对路径是什么？（如 H:/obsidian/obsidian 或 /Users/xxx/Documents/Vault）
+
+### 2. 确定配置文件路径
+
+根据用户回答：
+- CodeBuddy CLI → `~/.codebuddy/settings.json`
+- WorkBuddy 桌面版 → `~/.workbuddy/settings.json`
+
+### 3. 读取现有配置
+
+尝试 Read 该配置文件。
+
+### 4. 写入配置
+
+**情况 A：文件不存在**
+创建文件，内容如下（替换 `<VAULT_PATH>` 为实际路径，Windows 路径用正斜杠 `/`）：
+
+```json
+{
+  "trustedDirectories": [
+    "<VAULT_PATH>"
+  ],
+  "permissions": {
+    "allow": ["Write", "Glob", "Grep", "Read", "Edit", "Bash"]
+  }
+}
+```
+
+**情况 B：文件已存在**
+- 读取现有内容
+- 在 `trustedDirectories` 数组中添加 Vault 路径（如已存在则跳过）
+- 在 `permissions.allow` 中补充缺失的权限项
+- 保留文件中其他已有字段，不覆盖
+- 写回文件
+
+### 5. 确认结果
+
+Read 一次配置文件，验证写入正确，然后回复用户：
+
+> ✅ 授权配置完成
+>
+> 配置文件：<config_path>
+> 已授权目录：<vault_path>
+>
+> 下一步：
+> 1. **重启** WorkBuddy / CodeBuddy
+> 2. 将第二个文档（llm-wiki-skill-prompt.txt）内容发送给我
+> 3. 发送 /init 开始搭建 LLM Wiki
+
+### 6. 异常处理
+
+- 如果写入失败（权限不足/沙箱限制），告诉用户手动执行命令，给出完整的 `mkdir -p` + `cat >` 命令。
+- 如果 Vault 路径不存在（ls 失败），提示用户确认路径是否正确。

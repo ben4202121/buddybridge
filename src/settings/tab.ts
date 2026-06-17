@@ -17,9 +17,9 @@ export class BuddyBridgeSettingTab extends PluginSettingTab {
 
         new Setting(containerEl)
             .setName('CodeBuddy 路径')
-            .setDesc('codebuddy CLI 可执行文件路径（留空则自动查找）')
+            .setDesc('codebuddy 可执行文件路径。如 WorkBuddy 自定义安装，路径通常为：安装目录\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy（右键 WorkBuddy 快捷方式 → 打开文件位置 可找到安装目录）')
             .addText(text => text
-                .setPlaceholder('自动检测')
+                .setPlaceholder('WorkBuddy安装目录\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy')
                 .setValue(this.plugin.settings.codebuddyPath)
                 .onChange(async (value) => {
                     this.plugin.settings.codebuddyPath = value;
