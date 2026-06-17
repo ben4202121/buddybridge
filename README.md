@@ -67,6 +67,12 @@
 | `找不到 codebuddy CLI`         | 自动检测未找到（如自定义安装路径） | 在插件设置中手动填写路径。默认路径：`WorkBuddy安装目录\resources\app.asar.unpacked\cli\bin\codebuddy`。右键 WorkBuddy 快捷方式 → 打开文件位置 可找到安装目录 |
 | `找不到 Node.js 来运行 codebuddy` | Node.js 未正确配置            | 完成上方的「环境初始化」               |
 
+## 权限授权
+
+插件需要 CodeBuddy 对 Vault 有读写权限才能正常工作。如果使用时提示权限不足，将 `提示词-发给workbuddy让它给buddybridge授权.md` 的完整内容发送给 WorkBuddy/CodeBuddy 执行一次即可。
+
+完成后**完全退出** WorkBuddy/CodeBuddy（系统托盘右键退出），重新打开即可生效。
+
 ## 安装
 
 1. 下载 `main.js`、`manifest.json`、`styles.css`
