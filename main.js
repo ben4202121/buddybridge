@@ -798,7 +798,7 @@ var BuddyBridgeSettingTab = class extends import_obsidian2.PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     containerEl.createEl("h2", { text: "BuddyBridge \u8BBE\u7F6E" });
-    new import_obsidian2.Setting(containerEl).setName("CodeBuddy \u8DEF\u5F84").setDesc("codebuddy CLI \u53EF\u6267\u884C\u6587\u4EF6\u8DEF\u5F84\uFF08\u7559\u7A7A\u5219\u81EA\u52A8\u67E5\u627E\uFF09").addText((text) => text.setPlaceholder("\u81EA\u52A8\u68C0\u6D4B").setValue(this.plugin.settings.codebuddyPath).onChange(async (value) => {
+    new import_obsidian2.Setting(containerEl).setName("CodeBuddy \u8DEF\u5F84").setDesc("codebuddy \u53EF\u6267\u884C\u6587\u4EF6\u8DEF\u5F84\u3002\u5982 WorkBuddy \u81EA\u5B9A\u4E49\u5B89\u88C5\uFF0C\u8DEF\u5F84\u901A\u5E38\u4E3A\uFF1A\u5B89\u88C5\u76EE\u5F55\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy\uFF08\u53F3\u952E WorkBuddy \u5FEB\u6377\u65B9\u5F0F \u2192 \u6253\u5F00\u6587\u4EF6\u4F4D\u7F6E \u53EF\u627E\u5230\u5B89\u88C5\u76EE\u5F55\uFF09").addText((text) => text.setPlaceholder("WorkBuddy\u5B89\u88C5\u76EE\u5F55\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy").setValue(this.plugin.settings.codebuddyPath).onChange(async (value) => {
       this.plugin.settings.codebuddyPath = value;
       this.plugin.api.setCodebuddyPath(value);
       await this.plugin.saveSettings();
