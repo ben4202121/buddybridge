@@ -61,7 +61,7 @@ export default class BuddyBridgePlugin extends Plugin {
         let leaf = workspace.getLeavesOfType(VIEW_TYPE_CHAT)[0];
 
         if (!leaf) {
-            const rightLeaf = workspace.getRightLeaf();
+            const rightLeaf = workspace.getRightLeaf(false);
             if (rightLeaf) {
                 await rightLeaf.setViewState({ type: VIEW_TYPE_CHAT });
                 leaf = rightLeaf;
@@ -76,7 +76,7 @@ export default class BuddyBridgePlugin extends Plugin {
     async loadPersistedConversations() {
         const data = await this.loadData();
         if (this.chatView) {
-            this.chatView.loadConversations(data?.conversations || []);
+            await this.chatView.loadConversations(data?.conversations || []);
         }
     }
 

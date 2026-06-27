@@ -1,3 +1,14 @@
+.buddybridge-chat-container {
+    --buddybridge-gap-xs: 4px;
+    --buddybridge-gap-sm: 6px;
+    --buddybridge-gap-md: 8px;
+    --buddybridge-gap-lg: 12px;
+    --buddybridge-radius-sm: 4px;
+    --buddybridge-radius-md: 6px;
+    --buddybridge-radius-lg: 8px;
+    --buddybridge-radius-xl: 14px;
+}
+
 /* ==================== 聊天容器 ==================== */
 .buddybridge-chat-container {
     display: flex;
@@ -10,30 +21,38 @@
 .buddybridge-tab-bar {
     display: flex;
     align-items: center;
-    gap: 4px;
-    padding: 6px 8px;
+    gap: var(--buddybridge-gap-xs);
+    padding: var(--buddybridge-gap-md) var(--buddybridge-gap-lg);
     border-bottom: 1px solid var(--background-modifier-border);
     overflow-x: auto;
     flex-shrink: 0;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+}
+
+.buddybridge-tab-bar::-webkit-scrollbar {
+    display: none;
 }
 
 .buddybridge-tab {
     display: flex;
     align-items: center;
-    gap: 6px;
-    padding: 4px 10px;
-    border-radius: 6px;
-    font-size: 12px;
+    gap: var(--buddybridge-gap-sm);
+    padding: var(--buddybridge-gap-sm) 10px;
+    border-radius: var(--buddybridge-radius-md);
+    font-size: var(--font-ui-smaller);
     cursor: pointer;
     background: var(--background-secondary);
     color: var(--text-muted);
     white-space: nowrap;
     flex-shrink: 0;
     max-width: 140px;
+    transition: background-color 0.15s ease, color 0.15s ease;
 }
 
 .buddybridge-tab:hover {
     background: var(--background-modifier-hover);
+    color: var(--text-normal);
 }
 
 .buddybridge-tab-active {
@@ -47,53 +66,106 @@
 }
 
 .buddybridge-tab-close {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    border-radius: var(--buddybridge-radius-sm);
     font-size: 14px;
     font-weight: bold;
     opacity: 0.5;
     flex-shrink: 0;
+    transition: opacity 0.15s ease, background-color 0.15s ease;
 }
 
 .buddybridge-tab-close:hover {
     opacity: 1;
+    background: var(--background-modifier-hover);
+}
+
+.buddybridge-tab-close svg {
+    width: 12px;
+    height: 12px;
 }
 
 .buddybridge-new-chat-btn {
-    padding: 4px 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    padding: 0;
     border: none;
-    border-radius: 6px;
+    border-radius: var(--buddybridge-radius-md);
     background: var(--background-secondary);
     color: var(--text-muted);
-    font-size: 14px;
+    font-size: 16px;
+    line-height: 1;
     cursor: pointer;
     flex-shrink: 0;
+    transition: background-color 0.15s ease, color 0.15s ease;
 }
 
 .buddybridge-new-chat-btn:hover {
-    background: var(--interactive-accent);
-    color: var(--text-on-accent);
+    background: var(--background-modifier-hover);
+    color: var(--text-normal);
+}
+
+.buddybridge-new-chat-btn svg {
+    width: 14px;
+    height: 14px;
 }
 
 /* ==================== 消息区域 ==================== */
 .buddybridge-messages {
     flex: 1;
     overflow-y: auto;
-    padding: 12px;
+    padding: var(--buddybridge-gap-lg);
     display: flex;
     flex-direction: column;
     gap: 10px;
+    scrollbar-width: thin;
 }
 
 .buddybridge-empty-chat {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
     text-align: center;
-    color: var(--text-muted);
     padding: 40px 20px;
-    font-style: italic;
+    color: var(--text-muted);
+}
+
+.buddybridge-empty-chat-icon {
+    color: var(--text-faint);
+    margin-bottom: 12px;
+}
+
+.buddybridge-empty-chat-icon svg {
+    width: 40px;
+    height: 40px;
+}
+
+.buddybridge-empty-chat-title {
+    font-size: 20px;
+    font-weight: 300;
+    letter-spacing: -0.01em;
+    margin-bottom: 6px;
+    color: var(--text-muted);
+}
+
+.buddybridge-empty-chat-subtitle {
+    font-size: var(--font-ui-small);
+    color: var(--text-faint);
 }
 
 /* ==================== 消息行 ==================== */
 .buddybridge-message-row {
     display: flex;
-    max-width: 90%;
+    max-width: 95%;
 }
 
 .buddybridge-message-user {
@@ -107,12 +179,12 @@
 
 /* ==================== 消息气泡 ==================== */
 .buddybridge-bubble {
-    padding: 8px 12px;
-    border-radius: 12px;
-    font-size: 13px;
-    line-height: 1.5;
+    padding: 10px 14px;
+    border-radius: var(--buddybridge-radius-xl);
+    font-size: var(--font-ui-small);
+    line-height: 1.6;
     word-break: break-word;
-    white-space: pre-wrap;
+    overflow-wrap: break-word;
     user-select: text;
 }
 
@@ -129,20 +201,21 @@
 .buddybridge-message-user .buddybridge-bubble {
     background: var(--interactive-accent);
     color: var(--text-on-accent);
-    border-bottom-right-radius: 4px;
+    border-bottom-right-radius: var(--buddybridge-radius-sm);
 }
 
 .buddybridge-message-assistant .buddybridge-bubble {
     background: var(--background-secondary);
     color: var(--text-normal);
-    border-bottom-left-radius: 4px;
+    border-bottom-left-radius: var(--buddybridge-radius-sm);
+    border-left: 3px solid var(--interactive-accent);
 }
 
 /* ==================== 思考中指示器 ==================== */
 .buddybridge-thinking {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: var(--buddybridge-gap-sm);
     padding: 2px 0;
     opacity: 1;
     transition: opacity 0.2s ease-out;
@@ -154,13 +227,13 @@
 
 .buddybridge-thinking-text {
     color: var(--text-muted);
-    font-size: 13px;
+    font-size: var(--font-ui-small);
 }
 
 .buddybridge-thinking-dots {
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: var(--buddybridge-gap-xs);
 }
 
 .buddybridge-dot {
@@ -190,23 +263,246 @@
     }
 }
 
-
-/* ==================== 工具调用 ==================== */
-.buddybridge-tool-call {
-    padding: 3px 8px;
-    margin: 2px 0;
-    font-size: 12px;
-    color: var(--text-muted);
-    border-left: 2px solid var(--interactive-accent);
+/* ==================== 思考块 ==================== */
+.buddybridge-thinking-block {
+    margin: var(--buddybridge-gap-md) 0;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--buddybridge-radius-lg);
+    overflow: hidden;
     background: var(--background-primary-alt);
-    border-radius: 0 4px 4px 0;
+}
+
+.buddybridge-thinking-header {
+    padding: var(--buddybridge-gap-sm) var(--buddybridge-gap-lg);
+    font-size: var(--font-ui-smaller);
+    color: var(--text-muted);
+    cursor: pointer;
+    user-select: none;
+    display: flex;
+    align-items: center;
+    gap: var(--buddybridge-gap-sm);
+    transition: background-color 0.15s ease;
+}
+
+.buddybridge-thinking-header:hover {
+    background: var(--background-modifier-hover);
+}
+
+.buddybridge-thinking-header-icon {
+    display: flex;
+    align-items: center;
+    color: var(--interactive-accent);
+}
+
+.buddybridge-thinking-header-icon svg {
+    width: 14px;
+    height: 14px;
+}
+
+.buddybridge-thinking-header-text {
+    flex: 1;
+}
+
+.buddybridge-thinking-body {
+    padding: 10px var(--buddybridge-gap-lg);
+    font-size: var(--font-ui-smaller);
+    font-family: var(--font-monospace);
+    color: var(--text-muted);
+    background: var(--background-primary);
+    border-top: 1px solid var(--background-modifier-border);
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 300px;
+    overflow-y: auto;
+    line-height: 1.5;
+}
+
+/* ==================== 工具调用块 ==================== */
+.buddybridge-tools-block {
+    margin: var(--buddybridge-gap-md) 0;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--buddybridge-radius-lg);
+    overflow: hidden;
+}
+
+.buddybridge-tools-header {
+    padding: var(--buddybridge-gap-sm) var(--buddybridge-gap-lg);
+    font-size: var(--font-ui-smaller);
+    color: var(--text-muted);
+    cursor: pointer;
+    user-select: none;
+    display: flex;
+    align-items: center;
+    gap: var(--buddybridge-gap-sm);
+    background: var(--background-primary-alt);
+    transition: background-color 0.15s ease;
+}
+
+.buddybridge-tools-header:hover {
+    background: var(--background-modifier-hover);
+}
+
+.buddybridge-tools-header-icon {
+    display: flex;
+    align-items: center;
+    color: var(--text-muted);
+}
+
+.buddybridge-tools-header-icon svg {
+    width: 14px;
+    height: 14px;
+}
+
+.buddybridge-tools-header-text {
+    flex: 1;
+}
+
+.buddybridge-tools-header-chevron {
+    font-size: 11px;
+    color: var(--text-faint);
+}
+
+.buddybridge-tools-list {
+    padding: var(--buddybridge-gap-xs) 0;
+}
+
+.buddybridge-tool-call {
+    display: flex;
+    align-items: center;
+    gap: var(--buddybridge-gap-sm);
+    padding: var(--buddybridge-gap-xs) var(--buddybridge-gap-lg);
+    font-size: 11px;
+    font-family: var(--font-monospace);
+    color: var(--text-muted);
+    border-left: 3px solid var(--interactive-accent);
+    background: transparent;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.buddybridge-tool-call + .buddybridge-tool-call {
+    border-top: 1px solid var(--background-modifier-border-hover);
+}
+
+.buddybridge-tool-call-icon {
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+    color: var(--text-faint);
+}
+
+.buddybridge-tool-call-icon svg {
+    width: 12px;
+    height: 12px;
+}
+
+.buddybridge-tool-call-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* ==================== Markdown 渲染内容 ==================== */
+.buddybridge-markdown-content {
+    /* 基础样式由 MarkdownRenderer 提供，此处仅做微调 */
+}
+
+.buddybridge-markdown-content .markdown-rendered {
+    font-size: var(--font-ui-small);
+    line-height: 1.7;
+}
+
+.buddybridge-markdown-content .markdown-rendered p {
+    margin: 0.3em 0;
+}
+
+.buddybridge-markdown-content .markdown-rendered p:first-child {
+    margin-top: 0;
+}
+
+.buddybridge-markdown-content .markdown-rendered p:last-child {
+    margin-bottom: 0;
+}
+
+/* 表格样式 */
+.buddybridge-bubble table {
+    margin: var(--buddybridge-gap-md) 0;
+    font-size: var(--font-ui-smaller);
+    border-collapse: collapse;
+}
+
+.buddybridge-bubble th,
+.buddybridge-bubble td {
+    padding: var(--buddybridge-gap-xs) var(--buddybridge-gap-sm);
+    border: 1px solid var(--background-modifier-border);
+}
+
+.buddybridge-bubble th {
+    background: var(--background-primary-alt);
+    font-weight: 600;
+}
+
+/* 代码块样式 */
+.buddybridge-bubble pre {
+    margin: var(--buddybridge-gap-md) 0;
+    max-width: 100%;
+    overflow-x: auto;
+    border-radius: var(--buddybridge-radius-md);
+}
+
+.buddybridge-bubble code {
+    font-size: 12px;
+    font-family: var(--font-monospace);
+}
+
+/* 列表样式 */
+.buddybridge-bubble ul,
+.buddybridge-bubble ol {
+    margin: var(--buddybridge-gap-xs) 0;
+    padding-left: 1.5em;
+}
+
+.buddybridge-bubble li {
+    margin: 2px 0;
+}
+
+/* 标题样式 */
+.buddybridge-bubble h1,
+.buddybridge-bubble h2,
+.buddybridge-bubble h3,
+.buddybridge-bubble h4 {
+    margin: var(--buddybridge-gap-md) 0 var(--buddybridge-gap-xs);
+    font-weight: 600;
+    border: none;
+}
+
+.buddybridge-bubble h1 { font-size: 1.3em; }
+.buddybridge-bubble h2 { font-size: 1.2em; }
+.buddybridge-bubble h3 { font-size: 1.1em; }
+.buddybridge-bubble h4 { font-size: 1em; }
+
+/* 引用块样式 */
+.buddybridge-bubble blockquote {
+    margin: 6px 0;
+    padding: var(--buddybridge-gap-xs) var(--buddybridge-gap-lg);
+    border-left: 3px solid var(--interactive-accent);
+    background: var(--background-primary-alt);
+    border-radius: 0 var(--buddybridge-radius-sm) var(--buddybridge-radius-sm) 0;
+}
+
+/* 分割线样式 */
+.buddybridge-bubble hr {
+    margin: 10px 0;
+    border: none;
+    border-top: 1px solid var(--background-modifier-border);
 }
 
 /* ==================== 输入区 ==================== */
 .buddybridge-input-area {
     display: flex;
-    gap: 8px;
-    padding: 10px 12px;
+    gap: var(--buddybridge-gap-md);
+    padding: 10px var(--buddybridge-gap-lg);
     border-top: 1px solid var(--background-modifier-border);
     flex-shrink: 0;
 }
@@ -214,35 +510,42 @@
 .buddybridge-input {
     flex: 1;
     resize: none;
-    padding: 8px 10px;
+    padding: var(--buddybridge-gap-sm) 10px;
     border: 1px solid var(--background-modifier-border);
-    border-radius: 8px;
-    font-size: 13px;
+    border-radius: var(--buddybridge-radius-lg);
+    font-size: var(--font-ui-small);
     line-height: 1.5;
     background: var(--background-primary);
     color: var(--text-normal);
     font-family: inherit;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .buddybridge-input:focus {
     outline: none;
     border-color: var(--interactive-accent);
+    box-shadow: 0 0 0 1px var(--interactive-accent);
 }
 
 .buddybridge-send-btn {
-    padding: 8px 16px;
+    padding: var(--buddybridge-gap-sm) 16px;
     border: none;
-    border-radius: 8px;
+    border-radius: var(--buddybridge-radius-lg);
     background: var(--interactive-accent);
     color: var(--text-on-accent);
-    font-size: 13px;
+    font-size: var(--font-ui-small);
     font-weight: 500;
     cursor: pointer;
     align-self: flex-end;
+    transition: opacity 0.15s ease, transform 0.1s ease;
 }
 
 .buddybridge-send-btn:hover {
-    opacity: 0.85;
+    opacity: 0.9;
+}
+
+.buddybridge-send-btn:active {
+    transform: scale(0.98);
 }
 
 /* ==================== 滚动条 ==================== */
@@ -264,89 +567,20 @@
     border-radius: 2px;
 }
 
-/* ==================== 回答正文 ==================== */
-.buddybridge-bubble > span {
-    font-size: 14px !important;
-    color: var(--text-normal) !important;
-    line-height: 1.7 !important;
-    overflow-wrap: break-word !important;
-    word-break: break-word !important;
-    max-width: 100% !important;
-}
-
-/* ==================== 思考块 ==================== */
-.buddybridge-thinking-block {
-    margin: 4px 0;
-    border: 1px solid var(--background-modifier-border);
-    border-radius: 6px;
-    overflow: hidden;
-}
-
-.buddybridge-thinking-header {
-    cursor: pointer;
-    padding: 4px 8px;
-    font-size: 11px;
-    color: var(--text-faint);
-    background: var(--background-primary);
-    border-bottom: 1px solid var(--background-modifier-border);
-}
-
-.buddybridge-thinking-header {
-    cursor: pointer;
-    padding: 4px 8px;
-    font-size: 11px !important;
-    color: var(--text-faint) !important;
-    background: var(--background-primary) !important;
-    border-bottom: 1px solid var(--background-modifier-border);
-    cursor: pointer;
-    user-select: none;
-}
-
-.buddybridge-thinking-body {
-    display: block;
-    padding: 8px 10px;
-    font-size: 11px !important;
-    font-family: "Cascadia Code", "Fira Code", Consolas, monospace !important;
-    color: var(--text-muted) !important;
-    background: var(--background-primary) !important;
-    white-space: pre-wrap !important;
-    word-break: break-word;
-    max-height: 200px;
-    overflow-y: auto;
-    border-left: 3px solid var(--text-faint);
-    line-height: 1.4 !important;
-}
-
-/* 不可见辅助类 */
+/* ==================== 不可见辅助类 ==================== */
 .buddybridge-hidden { display: none !important; }
 
-/* ==================== 工具调用块 ==================== */
-.buddybridge-tools-block {
-    margin: 4px 0;
-    border: 1px solid var(--background-modifier-border);
-    border-radius: 6px;
-    overflow: hidden;
-}
-.buddybridge-tools-header {
-    padding: 4px 8px;
-    font-size: 11px;
-    color: var(--text-faint);
-    background: var(--background-primary);
-    border-bottom: 1px solid var(--background-modifier-border);
-    cursor: pointer;
-    user-select: none;
-}
-.buddybridge-tools-list {
-    padding: 4px 0;
-}
-.buddybridge-tools-list .buddybridge-tool-call {
-    padding: 2px 8px;
-    margin: 1px 0;
-    font-size: 11px;
-    color: var(--text-faint);
-    border-left: 2px solid var(--text-faint);
-    border-radius: 0 4px 4px 0;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+/* ==================== Reduced motion ==================== */
+@media (prefers-reduced-motion: reduce) {
+    .buddybridge-dot,
+    .buddybridge-tab,
+    .buddybridge-new-chat-btn,
+    .buddybridge-tab-close,
+    .buddybridge-thinking-header,
+    .buddybridge-tools-header,
+    .buddybridge-input,
+    .buddybridge-send-btn {
+        animation: none;
+        transition: none;
+    }
 }

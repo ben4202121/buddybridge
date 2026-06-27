@@ -1,7 +1,7 @@
 {
   "id": "buddybridge",
   "name": "BuddyBridge",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "minAppVersion": "1.5.0",
   "description": "An unofficial bridge for WorkBuddy and CodeBuddy, featuring multi-turn chat and streaming responses.",
   "author": "ben4202121",

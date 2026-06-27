@@ -65,7 +65,10 @@ function findNodeExecutable() {
     if (localAppData) {
       nodeDirs.push(path.join(localAppData, "Programs", "nodejs"));
     }
-    // Managed WorkBuddy Node.js (scan version directories)
+    const nvmSymlink = process.env.NVM_SYMLINK;
+    if (nvmSymlink) {
+      nodeDirs.push(nvmSymlink);
+    }
     if (home) {
       const wbNodeVersionsDir = path.join(home, ".workbuddy", "binaries", "node", "versions");
       try {
@@ -76,15 +79,10 @@ function findNodeExecutable() {
       } catch (e) {
       }
     }
-    // Scan common drive letters for nodejs (handles non-C: installs)
     for (const drive of ["C:", "D:", "E:"]) {
       if (drive + "\\" !== path.parse(programFiles).root.toUpperCase()) {
         nodeDirs.push(path.join(drive + "\\Program Files", "nodejs"));
       }
-    }
-    const nvmSymlink = process.env.NVM_SYMLINK;
-    if (nvmSymlink) {
-      nodeDirs.push(nvmSymlink);
     }
   } else {
     nodeDirs.push(
@@ -130,21 +128,8 @@ function resolveCodebuddyPath(customPath) {
   if (process.platform === "win32") {
     candidates.push(
       path.join(localAppData, "Programs", "WorkBuddy", "resources", "app.asar.unpacked", "cli", "bin", "codebuddy"),
-      path.join(localAppData, "Programs", "WorkBuddy", "resources", "app.asar.unpacked", "cli", "bin", "codebuddy.cmd"),
-      path.join(programFiles, "WorkBuddy", "resources", "app.asar.unpacked", "cli", "bin", "codebuddy"),
-      path.join(programFiles, "WorkBuddy", "resources", "app.asar.unpacked", "cli", "bin", "codebuddy.cmd"),
-      path.join(programFilesX86, "WorkBuddy", "resources", "app.asar.unpacked", "cli", "bin", "codebuddy"),
-      path.join(programFilesX86, "WorkBuddy", "resources", "app.asar.unpacked", "cli", "bin", "codebuddy.cmd")
+      path.join(localAppData, "Programs", "WorkBuddy", "resources", "app.asar.unpacked", "cli", "bin", "codebuddy.cmd")
     );
-    // Scan common drive letters for WorkBuddy installation
-    const wbDriveCandidates = [];
-    for (const drive of ["C:", "D:", "E:"]) {
-      wbDriveCandidates.push(
-        path.join(drive + "\\Program Files", "WorkBuddy", "resources", "app.asar.unpacked", "cli", "bin", "codebuddy"),
-        path.join(drive + "\\Program Files", "WorkBuddy", "resources", "app.asar.unpacked", "cli", "bin", "codebuddy.cmd")
-      );
-    }
-    candidates.push(...wbDriveCandidates);
     if (appData) {
       candidates.push(path.join(appData, "npm", "codebuddy"));
       candidates.push(path.join(appData, "npm", "codebuddy.cmd"));
@@ -152,8 +137,18 @@ function resolveCodebuddyPath(customPath) {
     candidates.push(
       path.join(programFiles, "nodejs", "codebuddy.cmd"),
       path.join(programFiles, "nodejs", "node_modules", ".bin", "codebuddy.cmd"),
-      path.join(programFilesX86, "nodejs", "node_modules", ".bin", "codebuddy.cmd")
+      path.join(programFilesX86, "nodejs", "node_modules", ".bin", "codebuddy.cmd"),
+      path.join(programFiles, "WorkBuddy", "resources", "app.asar.unpacked", "cli", "bin", "codebuddy"),
+      path.join(programFiles, "WorkBuddy", "resources", "app.asar.unpacked", "cli", "bin", "codebuddy.cmd"),
+      path.join(programFilesX86, "WorkBuddy", "resources", "app.asar.unpacked", "cli", "bin", "codebuddy"),
+      path.join(programFilesX86, "WorkBuddy", "resources", "app.asar.unpacked", "cli", "bin", "codebuddy.cmd")
     );
+    for (const drive of ["C:", "D:", "E:"]) {
+      candidates.push(
+        path.join(drive + "\\Program Files", "WorkBuddy", "resources", "app.asar.unpacked", "cli", "bin", "codebuddy"),
+        path.join(drive + "\\Program Files", "WorkBuddy", "resources", "app.asar.unpacked", "cli", "bin", "codebuddy.cmd")
+      );
+    }
   } else {
     candidates.push(
       path.join(home, ".local", "bin", "codebuddy"),
@@ -210,16 +205,7 @@ function parseStreamLine(line) {
         if (block.type === "text") {
           return { type: "text", content: block.text || "" };
         }
-        if (block.type === "tool_result") {
-              var rt = "";
-              if (Array.isArray(block.content)) {
-                for (var ci = 0; ci < block.content.length; ci++) {
-                  if (block.content[ci].type === "text") rt += (block.content[ci].text || "");
-                }
-              }
-              return { type: "tool", content: "", toolName: "结果", toolDetail: rt.substring(0, 200) + (rt.length > 200 ? "..." : "") };
-            }
-            if (block.type === "tool_call") {
+        if (block.type === "tool_call") {
           return {
             type: "tool",
             content: "",
@@ -343,15 +329,15 @@ var BuddyBridgeAPI = class {
     proc.on("error", (e) => {
       console.log("[BB] spawn err:", e.message, "| scriptPath:", scriptPath);
       closed = true;
-      let hint = e.message;
-      if (e.message.includes("ENOENT")) {
-        if (scriptPath === "codebuddy") {
-          hint = "找不到 codebuddy CLI。请确认已安装 WorkBuddy 桌面版，或在插件设置中指定 codebuddy 路径。";
-        } else if (!isWindowsWrapper(scriptPath) && !isBareFallback(scriptPath)) {
-          hint = `找不到 Node.js 来运行 codebuddy (路径: ${scriptPath})。请确认已安装 Node.js。`;
-        }
-      }
       if (resolveQueue) {
+        let hint = e.message;
+        if (e.message.includes("ENOENT")) {
+          if (scriptPath === "codebuddy") {
+            hint = "\u627E\u4E0D\u5230 codebuddy CLI\u3002\u8BF7\u786E\u8BA4\u5DF2\u5B89\u88C5 WorkBuddy \u684C\u9762\u7248\uFF0C\u6216\u5728\u63D2\u4EF6\u8BBE\u7F6E\u4E2D\u6307\u5B9A codebuddy \u8DEF\u5F84\u3002";
+          } else if (!isWindowsWrapper(scriptPath) && !isBareFallback(scriptPath)) {
+            hint = `\u627E\u4E0D\u5230 Node.js \u6765\u8FD0\u884C codebuddy (\u8DEF\u5F84: ${scriptPath})\u3002\u8BF7\u786E\u8BA4\u5DF2\u5B89\u88C5 Node.js\u3002`;
+          }
+        }
         resolveQueue({ value: { type: "error", content: hint }, done: true });
         resolveQueue = null;
       }
@@ -387,6 +373,32 @@ var BuddyBridgeAPI = class {
 // src/views/chat.ts
 var import_obsidian = require("obsidian");
 
+// src/types.ts
+var CURRENT_SETTINGS_VERSION = 3;
+var DEFAULT_SETTINGS = {
+  codebuddyPath: "",
+  maxConversations: 20,
+  version: CURRENT_SETTINGS_VERSION
+};
+function migrateSettings(stored) {
+  if (!stored || typeof stored !== "object") {
+    return { ...DEFAULT_SETTINGS };
+  }
+  const settings = {
+    codebuddyPath: typeof stored.codebuddyPath === "string" ? stored.codebuddyPath : DEFAULT_SETTINGS.codebuddyPath,
+    maxConversations: typeof stored.maxConversations === "number" && stored.maxConversations > 0 ? stored.maxConversations : DEFAULT_SETTINGS.maxConversations,
+    version: CURRENT_SETTINGS_VERSION
+  };
+  return settings;
+}
+function generateId() {
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = Math.random() * 16 | 0;
+    const v = c === "x" ? r : r & 3 | 8;
+    return v.toString(16);
+  });
+}
+
 // src/chat/manager.ts
 var ConversationManager = class {
   constructor() {
@@ -397,10 +409,14 @@ var ConversationManager = class {
   setPersistCallback(callback) {
     this.persistCallback = callback;
   }
-  async save() {
+  async persist() {
     if (this.persistCallback) {
       await this.persistCallback(this.getAll());
     }
+  }
+  /** 显式触发持久化（流式结束后调用） */
+  async flush() {
+    await this.persist();
   }
   /** 从持久化数据加载对话 */
   load(conversations) {
@@ -415,7 +431,7 @@ var ConversationManager = class {
   }
   /** 创建新对话 */
   createConversation(title) {
-    const id = this.generateId();
+    const id = generateId();
     const conv = {
       id,
       title: title || "\u65B0\u5BF9\u8BDD",
@@ -427,7 +443,7 @@ var ConversationManager = class {
     };
     this.conversations.set(id, conv);
     this.activeId = id;
-    this.save();
+    this.persist();
     return conv;
   }
   /** 删除对话 */
@@ -439,7 +455,7 @@ var ConversationManager = class {
       const remaining = this.getAll();
       this.activeId = remaining.length > 0 ? remaining[0].id : null;
     }
-    this.save();
+    this.persist();
     return true;
   }
   /** 切换到指定对话 */
@@ -466,7 +482,7 @@ var ConversationManager = class {
     if (!conv)
       return null;
     const msg = {
-      id: this.generateId(),
+      id: generateId(),
       role,
       content,
       timestamp: Date.now()
@@ -476,11 +492,11 @@ var ConversationManager = class {
     if (conv.title === "\u65B0\u5BF9\u8BDD" && role === "user" && content.trim()) {
       conv.title = content.substring(0, 30) + (content.length > 30 ? "..." : "");
     }
-    this.save();
+    this.persist();
     return msg;
   }
   /** 更新指定消息内容（用于流式追加） */
-  updateMessage(convId, msgId, content) {
+  updateMessage(convId, msgId, content, skipSave = false) {
     const conv = this.conversations.get(convId);
     if (!conv)
       return false;
@@ -489,7 +505,8 @@ var ConversationManager = class {
       return false;
     msg.content = content;
     conv.updatedAt = Date.now();
-    this.save();
+    if (!skipSave)
+      this.persist();
     return true;
   }
   /** 设置对话的 Gateway sessionId */
@@ -499,13 +516,6 @@ var ConversationManager = class {
       return false;
     conv.sessionId = sessionId;
     return true;
-  }
-  generateId() {
-    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
-      const r = Math.random() * 16 | 0;
-      const v = c === "x" ? r : r & 3 | 8;
-      return v.toString(16);
-    });
   }
 };
 
@@ -518,6 +528,8 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
     this.streamingMsgId = null;
     this.api = api;
     this.manager = new ConversationManager();
+    this.markdownComponent = new import_obsidian.Component();
+    this.markdownComponent.load();
   }
   get vaultPath() {
     const adapter = this.app.vault.adapter;
@@ -541,10 +553,11 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
     container.addClass("buddybridge-chat-container");
     this.tabBar = container.createDiv({ cls: "buddybridge-tab-bar" });
     const newBtn = this.tabBar.createEl("button", {
-      text: "+",
+      text: "",
       cls: "buddybridge-new-chat-btn",
-      attr: { title: "\u65B0\u5EFA\u5BF9\u8BDD" }
+      attr: { title: "\u65B0\u5EFA\u5BF9\u8BDD", "aria-label": "\u65B0\u5EFA\u5BF9\u8BDD" }
     });
+    (0, import_obsidian.setIcon)(newBtn, "plus");
     newBtn.onclick = () => this.createNewChat();
     this.messageContainer = container.createDiv({ cls: "buddybridge-messages" });
     const inputArea = container.createDiv({ cls: "buddybridge-input-area" });
@@ -555,30 +568,34 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
     this.inputEl.onkeydown = (e) => this.handleKeydown(e);
     const sendBtn = inputArea.createEl("button", {
       text: "\u53D1\u9001",
-      cls: "buddybridge-send-btn"
+      cls: "buddybridge-send-btn",
+      attr: { "aria-label": "\u53D1\u9001" }
     });
     sendBtn.onclick = () => this.sendMessage();
   }
-  loadConversations(conversations) {
+  async onClose() {
+    this.markdownComponent.unload();
+  }
+  async loadConversations(conversations) {
     this.manager.load(conversations);
     this.renderTabs();
-    this.renderMessages();
+    await this.renderMessages();
   }
-  createNewChat() {
+  async createNewChat() {
     this.manager.createConversation();
     this.renderTabs();
-    this.renderMessages();
+    await this.renderMessages();
   }
-  switchToChat(id) {
+  async switchToChat(id) {
     this.manager.switchTo(id);
     this.renderTabs();
-    this.renderMessages();
+    await this.renderMessages();
   }
-  deleteChat(id, e) {
+  async deleteChat(id, e) {
     e.stopPropagation();
     this.manager.deleteConversation(id);
     this.renderTabs();
-    this.renderMessages();
+    await this.renderMessages();
   }
   /** 渲染标签栏 */
   renderTabs() {
@@ -594,30 +611,41 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
         tab.addClass("buddybridge-tab-active");
       }
       tab.createSpan({ text: conv.title, cls: "buddybridge-tab-title" });
-      const closeBtn = tab.createSpan({ text: "\xD7", cls: "buddybridge-tab-close" });
+      const closeBtn = tab.createSpan({
+        cls: "buddybridge-tab-close",
+        attr: { title: "\u5173\u95ED\u5BF9\u8BDD", "aria-label": "\u5173\u95ED\u5BF9\u8BDD", role: "button", tabindex: "0" }
+      });
+      (0, import_obsidian.setIcon)(closeBtn, "x");
       closeBtn.onclick = (e) => this.deleteChat(conv.id, e);
+      closeBtn.onkeydown = (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          this.deleteChat(conv.id, e);
+        }
+      };
       tab.onclick = () => this.switchToChat(conv.id);
       if (newBtn) {
         tab.after(newBtn);
       }
     }
   }
-  renderMessages() {
+  async renderMessages() {
     this.messageContainer.empty();
     const conv = this.manager.getActive();
     if (!conv) {
-      this.messageContainer.createDiv({
-        text: "\u70B9\u51FB + \u65B0\u5EFA\u5BF9\u8BDD",
-        cls: "buddybridge-empty-chat"
-      });
+      const empty = this.messageContainer.createDiv({ cls: "buddybridge-empty-chat" });
+      const icon = empty.createDiv({ cls: "buddybridge-empty-chat-icon" });
+      (0, import_obsidian.setIcon)(icon, "message-square");
+      empty.createDiv({ cls: "buddybridge-empty-chat-title", text: "\u5F00\u59CB\u65B0\u5BF9\u8BDD" });
+      empty.createDiv({ cls: "buddybridge-empty-chat-subtitle", text: "\u70B9\u51FB\u4E0A\u65B9 + \u6309\u94AE\u6216\u8F93\u5165\u6D88\u606F\u5F00\u59CB\u804A\u5929" });
       return;
     }
     for (const msg of conv.messages) {
-      this.renderMessage(msg);
+      await this.renderMessage(msg);
     }
     this.scrollToBottom();
   }
-  renderMessage(msg) {
+  async renderMessage(msg) {
     const row = this.messageContainer.createDiv({
       cls: `buddybridge-message-row buddybridge-message-${msg.role}`
     });
@@ -625,6 +653,8 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
     const isWaiting = msg.role === "assistant" && msg.content === "" && msg.id === this.streamingMsgId;
     if (isWaiting) {
       this.renderThinkingIndicator(bubble);
+    } else if (msg.role === "assistant") {
+      await this.renderMarkdownContent(bubble, msg.content);
     } else {
       bubble.createSpan({ text: msg.content });
     }
@@ -637,6 +667,28 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
     for (let i = 0; i < 3; i++) {
       dots.createSpan({ cls: "buddybridge-dot" });
     }
+  }
+  async renderMarkdownContent(bubble, content) {
+    if (!content)
+      return;
+    const thinkingBlock = bubble.querySelector(".buddybridge-thinking-block");
+    const toolsBlock = bubble.querySelector(".buddybridge-tools-block");
+    let markdownContainer = bubble.querySelector(".buddybridge-markdown-content");
+    if (!markdownContainer) {
+      markdownContainer = bubble.createDiv({ cls: "buddybridge-markdown-content" });
+      if (thinkingBlock) {
+        bubble.insertBefore(markdownContainer, thinkingBlock);
+      } else if (toolsBlock) {
+        bubble.insertBefore(markdownContainer, toolsBlock);
+      }
+    }
+    markdownContainer.empty();
+    await import_obsidian.MarkdownRenderer.renderMarkdown(
+      content,
+      markdownContainer,
+      "",
+      this.markdownComponent
+    );
   }
   async handleKeydown(e) {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -661,13 +713,13 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
     const convId = conv.id;
     this.manager.addMessage(convId, "user", text);
     this.inputEl.value = "";
-    this.renderMessages();
+    await this.renderMessages();
     const aiMsg = this.manager.addMessage(convId, "assistant", "");
     if (!aiMsg)
       return;
     this.streamingMsgId = aiMsg.id;
     this.isStreaming = true;
-    this.renderMessages();
+    await this.renderMessages();
     let firstChunk = true;
     let thinkingContent = "";
     let textContent = "";
@@ -678,12 +730,13 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
 ---
 
 ${text}` : text;
+      const streamingBubble = this.messageContainer.querySelector(
+        `.buddybridge-message-assistant:last-child .buddybridge-bubble`
+      );
       for await (const chunk of this.api.sendMessage(conv.sessionId, contextText, this.vaultPath)) {
-        const bubble = this.messageContainer.querySelector(
-          `.buddybridge-message-assistant:last-child .buddybridge-bubble`
-        );
-        if (!bubble)
+        if (!streamingBubble)
           continue;
+        const bubble = streamingBubble;
         if (firstChunk) {
           firstChunk = false;
           const thinking = bubble.querySelector(".buddybridge-thinking");
@@ -698,54 +751,67 @@ ${text}` : text;
           let block = bubble.querySelector(".buddybridge-thinking-block");
           if (!block) {
             block = bubble.createDiv({ cls: "buddybridge-thinking-block" });
-            const header2 = block.createDiv({ cls: "buddybridge-thinking-header", text: "\u601D\u8003\u8FC7\u7A0B \u25BE" });
-            header2.style.cursor = "pointer";
-            const body2 = block.createDiv({ cls: "buddybridge-thinking-body" });
-            header2.addEventListener("click", () => {
-              const isHidden = body2.style.display === "none";
-              body2.style.display = isHidden ? "" : "none";
-              header2.textContent = isHidden ? "\u601D\u8003\u8FC7\u7A0B \u25BE" : "\u601D\u8003\u8FC7\u7A0B \u25B8";
+            const header = block.createDiv({ cls: "buddybridge-thinking-header" });
+            const icon = header.createSpan({ cls: "buddybridge-thinking-header-icon" });
+            (0, import_obsidian.setIcon)(icon, "sparkles");
+            const label = header.createSpan({ cls: "buddybridge-thinking-header-text", text: "\u601D\u8003\u4E2D..." });
+            const bodyDiv = block.createDiv({ cls: "buddybridge-thinking-body" });
+            bodyDiv.style.display = "none";
+            header.addEventListener("click", () => {
+              const hidden = bodyDiv.style.display === "none";
+              bodyDiv.style.display = hidden ? "" : "none";
+              label.textContent = hidden ? "\u5DF2\u601D\u8003" : "\u601D\u8003\u4E2D...";
             });
           }
           const body = block.querySelector(".buddybridge-thinking-body");
           if (body) {
-            console.log('[BB] thinkingContent length:', thinkingContent.length, 'preview:', thinkingContent.substring(0, 50));
             body.setText(thinkingContent);
           }
-          this.scrollToBottom();
         } else if (chunk.type === "tool") {
           let toolsBlock = bubble.querySelector(".buddybridge-tools-block");
           if (!toolsBlock) {
             toolsBlock = bubble.createDiv({ cls: "buddybridge-tools-block" });
-            var thdr = toolsBlock.createDiv({ cls: "buddybridge-tools-header" });
-            thdr.style.cursor = "pointer";
-            thdr.textContent = "\u{1F527} 工具调用 \u25B8";
-            var tlist = toolsBlock.createDiv({ cls: "buddybridge-tools-list" });
-            tlist.style.display = "none";
-            thdr.addEventListener("click", function() {
-              var hidden = tlist.style.display === "none";
-              tlist.style.display = hidden ? "" : "none";
-              thdr.textContent = hidden ? "\u{1F527} 工具调用 \u25BE" : "\u{1F527} 工具调用 \u25B8";
+            const hdr = toolsBlock.createDiv({ cls: "buddybridge-tools-header" });
+            const icon = hdr.createSpan({ cls: "buddybridge-tools-header-icon" });
+            (0, import_obsidian.setIcon)(icon, "wrench");
+            const label = hdr.createSpan({ cls: "buddybridge-tools-header-text", text: "\u5DE5\u5177\u8C03\u7528" });
+            const chevron = hdr.createSpan({ cls: "buddybridge-tools-header-chevron", text: "\u25BE" });
+            hdr.addEventListener("click", () => {
+              const list2 = toolsBlock.querySelector(".buddybridge-tools-list");
+              if (list2) {
+                const hidden = list2.style.display === "none";
+                list2.style.display = hidden ? "" : "none";
+                chevron.textContent = hidden ? "\u25BE" : "\u25B8";
+              }
             });
+            toolsBlock.createDiv({ cls: "buddybridge-tools-list" });
           }
-          var list = toolsBlock.querySelector(".buddybridge-tools-list");
+          const list = toolsBlock.querySelector(".buddybridge-tools-list");
           if (list) {
-            list.createDiv({
-              cls: "buddybridge-tool-call",
-              text: chunk.toolName ? chunk.toolName + " " + (chunk.toolDetail || "") : (chunk.toolDetail || "")
+            const toolName = chunk.toolName || "";
+            const toolDetail = chunk.toolDetail || "";
+            let iconName = "wrench";
+            if (toolName.includes("read") || toolName.includes("\u67E5\u770B") || toolName.includes("\u8BFB\u53D6")) {
+              iconName = "file-text";
+            } else if (toolName.includes("write") || toolName.includes("\u7F16\u8F91") || toolName.includes("\u5199\u5165")) {
+              iconName = "pencil";
+            } else if (toolName.includes("search") || toolName.includes("\u641C\u7D22") || toolName.includes("\u67E5\u627E")) {
+              iconName = "search";
+            }
+            const row = list.createDiv({ cls: "buddybridge-tool-call" });
+            const icon = row.createSpan({ cls: "buddybridge-tool-call-icon" });
+            (0, import_obsidian.setIcon)(icon, iconName);
+            row.createSpan({
+              cls: "buddybridge-tool-call-text",
+              text: `${toolName} ${toolDetail}`.trim()
             });
           }
         } else if (chunk.type === "text") {
           textContent += chunk.content;
-          this.manager.updateMessage(convId, aiMsg.id, textContent);
-          let span = bubble.querySelector(":scope > span");
-          if (!span) {
-            span = bubble.createSpan({ text: "" });
-          }
-          span.textContent = textContent;
-          this.scrollToBottom();
+          this.manager.updateMessage(convId, aiMsg.id, textContent, true);
+          await this.renderMarkdownContent(bubble, textContent);
         } else if (chunk.type === "error") {
-          this.manager.updateMessage(convId, aiMsg.id, `\u9519\u8BEF: ${chunk.content}`);
+          this.manager.updateMessage(convId, aiMsg.id, `\u9519\u8BEF: ${chunk.content}`, true);
           new import_obsidian.Notice(`\u8BF7\u6C42\u5931\u8D25: ${chunk.content}`);
         }
       }
@@ -754,10 +820,11 @@ ${text}` : text;
       if (!finalContent) {
         this.manager.updateMessage(convId, aiMsg.id, "\uFF08\u65E0\u54CD\u5E94\uFF0C\u8BF7\u91CD\u8BD5\uFF09");
       }
+      await this.manager.flush();
     } catch (error) {
       this.manager.updateMessage(convId, aiMsg.id, `\u9519\u8BEF: ${error.message}`);
       new import_obsidian.Notice(`\u8BF7\u6C42\u5931\u8D25: ${error.message}`);
-      this.renderMessages();
+      await this.renderMessages();
     } finally {
       this.isStreaming = false;
       this.streamingMsgId = null;
@@ -767,25 +834,6 @@ ${text}` : text;
     this.messageContainer.scrollTop = this.messageContainer.scrollHeight;
   }
 };
-
-// src/types.ts
-var CURRENT_SETTINGS_VERSION = 3;
-var DEFAULT_SETTINGS = {
-  codebuddyPath: "",
-  maxConversations: 20,
-  version: CURRENT_SETTINGS_VERSION
-};
-function migrateSettings(stored) {
-  if (!stored || typeof stored !== "object") {
-    return { ...DEFAULT_SETTINGS };
-  }
-  const settings = {
-    codebuddyPath: typeof stored.codebuddyPath === "string" ? stored.codebuddyPath : DEFAULT_SETTINGS.codebuddyPath,
-    maxConversations: typeof stored.maxConversations === "number" && stored.maxConversations > 0 ? stored.maxConversations : DEFAULT_SETTINGS.maxConversations,
-    version: CURRENT_SETTINGS_VERSION
-  };
-  return settings;
-}
 
 // src/settings/tab.ts
 var import_obsidian2 = require("obsidian");
@@ -797,7 +845,7 @@ var BuddyBridgeSettingTab = class extends import_obsidian2.PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "BuddyBridge \u8BBE\u7F6E" });
+    new import_obsidian2.Setting(containerEl).setName("Configuration").setHeading();
     new import_obsidian2.Setting(containerEl).setName("CodeBuddy \u8DEF\u5F84").setDesc("codebuddy \u53EF\u6267\u884C\u6587\u4EF6\u8DEF\u5F84\u3002\u5982 WorkBuddy \u81EA\u5B9A\u4E49\u5B89\u88C5\uFF0C\u8DEF\u5F84\u901A\u5E38\u4E3A\uFF1A\u5B89\u88C5\u76EE\u5F55\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy\uFF08\u53F3\u952E WorkBuddy \u5FEB\u6377\u65B9\u5F0F \u2192 \u6253\u5F00\u6587\u4EF6\u4F4D\u7F6E \u53EF\u627E\u5230\u5B89\u88C5\u76EE\u5F55\uFF09").addText((text) => text.setPlaceholder("WorkBuddy\u5B89\u88C5\u76EE\u5F55\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy").setValue(this.plugin.settings.codebuddyPath).onChange(async (value) => {
       this.plugin.settings.codebuddyPath = value;
       this.plugin.api.setCodebuddyPath(value);
@@ -826,14 +874,14 @@ var BuddyBridgePlugin = class extends import_obsidian3.Plugin {
     this.registerView(
       VIEW_TYPE_CHAT,
       (leaf) => {
-        this.chatView = new BuddyBridgeChatView(leaf, this.api);
-        this.chatView.getManager().setPersistCallback(async (conversations) => {
+        const view = new BuddyBridgeChatView(leaf, this.api);
+        view.getManager().setPersistCallback(async (conversations) => {
           const data = await this.loadData() || {};
           data.conversations = conversations;
           await this.saveData(data);
         });
         this.loadPersistedConversations();
-        return this.chatView;
+        return view;
       }
     );
     this.addRibbonIcon("bot", "BuddyBridge \u804A\u5929", async () => {
@@ -862,13 +910,13 @@ var BuddyBridgePlugin = class extends import_obsidian3.Plugin {
       }
     }
     if (leaf) {
-      workspace.revealLeaf(leaf);
+      workspace.setActiveLeaf(leaf, { focus: true });
     }
   }
   async loadPersistedConversations() {
     const data = await this.loadData();
     if (this.chatView) {
-      this.chatView.loadConversations((data == null ? void 0 : data.conversations) || []);
+      await this.chatView.loadConversations((data == null ? void 0 : data.conversations) || []);
     }
   }
   async loadSettings() {
