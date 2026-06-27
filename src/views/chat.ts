@@ -365,8 +365,6 @@ ${text}`
             if (!finalContent) {
                 this.manager.updateMessage(convId, aiMsg.id, '（无响应，请重试）');
             }
-            // 流式结束后再渲染一次，确保思考指示器等占位元素被清除
-            await this.renderMessages();
             await this.manager.flush();
         } catch (error: any) {
             this.manager.updateMessage(convId, aiMsg.id, `错误: ${error.message}`);
