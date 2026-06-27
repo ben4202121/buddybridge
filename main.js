@@ -820,6 +820,7 @@ ${text}` : text;
       if (!finalContent) {
         this.manager.updateMessage(convId, aiMsg.id, "\uFF08\u65E0\u54CD\u5E94\uFF0C\u8BF7\u91CD\u8BD5\uFF09");
       }
+      await this.renderMessages();
       await this.manager.flush();
     } catch (error) {
       this.manager.updateMessage(convId, aiMsg.id, `\u9519\u8BEF: ${error.message}`);
