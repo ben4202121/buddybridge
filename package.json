@@ -1,6 +1,6 @@
 {
   "name": "obsidian-buddybridge",
-  "version": "1.0.11",
+  "version": "1.0.12",
   "description": "第三方 Obsidian 插件，桥接本地 WorkBuddy/CodeBuddy Gateway",
   "main": "main.js",
   "scripts": {
