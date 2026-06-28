@@ -19,7 +19,11 @@ export default class BuddyBridgePlugin extends Plugin {
         this.registerView(
             VIEW_TYPE_CHAT,
             (leaf) => {
-                const view = new BuddyBridgeChatView(leaf, this.api);
+                const view = new BuddyBridgeChatView(leaf, this.api, async () => {
+                    const data = await this.loadData();
+                    return data?.conversations || [];
+                });
+                this.chatView = view;
 
                 // 持久化回调
                 view.getManager().setPersistCallback(async (conversations) => {
@@ -27,9 +31,6 @@ export default class BuddyBridgePlugin extends Plugin {
                     data.conversations = conversations;
                     await this.saveData(data);
                 });
-
-                // 加载已持久化的对话
-                this.loadPersistedConversations();
 
                 return view;
             }

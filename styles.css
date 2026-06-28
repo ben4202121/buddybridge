@@ -303,6 +303,11 @@
     flex: 1;
 }
 
+.buddybridge-thinking-header-chevron {
+    font-size: 11px;
+    color: var(--text-faint);
+}
+
 .buddybridge-thinking-body {
     padding: 10px var(--buddybridge-gap-lg);
     font-size: var(--font-ui-smaller);
@@ -518,6 +523,10 @@
     background: var(--background-primary);
     color: var(--text-normal);
     font-family: inherit;
+    min-height: 40px;
+    max-height: 200px;
+    height: var(--buddybridge-input-height, auto);
+    overflow-y: hidden;
     transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 

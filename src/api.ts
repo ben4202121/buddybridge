@@ -65,8 +65,9 @@ function findNodeExecutable(): string | null {
             path.join(home, '.local', 'bin'),
             path.join(home, '.npm-global', 'bin'),
             path.join(home, '.volta', 'bin'),
-            '/usr/local/bin',
-            '/opt/homebrew/bin',
+            path.join(home, 'bin', 'codebuddy'),
+            '/usr/local/bin/codebuddy',
+            '/opt/homebrew/bin/codebuddy',
         );
         const nvmBin = process.env.NVM_BIN;
         if (nvmBin) {
@@ -108,29 +109,34 @@ function resolveCodebuddyPath(customPath: string): string {
     const candidates: string[] = [];
 
     if (process.platform === 'win32') {
+        // Windows 上优先使用可直接执行的 .exe / .cmd，避免选中无扩展名的 npm shell shim
         candidates.push(
-            path.join(localAppData, 'Programs', 'WorkBuddy', 'resources', 'app.asar.unpacked', 'cli', 'bin', 'codebuddy'),
+            path.join(localAppData, 'Programs', 'WorkBuddy', 'resources', 'app.asar.unpacked', 'cli', 'bin', 'codebuddy.exe'),
             path.join(localAppData, 'Programs', 'WorkBuddy', 'resources', 'app.asar.unpacked', 'cli', 'bin', 'codebuddy.cmd'),
+            path.join(localAppData, 'Programs', 'WorkBuddy', 'resources', 'app.asar.unpacked', 'cli', 'bin', 'codebuddy'),
         );
         if (appData) {
-            candidates.push(path.join(appData, 'npm', 'codebuddy'));
             candidates.push(path.join(appData, 'npm', 'codebuddy.cmd'));
+            candidates.push(path.join(appData, 'npm', 'codebuddy'));
         }
         candidates.push(
             path.join(programFiles, 'nodejs', 'codebuddy.cmd'),
             path.join(programFiles, 'nodejs', 'node_modules', '.bin', 'codebuddy.cmd'),
             path.join(programFilesX86, 'nodejs', 'node_modules', '.bin', 'codebuddy.cmd'),
-            path.join(programFiles, 'WorkBuddy', 'resources', 'app.asar.unpacked', 'cli', 'bin', 'codebuddy'),
+            path.join(programFiles, 'WorkBuddy', 'resources', 'app.asar.unpacked', 'cli', 'bin', 'codebuddy.exe'),
             path.join(programFiles, 'WorkBuddy', 'resources', 'app.asar.unpacked', 'cli', 'bin', 'codebuddy.cmd'),
-            path.join(programFilesX86, 'WorkBuddy', 'resources', 'app.asar.unpacked', 'cli', 'bin', 'codebuddy'),
+            path.join(programFiles, 'WorkBuddy', 'resources', 'app.asar.unpacked', 'cli', 'bin', 'codebuddy'),
+            path.join(programFilesX86, 'WorkBuddy', 'resources', 'app.asar.unpacked', 'cli', 'bin', 'codebuddy.exe'),
             path.join(programFilesX86, 'WorkBuddy', 'resources', 'app.asar.unpacked', 'cli', 'bin', 'codebuddy.cmd'),
+            path.join(programFilesX86, 'WorkBuddy', 'resources', 'app.asar.unpacked', 'cli', 'bin', 'codebuddy'),
         );
 
         // Scan common drive letters for WorkBuddy installation
         for (const drive of ['C:', 'D:', 'E:']) {
             candidates.push(
-                path.join(drive + '\\Program Files', 'WorkBuddy', 'resources', 'app.asar.unpacked', 'cli', 'bin', 'codebuddy'),
+                path.join(drive + '\\Program Files', 'WorkBuddy', 'resources', 'app.asar.unpacked', 'cli', 'bin', 'codebuddy.exe'),
                 path.join(drive + '\\Program Files', 'WorkBuddy', 'resources', 'app.asar.unpacked', 'cli', 'bin', 'codebuddy.cmd'),
+                path.join(drive + '\\Program Files', 'WorkBuddy', 'resources', 'app.asar.unpacked', 'cli', 'bin', 'codebuddy'),
             );
         }
     } else {
@@ -159,7 +165,7 @@ function resolveCodebuddyPath(customPath: string): string {
     // 搜索系统 PATH
     const envPath = process.env.PATH || '';
     const pathSep = process.platform === 'win32' ? ';' : ':';
-    const exeNames = process.platform === 'win32' ? ['codebuddy.cmd', 'codebuddy.exe', 'codebuddy'] : ['codebuddy'];
+    const exeNames = process.platform === 'win32' ? ['codebuddy.exe', 'codebuddy.cmd', 'codebuddy'] : ['codebuddy'];
     for (const dir of envPath.split(pathSep)) {
         if (!dir) continue;
         for (const name of exeNames) {
@@ -250,6 +256,10 @@ function isBareFallback(scriptPath: string): boolean {
     return scriptPath === 'codebuddy' || !path.isAbsolute(scriptPath);
 }
 
+function needsWindowsShell(scriptPath: string): boolean {
+    return process.platform === 'win32' && (scriptPath.endsWith('.cmd') || scriptPath.endsWith('.bat'));
+}
+
 export class BuddyBridgeAPI {
     private timeout: number;
     private scriptPath: string;
@@ -283,6 +293,11 @@ export class BuddyBridgeAPI {
 
         // --print --output-format stream-json: 结构化流式输出
         const cliArgs = ['--print', '--output-format', 'stream-json', '--session-id', sessionId, text];
+
+        // Node 18+ Windows 下 spawn .cmd/.bat 需要 shell: true
+        if (needsWindowsShell(scriptPath)) {
+            procOptions.shell = true;
+        }
 
         // 根据实际路径类型选择启动方式：
         // - .cmd/.exe/.bat → 直接 spawn（Windows 可执行/包装脚本）

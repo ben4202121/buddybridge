@@ -14,15 +14,17 @@ export class BuddyBridgeChatView extends ItemView {
     private isStreaming: boolean = false;
     private streamingMsgId: string | null = null;
     private markdownComponent: Component;
+    private loadDataCallback: () => Promise<Conversation[]>;
 
     private get vaultPath(): string | undefined {
         const adapter = this.app.vault.adapter as { basePath?: string };
         return adapter.basePath;
     }
 
-    constructor(leaf: WorkspaceLeaf, api: BuddyBridgeAPI) {
+    constructor(leaf: WorkspaceLeaf, api: BuddyBridgeAPI, loadDataCallback: () => Promise<Conversation[]>) {
         super(leaf);
         this.api = api;
+        this.loadDataCallback = loadDataCallback;
         this.manager = new ConversationManager();
         this.markdownComponent = new Component();
         this.markdownComponent.load();
@@ -59,6 +61,7 @@ export class BuddyBridgeChatView extends ItemView {
             attr: { placeholder: '输入消息... (Shift+Enter 换行，Enter 发送)', rows: '2' }
         });
         this.inputEl.onkeydown = (e) => this.handleKeydown(e);
+        this.inputEl.oninput = () => this.adjustTextareaHeight();
 
         const sendBtn = inputArea.createEl('button', {
             text: '发送',
@@ -66,6 +69,14 @@ export class BuddyBridgeChatView extends ItemView {
             attr: { 'aria-label': '发送' }
         });
         sendBtn.onclick = () => this.sendMessage();
+
+        // DOM 构建完成后加载历史对话
+        try {
+            const conversations = await this.loadDataCallback();
+            await this.loadConversations(conversations);
+        } catch (e) {
+            console.error('[BB] 加载历史对话失败:', e);
+        }
     }
 
     async onClose() {
@@ -212,6 +223,10 @@ export class BuddyBridgeChatView extends ItemView {
         );
     }
 
+    private adjustTextareaHeight() {
+        this.inputEl.style.setProperty('--buddybridge-input-height', `${this.inputEl.scrollHeight}px`);
+    }
+
     private async handleKeydown(e: KeyboardEvent) {
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
@@ -241,6 +256,7 @@ export class BuddyBridgeChatView extends ItemView {
         const convId = conv.id;
         this.manager.addMessage(convId, 'user', text);
         this.inputEl.value = '';
+        this.adjustTextareaHeight();
         await this.renderMessages();
 
         // 创建 AI 消息占位，标记为等待回复中
@@ -294,14 +310,13 @@ ${text}`
                         const icon = header.createSpan({ cls: 'buddybridge-thinking-header-icon' });
                         setIcon(icon, 'sparkles');
                         const label = header.createSpan({ cls: 'buddybridge-thinking-header-text', text: '思考中...' });
+                        const chevron = header.createSpan({ cls: 'buddybridge-thinking-header-chevron', text: '▾' });
 
-                        const bodyDiv = block.createDiv({ cls: 'buddybridge-thinking-body' });
-                        // 默认折叠
-                        bodyDiv.style.display = 'none';
+                        const bodyDiv = block.createDiv({ cls: 'buddybridge-thinking-body buddybridge-hidden' });
                         header.addEventListener('click', () => {
-                            const hidden = bodyDiv.style.display === 'none';
-                            bodyDiv.style.display = hidden ? '' : 'none';
-                            label.textContent = hidden ? '已思考' : '思考中...';
+                            const hidden = bodyDiv.hasClass('buddybridge-hidden');
+                            bodyDiv.toggleClass('buddybridge-hidden', !hidden);
+                            chevron.textContent = hidden ? '▾' : '▸';
                         });
                     }
                     const body = block.querySelector('.buddybridge-thinking-body') as HTMLElement;
@@ -321,12 +336,12 @@ ${text}`
                         hdr.addEventListener('click', () => {
                             const list = toolsBlock.querySelector('.buddybridge-tools-list') as HTMLElement;
                             if (list) {
-                                const hidden = list.style.display === 'none';
-                                list.style.display = hidden ? '' : 'none';
+                                const hidden = list.hasClass('buddybridge-hidden');
+                                list.toggleClass('buddybridge-hidden', !hidden);
                                 chevron.textContent = hidden ? '▾' : '▸';
                             }
                         });
-                        toolsBlock.createDiv({ cls: 'buddybridge-tools-list' });
+                        toolsBlock.createDiv({ cls: 'buddybridge-tools-list buddybridge-hidden' });
                     }
                     const list = toolsBlock.querySelector('.buddybridge-tools-list') as HTMLElement;
                     if (list) {
@@ -365,6 +380,15 @@ ${text}`
             if (!finalContent) {
                 this.manager.updateMessage(convId, aiMsg.id, '（无响应，请重试）');
             }
+
+            // 流式结束后再渲染一次，确保思考指示器等占位元素被清除
+            if (streamingBubble) {
+                const thinkingLabel = streamingBubble.querySelector('.buddybridge-thinking-header-text') as HTMLElement;
+                if (thinkingLabel) {
+                    thinkingLabel.setText('已思考');
+                }
+            }
+            await this.renderMessages();
             await this.manager.flush();
         } catch (error: any) {
             this.manager.updateMessage(convId, aiMsg.id, `错误: ${error.message}`);

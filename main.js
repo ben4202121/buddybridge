@@ -89,8 +89,9 @@ function findNodeExecutable() {
       path.join(home, ".local", "bin"),
       path.join(home, ".npm-global", "bin"),
       path.join(home, ".volta", "bin"),
-      "/usr/local/bin",
-      "/opt/homebrew/bin"
+      path.join(home, "bin", "codebuddy"),
+      "/usr/local/bin/codebuddy",
+      "/opt/homebrew/bin/codebuddy"
     );
     const nvmBin = process.env.NVM_BIN;
     if (nvmBin) {
@@ -127,26 +128,30 @@ function resolveCodebuddyPath(customPath) {
   const candidates = [];
   if (process.platform === "win32") {
     candidates.push(
-      path.join(localAppData, "Programs", "WorkBuddy", "resources", "app.asar.unpacked", "cli", "bin", "codebuddy"),
-      path.join(localAppData, "Programs", "WorkBuddy", "resources", "app.asar.unpacked", "cli", "bin", "codebuddy.cmd")
+      path.join(localAppData, "Programs", "WorkBuddy", "resources", "app.asar.unpacked", "cli", "bin", "codebuddy.exe"),
+      path.join(localAppData, "Programs", "WorkBuddy", "resources", "app.asar.unpacked", "cli", "bin", "codebuddy.cmd"),
+      path.join(localAppData, "Programs", "WorkBuddy", "resources", "app.asar.unpacked", "cli", "bin", "codebuddy")
     );
     if (appData) {
-      candidates.push(path.join(appData, "npm", "codebuddy"));
       candidates.push(path.join(appData, "npm", "codebuddy.cmd"));
+      candidates.push(path.join(appData, "npm", "codebuddy"));
     }
     candidates.push(
       path.join(programFiles, "nodejs", "codebuddy.cmd"),
       path.join(programFiles, "nodejs", "node_modules", ".bin", "codebuddy.cmd"),
       path.join(programFilesX86, "nodejs", "node_modules", ".bin", "codebuddy.cmd"),
-      path.join(programFiles, "WorkBuddy", "resources", "app.asar.unpacked", "cli", "bin", "codebuddy"),
+      path.join(programFiles, "WorkBuddy", "resources", "app.asar.unpacked", "cli", "bin", "codebuddy.exe"),
       path.join(programFiles, "WorkBuddy", "resources", "app.asar.unpacked", "cli", "bin", "codebuddy.cmd"),
-      path.join(programFilesX86, "WorkBuddy", "resources", "app.asar.unpacked", "cli", "bin", "codebuddy"),
-      path.join(programFilesX86, "WorkBuddy", "resources", "app.asar.unpacked", "cli", "bin", "codebuddy.cmd")
+      path.join(programFiles, "WorkBuddy", "resources", "app.asar.unpacked", "cli", "bin", "codebuddy"),
+      path.join(programFilesX86, "WorkBuddy", "resources", "app.asar.unpacked", "cli", "bin", "codebuddy.exe"),
+      path.join(programFilesX86, "WorkBuddy", "resources", "app.asar.unpacked", "cli", "bin", "codebuddy.cmd"),
+      path.join(programFilesX86, "WorkBuddy", "resources", "app.asar.unpacked", "cli", "bin", "codebuddy")
     );
     for (const drive of ["C:", "D:", "E:"]) {
       candidates.push(
-        path.join(drive + "\\Program Files", "WorkBuddy", "resources", "app.asar.unpacked", "cli", "bin", "codebuddy"),
-        path.join(drive + "\\Program Files", "WorkBuddy", "resources", "app.asar.unpacked", "cli", "bin", "codebuddy.cmd")
+        path.join(drive + "\\Program Files", "WorkBuddy", "resources", "app.asar.unpacked", "cli", "bin", "codebuddy.exe"),
+        path.join(drive + "\\Program Files", "WorkBuddy", "resources", "app.asar.unpacked", "cli", "bin", "codebuddy.cmd"),
+        path.join(drive + "\\Program Files", "WorkBuddy", "resources", "app.asar.unpacked", "cli", "bin", "codebuddy")
       );
     }
   } else {
@@ -173,7 +178,7 @@ function resolveCodebuddyPath(customPath) {
   }
   const envPath = process.env.PATH || "";
   const pathSep = process.platform === "win32" ? ";" : ":";
-  const exeNames = process.platform === "win32" ? ["codebuddy.cmd", "codebuddy.exe", "codebuddy"] : ["codebuddy"];
+  const exeNames = process.platform === "win32" ? ["codebuddy.exe", "codebuddy.cmd", "codebuddy"] : ["codebuddy"];
   for (const dir of envPath.split(pathSep)) {
     if (!dir)
       continue;
@@ -253,6 +258,9 @@ function isWindowsWrapper(scriptPath) {
 function isBareFallback(scriptPath) {
   return scriptPath === "codebuddy" || !path.isAbsolute(scriptPath);
 }
+function needsWindowsShell(scriptPath) {
+  return process.platform === "win32" && (scriptPath.endsWith(".cmd") || scriptPath.endsWith(".bat"));
+}
 var BuddyBridgeAPI = class {
   constructor(timeout = TIMEOUT) {
     this.timeout = timeout;
@@ -278,6 +286,9 @@ var BuddyBridgeAPI = class {
       procOptions.cwd = vaultPath;
     }
     const cliArgs = ["--print", "--output-format", "stream-json", "--session-id", sessionId, text];
+    if (needsWindowsShell(scriptPath)) {
+      procOptions.shell = true;
+    }
     let proc;
     if (isWindowsWrapper(scriptPath) || isBareFallback(scriptPath)) {
       proc = (0, import_child_process.spawn)(scriptPath, cliArgs, procOptions);
@@ -522,11 +533,12 @@ var ConversationManager = class {
 // src/views/chat.ts
 var VIEW_TYPE_CHAT = "buddybridge-panel";
 var BuddyBridgeChatView = class extends import_obsidian.ItemView {
-  constructor(leaf, api) {
+  constructor(leaf, api, loadDataCallback) {
     super(leaf);
     this.isStreaming = false;
     this.streamingMsgId = null;
     this.api = api;
+    this.loadDataCallback = loadDataCallback;
     this.manager = new ConversationManager();
     this.markdownComponent = new import_obsidian.Component();
     this.markdownComponent.load();
@@ -566,12 +578,19 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
       attr: { placeholder: "\u8F93\u5165\u6D88\u606F... (Shift+Enter \u6362\u884C\uFF0CEnter \u53D1\u9001)", rows: "2" }
     });
     this.inputEl.onkeydown = (e) => this.handleKeydown(e);
+    this.inputEl.oninput = () => this.adjustTextareaHeight();
     const sendBtn = inputArea.createEl("button", {
       text: "\u53D1\u9001",
       cls: "buddybridge-send-btn",
       attr: { "aria-label": "\u53D1\u9001" }
     });
     sendBtn.onclick = () => this.sendMessage();
+    try {
+      const conversations = await this.loadDataCallback();
+      await this.loadConversations(conversations);
+    } catch (e) {
+      console.error("[BB] \u52A0\u8F7D\u5386\u53F2\u5BF9\u8BDD\u5931\u8D25:", e);
+    }
   }
   async onClose() {
     this.markdownComponent.unload();
@@ -690,6 +709,9 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
       this.markdownComponent
     );
   }
+  adjustTextareaHeight() {
+    this.inputEl.style.setProperty("--buddybridge-input-height", `${this.inputEl.scrollHeight}px`);
+  }
   async handleKeydown(e) {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -713,6 +735,7 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
     const convId = conv.id;
     this.manager.addMessage(convId, "user", text);
     this.inputEl.value = "";
+    this.adjustTextareaHeight();
     await this.renderMessages();
     const aiMsg = this.manager.addMessage(convId, "assistant", "");
     if (!aiMsg)
@@ -755,12 +778,12 @@ ${text}` : text;
             const icon = header.createSpan({ cls: "buddybridge-thinking-header-icon" });
             (0, import_obsidian.setIcon)(icon, "sparkles");
             const label = header.createSpan({ cls: "buddybridge-thinking-header-text", text: "\u601D\u8003\u4E2D..." });
-            const bodyDiv = block.createDiv({ cls: "buddybridge-thinking-body" });
-            bodyDiv.style.display = "none";
+            const chevron = header.createSpan({ cls: "buddybridge-thinking-header-chevron", text: "\u25BE" });
+            const bodyDiv = block.createDiv({ cls: "buddybridge-thinking-body buddybridge-hidden" });
             header.addEventListener("click", () => {
-              const hidden = bodyDiv.style.display === "none";
-              bodyDiv.style.display = hidden ? "" : "none";
-              label.textContent = hidden ? "\u5DF2\u601D\u8003" : "\u601D\u8003\u4E2D...";
+              const hidden = bodyDiv.hasClass("buddybridge-hidden");
+              bodyDiv.toggleClass("buddybridge-hidden", !hidden);
+              chevron.textContent = hidden ? "\u25BE" : "\u25B8";
             });
           }
           const body = block.querySelector(".buddybridge-thinking-body");
@@ -779,12 +802,12 @@ ${text}` : text;
             hdr.addEventListener("click", () => {
               const list2 = toolsBlock.querySelector(".buddybridge-tools-list");
               if (list2) {
-                const hidden = list2.style.display === "none";
-                list2.style.display = hidden ? "" : "none";
+                const hidden = list2.hasClass("buddybridge-hidden");
+                list2.toggleClass("buddybridge-hidden", !hidden);
                 chevron.textContent = hidden ? "\u25BE" : "\u25B8";
               }
             });
-            toolsBlock.createDiv({ cls: "buddybridge-tools-list" });
+            toolsBlock.createDiv({ cls: "buddybridge-tools-list buddybridge-hidden" });
           }
           const list = toolsBlock.querySelector(".buddybridge-tools-list");
           if (list) {
@@ -820,6 +843,13 @@ ${text}` : text;
       if (!finalContent) {
         this.manager.updateMessage(convId, aiMsg.id, "\uFF08\u65E0\u54CD\u5E94\uFF0C\u8BF7\u91CD\u8BD5\uFF09");
       }
+      if (streamingBubble) {
+        const thinkingLabel = streamingBubble.querySelector(".buddybridge-thinking-header-text");
+        if (thinkingLabel) {
+          thinkingLabel.setText("\u5DF2\u601D\u8003");
+        }
+      }
+      await this.renderMessages();
       await this.manager.flush();
     } catch (error) {
       this.manager.updateMessage(convId, aiMsg.id, `\u9519\u8BEF: ${error.message}`);
@@ -874,13 +904,16 @@ var BuddyBridgePlugin = class extends import_obsidian3.Plugin {
     this.registerView(
       VIEW_TYPE_CHAT,
       (leaf) => {
-        const view = new BuddyBridgeChatView(leaf, this.api);
+        const view = new BuddyBridgeChatView(leaf, this.api, async () => {
+          const data = await this.loadData();
+          return (data == null ? void 0 : data.conversations) || [];
+        });
+        this.chatView = view;
         view.getManager().setPersistCallback(async (conversations) => {
           const data = await this.loadData() || {};
           data.conversations = conversations;
           await this.saveData(data);
         });
-        this.loadPersistedConversations();
         return view;
       }
     );
