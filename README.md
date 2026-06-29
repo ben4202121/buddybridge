@@ -5,10 +5,17 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 > **⚠️ Windows only.** macOS / Linux are not supported yet.
+> **Requires Obsidian 1.7.2+.**
 
 BuddyBridge is an unofficial Obsidian plugin that bridges your vault with the local WorkBuddy / CodeBuddy CLI. It opens a chat panel inside Obsidian, streams AI responses, displays thinking steps and tool calls, and keeps your conversation history across sessions.
 
 ---
+
+## Requirements
+
+- **Obsidian 1.7.2 or later** (desktop).
+- **Windows** (macOS / Linux are not supported yet).
+- **WorkBuddy desktop app** (≥ 5.0.5) with CodeBuddy CLI installed, or a custom CodeBuddy path configured in settings.
 
 ## Installation
 
@@ -72,7 +79,7 @@ If BuddyBridge cannot find CodeBuddy or Node.js automatically, follow the enviro
 ## 前置条件
 
 1. 已安装 **WorkBuddy 桌面版**（≥ 5.0.5）
-2. 已安装 **Obsidian**（≥ 1.5.0）
+2. 已安装 **Obsidian**（≥ 1.7.2）
 
 ## 首次使用：环境初始化
 

@@ -82,7 +82,7 @@ export default class BuddyBridgePlugin extends Plugin {
             }
 
             if (leaf) {
-                workspace.revealLeaf(leaf);
+                await workspace.revealLeaf(leaf);
                 workspace.setActiveLeaf(leaf, { focus: true });
             } else {
                 new Notice('BuddyBridge：无法创建聊天面板');

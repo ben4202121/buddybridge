@@ -1038,7 +1038,7 @@ var BuddyBridgePlugin = class extends import_obsidian3.Plugin {
         }
       }
       if (leaf) {
-        workspace.revealLeaf(leaf);
+        await workspace.revealLeaf(leaf);
         workspace.setActiveLeaf(leaf, { focus: true });
       } else {
         new import_obsidian3.Notice("BuddyBridge\uFF1A\u65E0\u6CD5\u521B\u5EFA\u804A\u5929\u9762\u677F");
