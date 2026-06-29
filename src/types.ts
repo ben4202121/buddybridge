@@ -30,28 +30,50 @@ export const DEFAULT_SETTINGS: BuddyBridgeSettings = {
     version: CURRENT_SETTINGS_VERSION
 };
 
+// ==================== 通用类型安全辅助函数 ====================
+
+export function isObject(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+export function getString(data: Record<string, unknown>, key: string): string | undefined {
+    const value = data[key];
+    return typeof value === 'string' ? value : undefined;
+}
+
+export function getNumber(data: Record<string, unknown>, key: string): number | undefined {
+    const value = data[key];
+    return typeof value === 'number' ? value : undefined;
+}
+
+export function getErrorMessage(error: unknown): string {
+    if (error instanceof Error) {
+        return error.message;
+    }
+    if (typeof error === 'string') {
+        return error;
+    }
+    return '未知错误';
+}
+
 /**
  * 迁移设置到最新版本。
  * 参考 Claudian 的 normalize+migrate 模式。
  */
-export function migrateSettings(stored: any): BuddyBridgeSettings {
-    if (!stored || typeof stored !== 'object') {
+export function migrateSettings(stored: unknown): BuddyBridgeSettings {
+    if (!isObject(stored)) {
         return { ...DEFAULT_SETTINGS };
     }
 
-    const settings: BuddyBridgeSettings = {
-        codebuddyPath: typeof stored.codebuddyPath === 'string'
-            ? stored.codebuddyPath
-            : DEFAULT_SETTINGS.codebuddyPath,
-        maxConversations: typeof stored.maxConversations === 'number' && stored.maxConversations > 0
-            ? stored.maxConversations
+    const maxConversations = getNumber(stored, 'maxConversations');
+
+    return {
+        codebuddyPath: getString(stored, 'codebuddyPath') ?? DEFAULT_SETTINGS.codebuddyPath,
+        maxConversations: typeof maxConversations === 'number' && maxConversations > 0
+            ? maxConversations
             : DEFAULT_SETTINGS.maxConversations,
         version: CURRENT_SETTINGS_VERSION
     };
-
-    // 迁移 v0→v1→v2→v3: 新增 codebuddyPath, 移除 gatewayUrl
-
-    return settings;
 }
 
 // ==================== 工具函数 ====================
@@ -68,4 +90,20 @@ export function generateId(): string {
 export interface PersistedData {
     conversations?: Conversation[];
     settings?: Partial<BuddyBridgeSettings>;
+}
+
+export function normalizePersistedData(raw: unknown): PersistedData {
+    const result: PersistedData = {};
+    if (!isObject(raw)) {
+        return result;
+    }
+
+    if (Array.isArray(raw.conversations)) {
+        result.conversations = raw.conversations as Conversation[];
+    }
+    if (isObject(raw.settings)) {
+        result.settings = migrateSettings(raw.settings);
+    }
+
+    return result;
 }

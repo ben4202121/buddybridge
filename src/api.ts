@@ -1,6 +1,7 @@
-import { spawn } from 'child_process';
+import { spawn, type SpawnOptions } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
+import { getErrorMessage, getString, isObject } from './types';
 
 const TIMEOUT = 300_000; // 5 分钟
 
@@ -13,11 +14,31 @@ export interface StreamChunk {
     toolDetail?: string;
 }
 
+interface MessageBlock {
+    type: 'thinking' | 'text' | 'tool_call';
+    thinking?: string;
+    text?: string;
+    name?: string;
+    input?: unknown;
+}
+
+interface StreamEvent {
+    type: string;
+    thinking?: string;
+    text?: string;
+    name?: string;
+    input?: unknown;
+    result?: string;
+    error?: string;
+    message?: string;
+    content?: string;
+}
+
 // ===== Node.js 可执行文件查找 =====
 
 const NODE_EXECUTABLE = process.platform === 'win32' ? 'node.exe' : 'node';
 
-function findNodeExecutable(): string | null {
+export function findNodeExecutable(): string | null {
     const home = process.env.HOME || process.env.USERPROFILE || '';
     const nodeDirs: string[] = [];
 
@@ -51,7 +72,7 @@ function findNodeExecutable(): string | null {
                 for (const v of versions) {
                     nodeDirs.push(path.join(wbNodeVersionsDir, v));
                 }
-            } catch {}
+            } catch { /* ignore missing directory */ }
         }
 
         // Scan common drive letters for nodejs (handles non-C: installs)
@@ -83,8 +104,7 @@ function findNodeExecutable(): string | null {
                 console.log('[BB] found node at:', nodePath);
                 return nodePath;
             }
-        } catch {
-        }
+        } catch { /* ignore inaccessible path */ }
     }
 
     console.log("[BB] WARNING: node not found in any search path, falling back to 'node'");
@@ -93,7 +113,7 @@ function findNodeExecutable(): string | null {
 
 // ===== CodeBuddy CLI 路径查找 =====
 
-function resolveCodebuddyPath(customPath: string): string {
+export function resolveCodebuddyPath(customPath: string): string {
     if (customPath && fs.existsSync(customPath)) {
         return customPath;
     }
@@ -172,43 +192,85 @@ function resolveCodebuddyPath(customPath: string): string {
             try {
                 const p = path.join(dir, name);
                 if (fs.existsSync(p)) return p;
-            } catch {}
+            } catch { /* ignore inaccessible path */ }
         }
     }
 
     return 'codebuddy';
 }
 
-// ===== JSON 行解析 =====
+// ===== 消息块解析 =====
 
-function parseStreamLine(line: string): StreamChunk | null {
+export function parseMessageBlock(block: unknown): MessageBlock | null {
+    if (!isObject(block)) return null;
+    const type = getString(block, 'type');
+    if (type !== 'thinking' && type !== 'text' && type !== 'tool_call') return null;
+    return {
+        type,
+        thinking: getString(block, 'thinking'),
+        text: getString(block, 'text'),
+        name: getString(block, 'name'),
+        input: block.input,
+    };
+}
+
+export function blockToChunk(block: MessageBlock): StreamChunk | null {
+    if (block.type === 'thinking') {
+        return { type: 'thinking', content: block.thinking || '' };
+    }
+    if (block.type === 'text') {
+        return { type: 'text', content: block.text || '' };
+    }
+    const input = block.input;
+    return {
+        type: 'tool',
+        content: '',
+        toolName: block.name || 'unknown',
+        toolDetail: typeof input === 'string' ? input : JSON.stringify(input ?? {}),
+    };
+}
+
+// ===== 流事件解析 =====
+
+export function parseStreamEvent(raw: unknown): StreamEvent | null {
+    if (!isObject(raw)) return null;
+    const event = isObject(raw.event) ? raw.event : raw;
+    if (!isObject(event)) return null;
+    return {
+        type: getString(event, 'type') || '',
+        thinking: getString(event, 'thinking'),
+        text: getString(event, 'text'),
+        name: getString(event, 'name'),
+        input: event.input,
+        result: getString(event, 'result'),
+        error: getString(event, 'error'),
+        message: getString(event, 'message'),
+        content: getString(event, 'content'),
+    };
+}
+
+export function parseStreamLine(line: string): StreamChunk | null {
     if (!line.trim()) return null;
     try {
-        const obj = JSON.parse(line);
-        const event = obj.event || obj;
+        const raw = JSON.parse(line) as unknown;
 
-        if (obj.type === 'assistant' || obj.type === 'user') {
-            const msg = obj.message;
-            if (!msg || !Array.isArray(msg.content)) return null;
-
-            for (const block of msg.content) {
-                if (block.type === 'thinking') {
-                    return { type: 'thinking', content: block.thinking || '' };
-                }
-                if (block.type === 'text') {
-                    return { type: 'text', content: block.text || '' };
-                }
-                if (block.type === 'tool_call') {
-                    return {
-                        type: 'tool',
-                        content: '',
-                        toolName: block.name || 'unknown',
-                        toolDetail: typeof block.input === 'string' ? block.input : JSON.stringify(block.input || {}),
-                    };
+        // Shape 1: assistant/user envelope with nested message.content blocks
+        if (isObject(raw) && (raw.type === 'assistant' || raw.type === 'user')) {
+            const message = isObject(raw.message) ? raw.message : null;
+            const content = Array.isArray(message?.content) ? message.content : [];
+            for (const item of content) {
+                const block = parseMessageBlock(item);
+                if (block) {
+                    const chunk = blockToChunk(block);
+                    if (chunk) return chunk;
                 }
             }
             return null;
         }
+
+        // Shape 2: direct event object
+        const event = parseStreamEvent(raw);
+        if (!event) return null;
 
         if (event.type === 'thinking') {
             return { type: 'thinking', content: event.thinking || '' };
@@ -217,27 +279,26 @@ function parseStreamLine(line: string): StreamChunk | null {
             return { type: 'text', content: event.text || '' };
         }
         if (event.type === 'tool_call') {
+            const input = event.input;
             return {
                 type: 'tool',
                 content: '',
                 toolName: event.name || 'unknown',
-                toolDetail: typeof event.input === 'string' ? event.input : JSON.stringify(event.input || {}),
+                toolDetail: typeof input === 'string' ? input : JSON.stringify(input ?? {}),
             };
         }
-        if (obj.type === 'result') {
-            return { type: 'done', content: obj.result || '' };
+        if (event.type === 'result') {
+            return { type: 'done', content: event.result || '' };
         }
-        if (obj.type === 'error') {
-            return { type: 'error', content: obj.error || obj.message || '未知错误' };
+        if (event.type === 'error') {
+            return { type: 'error', content: event.error || event.message || '未知错误' };
         }
 
         // 未知事件类型, 输出原始 JSON 便于调试
         console.log('[BB] unknown event:', line.substring(0, 200));
-        // 尝试提取文本字段，如果是对象则序列化
         const fallbackText = event.text || event.content || event.message || '';
         if (fallbackText) {
-            const display = typeof fallbackText === 'string' ? fallbackText : JSON.stringify(fallbackText);
-            return { type: 'text', content: display };
+            return { type: 'text', content: fallbackText };
         }
         return null;
     } catch {
@@ -247,16 +308,16 @@ function parseStreamLine(line: string): StreamChunk | null {
 
 // ===== 判断是否需要 node 来执行 =====
 
-function isWindowsWrapper(scriptPath: string): boolean {
+export function isWindowsWrapper(scriptPath: string): boolean {
     return scriptPath.endsWith('.cmd') || scriptPath.endsWith('.exe') || scriptPath.endsWith('.bat');
 }
 
-function isBareFallback(scriptPath: string): boolean {
+export function isBareFallback(scriptPath: string): boolean {
     // 兜底值 'codebuddy' 不是真实文件路径，让 OS 在 PATH 里找
     return scriptPath === 'codebuddy' || !path.isAbsolute(scriptPath);
 }
 
-function needsWindowsShell(scriptPath: string): boolean {
+export function needsWindowsShell(scriptPath: string): boolean {
     return process.platform === 'win32' && (scriptPath.endsWith('.cmd') || scriptPath.endsWith('.bat'));
 }
 
@@ -283,7 +344,7 @@ export class BuddyBridgeAPI {
 
     async *sendMessage(sessionId: string, text: string, vaultPath?: string): AsyncGenerator<StreamChunk> {
         const scriptPath = this.scriptPath;
-        const procOptions: any = {
+        const procOptions: SpawnOptions = {
             timeout: this.timeout,
             stdio: ['ignore', 'pipe', 'pipe'],
         };
@@ -376,8 +437,11 @@ export class BuddyBridgeAPI {
         // 主循环
         while (true) {
             if (chunkQueue.length > 0) {
-                yield chunkQueue.shift()!;
-                continue;
+                const nextChunk = chunkQueue.shift();
+                if (nextChunk) {
+                    yield nextChunk;
+                    continue;
+                }
             }
             if (closed) {
                 if (buffer.trim()) {
@@ -390,7 +454,7 @@ export class BuddyBridgeAPI {
                 resolveQueue = r;
             });
             if (next.done) {
-                if (next.value.type === 'error') throw new Error(next.value.content);
+                if (next.value?.type === 'error') throw new Error(next.value.content);
                 break;
             }
             yield next.value;

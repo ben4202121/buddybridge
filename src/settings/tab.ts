@@ -5,7 +5,7 @@ export class BuddyBridgeSettingTab extends PluginSettingTab {
     plugin: BuddyBridgePlugin;
 
     constructor(app: App, plugin: BuddyBridgePlugin) {
-        super(app, plugin as any);
+        super(app, plugin);
         this.plugin = plugin;
     }
 

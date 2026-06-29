@@ -1,5 +1,5 @@
 import type { Conversation, ChatMessage } from '../types';
-import { generateId } from '../types';
+import { generateId, getErrorMessage } from '../types';
 
 export class ConversationManager {
     private conversations: Map<string, Conversation> = new Map();
@@ -14,6 +14,10 @@ export class ConversationManager {
         if (this.persistCallback) {
             await this.persistCallback(this.getAll());
         }
+    }
+
+    private handlePersistError(error: unknown) {
+        console.error('[BB] persist failed:', getErrorMessage(error));
     }
 
     /** 显式触发持久化（流式结束后调用） */
@@ -48,7 +52,7 @@ export class ConversationManager {
         };
         this.conversations.set(id, conv);
         this.activeId = id;
-        this.persist();
+        this.persist().catch((err) => this.handlePersistError(err));
         return conv;
     }
 
@@ -60,7 +64,7 @@ export class ConversationManager {
             const remaining = this.getAll();
             this.activeId = remaining.length > 0 ? remaining[0].id : null;
         }
-        this.persist();
+        this.persist().catch((err) => this.handlePersistError(err));
         return true;
     }
 
@@ -103,7 +107,7 @@ export class ConversationManager {
             conv.title = content.substring(0, 30) + (content.length > 30 ? '...' : '');
         }
 
-        this.persist();
+        this.persist().catch((err) => this.handlePersistError(err));
         return msg;
     }
 
@@ -115,7 +119,9 @@ export class ConversationManager {
         if (!msg) return false;
         msg.content = content;
         conv.updatedAt = Date.now();
-        if (!skipSave) this.persist();
+        if (!skipSave) {
+            this.persist().catch((err) => this.handlePersistError(err));
+        }
         return true;
     }
 

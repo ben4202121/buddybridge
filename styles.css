@@ -574,7 +574,7 @@
 }
 
 /* ==================== 不可见辅助类 ==================== */
-.buddybridge-hidden { display: none !important; }
+.buddybridge-chat-container .buddybridge-hidden { display: none; }
 
 /* ==================== Reduced motion ==================== */
 @media (prefers-reduced-motion: reduce) {

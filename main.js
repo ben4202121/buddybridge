@@ -43,6 +43,68 @@ var import_obsidian3 = require("obsidian");
 var import_child_process = require("child_process");
 var path = __toESM(require("path"));
 var fs = __toESM(require("fs"));
+
+// src/types.ts
+var CURRENT_SETTINGS_VERSION = 3;
+var DEFAULT_SETTINGS = {
+  codebuddyPath: "",
+  maxConversations: 20,
+  version: CURRENT_SETTINGS_VERSION
+};
+function isObject(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function getString(data, key) {
+  const value = data[key];
+  return typeof value === "string" ? value : void 0;
+}
+function getNumber(data, key) {
+  const value = data[key];
+  return typeof value === "number" ? value : void 0;
+}
+function getErrorMessage(error) {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (typeof error === "string") {
+    return error;
+  }
+  return "\u672A\u77E5\u9519\u8BEF";
+}
+function migrateSettings(stored) {
+  var _a;
+  if (!isObject(stored)) {
+    return { ...DEFAULT_SETTINGS };
+  }
+  const maxConversations = getNumber(stored, "maxConversations");
+  return {
+    codebuddyPath: (_a = getString(stored, "codebuddyPath")) != null ? _a : DEFAULT_SETTINGS.codebuddyPath,
+    maxConversations: typeof maxConversations === "number" && maxConversations > 0 ? maxConversations : DEFAULT_SETTINGS.maxConversations,
+    version: CURRENT_SETTINGS_VERSION
+  };
+}
+function generateId() {
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = Math.random() * 16 | 0;
+    const v = c === "x" ? r : r & 3 | 8;
+    return v.toString(16);
+  });
+}
+function normalizePersistedData(raw) {
+  const result = {};
+  if (!isObject(raw)) {
+    return result;
+  }
+  if (Array.isArray(raw.conversations)) {
+    result.conversations = raw.conversations;
+  }
+  if (isObject(raw.settings)) {
+    result.settings = migrateSettings(raw.settings);
+  }
+  return result;
+}
+
+// src/api.ts
 var TIMEOUT = 3e5;
 var NODE_EXECUTABLE = process.platform === "win32" ? "node.exe" : "node";
 function findNodeExecutable() {
@@ -193,34 +255,74 @@ function resolveCodebuddyPath(customPath) {
   }
   return "codebuddy";
 }
+function parseMessageBlock(block) {
+  if (!isObject(block))
+    return null;
+  const type = getString(block, "type");
+  if (type !== "thinking" && type !== "text" && type !== "tool_call")
+    return null;
+  return {
+    type,
+    thinking: getString(block, "thinking"),
+    text: getString(block, "text"),
+    name: getString(block, "name"),
+    input: block.input
+  };
+}
+function blockToChunk(block) {
+  if (block.type === "thinking") {
+    return { type: "thinking", content: block.thinking || "" };
+  }
+  if (block.type === "text") {
+    return { type: "text", content: block.text || "" };
+  }
+  const input = block.input;
+  return {
+    type: "tool",
+    content: "",
+    toolName: block.name || "unknown",
+    toolDetail: typeof input === "string" ? input : JSON.stringify(input != null ? input : {})
+  };
+}
+function parseStreamEvent(raw) {
+  if (!isObject(raw))
+    return null;
+  const event = isObject(raw.event) ? raw.event : raw;
+  if (!isObject(event))
+    return null;
+  return {
+    type: getString(event, "type") || "",
+    thinking: getString(event, "thinking"),
+    text: getString(event, "text"),
+    name: getString(event, "name"),
+    input: event.input,
+    result: getString(event, "result"),
+    error: getString(event, "error"),
+    message: getString(event, "message"),
+    content: getString(event, "content")
+  };
+}
 function parseStreamLine(line) {
   if (!line.trim())
     return null;
   try {
-    const obj = JSON.parse(line);
-    const event = obj.event || obj;
-    if (obj.type === "assistant" || obj.type === "user") {
-      const msg = obj.message;
-      if (!msg || !Array.isArray(msg.content))
-        return null;
-      for (const block of msg.content) {
-        if (block.type === "thinking") {
-          return { type: "thinking", content: block.thinking || "" };
-        }
-        if (block.type === "text") {
-          return { type: "text", content: block.text || "" };
-        }
-        if (block.type === "tool_call") {
-          return {
-            type: "tool",
-            content: "",
-            toolName: block.name || "unknown",
-            toolDetail: typeof block.input === "string" ? block.input : JSON.stringify(block.input || {})
-          };
+    const raw = JSON.parse(line);
+    if (isObject(raw) && (raw.type === "assistant" || raw.type === "user")) {
+      const message = isObject(raw.message) ? raw.message : null;
+      const content = Array.isArray(message == null ? void 0 : message.content) ? message.content : [];
+      for (const item of content) {
+        const block = parseMessageBlock(item);
+        if (block) {
+          const chunk = blockToChunk(block);
+          if (chunk)
+            return chunk;
         }
       }
       return null;
     }
+    const event = parseStreamEvent(raw);
+    if (!event)
+      return null;
     if (event.type === "thinking") {
       return { type: "thinking", content: event.thinking || "" };
     }
@@ -228,24 +330,24 @@ function parseStreamLine(line) {
       return { type: "text", content: event.text || "" };
     }
     if (event.type === "tool_call") {
+      const input = event.input;
       return {
         type: "tool",
         content: "",
         toolName: event.name || "unknown",
-        toolDetail: typeof event.input === "string" ? event.input : JSON.stringify(event.input || {})
+        toolDetail: typeof input === "string" ? input : JSON.stringify(input != null ? input : {})
       };
     }
-    if (obj.type === "result") {
-      return { type: "done", content: obj.result || "" };
+    if (event.type === "result") {
+      return { type: "done", content: event.result || "" };
     }
-    if (obj.type === "error") {
-      return { type: "error", content: obj.error || obj.message || "\u672A\u77E5\u9519\u8BEF" };
+    if (event.type === "error") {
+      return { type: "error", content: event.error || event.message || "\u672A\u77E5\u9519\u8BEF" };
     }
     console.log("[BB] unknown event:", line.substring(0, 200));
     const fallbackText = event.text || event.content || event.message || "";
     if (fallbackText) {
-      const display = typeof fallbackText === "string" ? fallbackText : JSON.stringify(fallbackText);
-      return { type: "text", content: display };
+      return { type: "text", content: fallbackText };
     }
     return null;
   } catch (e) {
@@ -277,6 +379,7 @@ var BuddyBridgeAPI = class {
     });
   }
   async *sendMessage(sessionId, text, vaultPath) {
+    var _a;
     const scriptPath = this.scriptPath;
     const procOptions = {
       timeout: this.timeout,
@@ -355,8 +458,11 @@ var BuddyBridgeAPI = class {
     });
     while (true) {
       if (chunkQueue.length > 0) {
-        yield chunkQueue.shift();
-        continue;
+        const nextChunk = chunkQueue.shift();
+        if (nextChunk) {
+          yield nextChunk;
+          continue;
+        }
       }
       if (closed) {
         if (buffer.trim()) {
@@ -370,7 +476,7 @@ var BuddyBridgeAPI = class {
         resolveQueue = r;
       });
       if (next.done) {
-        if (next.value.type === "error")
+        if (((_a = next.value) == null ? void 0 : _a.type) === "error")
           throw new Error(next.value.content);
         break;
       }
@@ -383,32 +489,6 @@ var BuddyBridgeAPI = class {
 
 // src/views/chat.ts
 var import_obsidian = require("obsidian");
-
-// src/types.ts
-var CURRENT_SETTINGS_VERSION = 3;
-var DEFAULT_SETTINGS = {
-  codebuddyPath: "",
-  maxConversations: 20,
-  version: CURRENT_SETTINGS_VERSION
-};
-function migrateSettings(stored) {
-  if (!stored || typeof stored !== "object") {
-    return { ...DEFAULT_SETTINGS };
-  }
-  const settings = {
-    codebuddyPath: typeof stored.codebuddyPath === "string" ? stored.codebuddyPath : DEFAULT_SETTINGS.codebuddyPath,
-    maxConversations: typeof stored.maxConversations === "number" && stored.maxConversations > 0 ? stored.maxConversations : DEFAULT_SETTINGS.maxConversations,
-    version: CURRENT_SETTINGS_VERSION
-  };
-  return settings;
-}
-function generateId() {
-  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
-    const r = Math.random() * 16 | 0;
-    const v = c === "x" ? r : r & 3 | 8;
-    return v.toString(16);
-  });
-}
 
 // src/chat/manager.ts
 var ConversationManager = class {
@@ -424,6 +504,9 @@ var ConversationManager = class {
     if (this.persistCallback) {
       await this.persistCallback(this.getAll());
     }
+  }
+  handlePersistError(error) {
+    console.error("[BB] persist failed:", getErrorMessage(error));
   }
   /** 显式触发持久化（流式结束后调用） */
   async flush() {
@@ -454,7 +537,7 @@ var ConversationManager = class {
     };
     this.conversations.set(id, conv);
     this.activeId = id;
-    this.persist();
+    this.persist().catch((err) => this.handlePersistError(err));
     return conv;
   }
   /** 删除对话 */
@@ -466,7 +549,7 @@ var ConversationManager = class {
       const remaining = this.getAll();
       this.activeId = remaining.length > 0 ? remaining[0].id : null;
     }
-    this.persist();
+    this.persist().catch((err) => this.handlePersistError(err));
     return true;
   }
   /** 切换到指定对话 */
@@ -503,7 +586,7 @@ var ConversationManager = class {
     if (conv.title === "\u65B0\u5BF9\u8BDD" && role === "user" && content.trim()) {
       conv.title = content.substring(0, 30) + (content.length > 30 ? "..." : "");
     }
-    this.persist();
+    this.persist().catch((err) => this.handlePersistError(err));
     return msg;
   }
   /** 更新指定消息内容（用于流式追加） */
@@ -516,8 +599,9 @@ var ConversationManager = class {
       return false;
     msg.content = content;
     conv.updatedAt = Date.now();
-    if (!skipSave)
-      this.persist();
+    if (!skipSave) {
+      this.persist().catch((err) => this.handlePersistError(err));
+    }
     return true;
   }
   /** 设置对话的 Gateway sessionId */
@@ -639,7 +723,7 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
       closeBtn.onkeydown = (e) => {
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
-          this.deleteChat(conv.id, e);
+          void this.deleteChat(conv.id, e);
         }
       };
       tab.onclick = () => this.switchToChat(conv.id);
@@ -693,16 +777,19 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
     const thinkingBlock = bubble.querySelector(".buddybridge-thinking-block");
     const toolsBlock = bubble.querySelector(".buddybridge-tools-block");
     let markdownContainer = bubble.querySelector(".buddybridge-markdown-content");
-    if (!markdownContainer) {
+    if (!(markdownContainer instanceof HTMLElement)) {
       markdownContainer = bubble.createDiv({ cls: "buddybridge-markdown-content" });
-      if (thinkingBlock) {
+      if (thinkingBlock instanceof HTMLElement) {
         bubble.insertBefore(markdownContainer, thinkingBlock);
-      } else if (toolsBlock) {
+      } else if (toolsBlock instanceof HTMLElement) {
         bubble.insertBefore(markdownContainer, toolsBlock);
       }
     }
+    if (!(markdownContainer instanceof HTMLElement))
+      return;
     markdownContainer.empty();
-    await import_obsidian.MarkdownRenderer.renderMarkdown(
+    await import_obsidian.MarkdownRenderer.render(
+      this.app,
       content,
       markdownContainer,
       "",
@@ -756,28 +843,29 @@ ${text}` : text;
       const streamingBubble = this.messageContainer.querySelector(
         `.buddybridge-message-assistant:last-child .buddybridge-bubble`
       );
+      if (!(streamingBubble instanceof HTMLElement)) {
+        throw new Error("\u627E\u4E0D\u5230 Assistant \u6D88\u606F\u6C14\u6CE1");
+      }
       for await (const chunk of this.api.sendMessage(conv.sessionId, contextText, this.vaultPath)) {
-        if (!streamingBubble)
-          continue;
         const bubble = streamingBubble;
         if (firstChunk) {
           firstChunk = false;
           const thinking = bubble.querySelector(".buddybridge-thinking");
-          if (thinking) {
+          if (thinking instanceof HTMLElement) {
             thinking.addClass("buddybridge-thinking-fadeout");
-            await new Promise((r) => setTimeout(r, 200));
+            await new Promise((r) => window.setTimeout(r, 200));
             thinking.remove();
           }
         }
         if (chunk.type === "thinking") {
           thinkingContent += chunk.content;
           let block = bubble.querySelector(".buddybridge-thinking-block");
-          if (!block) {
+          if (!(block instanceof HTMLElement)) {
             block = bubble.createDiv({ cls: "buddybridge-thinking-block" });
             const header = block.createDiv({ cls: "buddybridge-thinking-header" });
             const icon = header.createSpan({ cls: "buddybridge-thinking-header-icon" });
             (0, import_obsidian.setIcon)(icon, "sparkles");
-            const label = header.createSpan({ cls: "buddybridge-thinking-header-text", text: "\u601D\u8003\u4E2D..." });
+            header.createSpan({ cls: "buddybridge-thinking-header-text", text: "\u601D\u8003\u4E2D..." });
             const chevron = header.createSpan({ cls: "buddybridge-thinking-header-chevron", text: "\u25BE" });
             const bodyDiv = block.createDiv({ cls: "buddybridge-thinking-body buddybridge-hidden" });
             header.addEventListener("click", () => {
@@ -787,21 +875,21 @@ ${text}` : text;
             });
           }
           const body = block.querySelector(".buddybridge-thinking-body");
-          if (body) {
+          if (body instanceof HTMLElement) {
             body.setText(thinkingContent);
           }
         } else if (chunk.type === "tool") {
           let toolsBlock = bubble.querySelector(".buddybridge-tools-block");
-          if (!toolsBlock) {
+          if (!(toolsBlock instanceof HTMLElement)) {
             toolsBlock = bubble.createDiv({ cls: "buddybridge-tools-block" });
             const hdr = toolsBlock.createDiv({ cls: "buddybridge-tools-header" });
             const icon = hdr.createSpan({ cls: "buddybridge-tools-header-icon" });
             (0, import_obsidian.setIcon)(icon, "wrench");
-            const label = hdr.createSpan({ cls: "buddybridge-tools-header-text", text: "\u5DE5\u5177\u8C03\u7528" });
+            hdr.createSpan({ cls: "buddybridge-tools-header-text", text: "\u5DE5\u5177\u8C03\u7528" });
             const chevron = hdr.createSpan({ cls: "buddybridge-tools-header-chevron", text: "\u25BE" });
             hdr.addEventListener("click", () => {
               const list2 = toolsBlock.querySelector(".buddybridge-tools-list");
-              if (list2) {
+              if (list2 instanceof HTMLElement) {
                 const hidden = list2.hasClass("buddybridge-hidden");
                 list2.toggleClass("buddybridge-hidden", !hidden);
                 chevron.textContent = hidden ? "\u25BE" : "\u25B8";
@@ -810,7 +898,7 @@ ${text}` : text;
             toolsBlock.createDiv({ cls: "buddybridge-tools-list buddybridge-hidden" });
           }
           const list = toolsBlock.querySelector(".buddybridge-tools-list");
-          if (list) {
+          if (list instanceof HTMLElement) {
             const toolName = chunk.toolName || "";
             const toolDetail = chunk.toolDetail || "";
             let iconName = "wrench";
@@ -843,17 +931,16 @@ ${text}` : text;
       if (!finalContent) {
         this.manager.updateMessage(convId, aiMsg.id, "\uFF08\u65E0\u54CD\u5E94\uFF0C\u8BF7\u91CD\u8BD5\uFF09");
       }
-      if (streamingBubble) {
-        const thinkingLabel = streamingBubble.querySelector(".buddybridge-thinking-header-text");
-        if (thinkingLabel) {
-          thinkingLabel.setText("\u5DF2\u601D\u8003");
-        }
+      const thinkingLabel = streamingBubble.querySelector(".buddybridge-thinking-header-text");
+      if (thinkingLabel instanceof HTMLElement) {
+        thinkingLabel.setText("\u5DF2\u601D\u8003");
       }
       await this.renderMessages();
       await this.manager.flush();
     } catch (error) {
-      this.manager.updateMessage(convId, aiMsg.id, `\u9519\u8BEF: ${error.message}`);
-      new import_obsidian.Notice(`\u8BF7\u6C42\u5931\u8D25: ${error.message}`);
+      const message = getErrorMessage(error);
+      this.manager.updateMessage(convId, aiMsg.id, `\u9519\u8BEF: ${message}`);
+      new import_obsidian.Notice(`\u8BF7\u6C42\u5931\u8D25: ${message}`);
       await this.renderMessages();
     } finally {
       this.isStreaming = false;
@@ -898,67 +985,82 @@ var BuddyBridgePlugin = class extends import_obsidian3.Plugin {
     this.chatView = null;
   }
   async onload() {
-    await this.loadSettings();
-    this.api = new BuddyBridgeAPI();
-    this.api.setCodebuddyPath(this.settings.codebuddyPath);
-    this.registerView(
-      VIEW_TYPE_CHAT,
-      (leaf) => {
-        const view = new BuddyBridgeChatView(leaf, this.api, async () => {
-          const data = await this.loadData();
-          return (data == null ? void 0 : data.conversations) || [];
-        });
-        this.chatView = view;
-        view.getManager().setPersistCallback(async (conversations) => {
-          const data = await this.loadData() || {};
-          data.conversations = conversations;
-          await this.saveData(data);
-        });
-        return view;
-      }
-    );
-    this.addRibbonIcon("bot", "BuddyBridge \u804A\u5929", async () => {
-      await this.activateView();
-    });
-    this.addCommand({
-      id: "buddybridge-open-chat",
-      name: "\u6253\u5F00\u804A\u5929\u9762\u677F",
-      callback: async () => {
+    try {
+      await this.loadSettings();
+      this.api = new BuddyBridgeAPI();
+      this.api.setCodebuddyPath(this.settings.codebuddyPath);
+      this.registerView(
+        VIEW_TYPE_CHAT,
+        (leaf) => {
+          const view = new BuddyBridgeChatView(leaf, this.api, async () => {
+            const data = normalizePersistedData(await this.loadData());
+            return data.conversations || [];
+          });
+          this.chatView = view;
+          view.getManager().setPersistCallback(async (conversations) => {
+            const data = normalizePersistedData(await this.loadData());
+            data.conversations = conversations;
+            await this.saveData(data);
+          });
+          return view;
+        }
+      );
+      this.addRibbonIcon("bot", "BuddyBridge \u804A\u5929", async () => {
         await this.activateView();
-      }
-    });
-    this.addSettingTab(new BuddyBridgeSettingTab(this.app, this));
+      });
+      this.addCommand({
+        id: "open-chat",
+        name: "\u6253\u5F00\u804A\u5929\u9762\u677F",
+        callback: async () => {
+          await this.activateView();
+        }
+      });
+      this.addSettingTab(new BuddyBridgeSettingTab(this.app, this));
+    } catch (e) {
+      console.error("[BB] \u63D2\u4EF6\u52A0\u8F7D\u5931\u8D25:", e);
+      new import_obsidian3.Notice("BuddyBridge \u52A0\u8F7D\u5931\u8D25\uFF0C\u8BF7\u67E5\u770B Console");
+    }
   }
   onunload() {
     this.api.cancel();
   }
   async activateView() {
-    const { workspace } = this.app;
-    let leaf = workspace.getLeavesOfType(VIEW_TYPE_CHAT)[0];
-    if (!leaf) {
-      const rightLeaf = workspace.getRightLeaf(false);
-      if (rightLeaf) {
-        await rightLeaf.setViewState({ type: VIEW_TYPE_CHAT });
-        leaf = rightLeaf;
+    try {
+      const { workspace } = this.app;
+      let leaf = workspace.getLeavesOfType(VIEW_TYPE_CHAT)[0];
+      if (!leaf) {
+        leaf = workspace.getRightLeaf(true);
+        if (!leaf) {
+          leaf = workspace.getLeaf(true);
+        }
+        if (leaf) {
+          await leaf.setViewState({ type: VIEW_TYPE_CHAT, active: true });
+        }
       }
-    }
-    if (leaf) {
-      workspace.setActiveLeaf(leaf, { focus: true });
+      if (leaf) {
+        workspace.revealLeaf(leaf);
+        workspace.setActiveLeaf(leaf, { focus: true });
+      } else {
+        new import_obsidian3.Notice("BuddyBridge\uFF1A\u65E0\u6CD5\u521B\u5EFA\u804A\u5929\u9762\u677F");
+      }
+    } catch (e) {
+      console.error("[BB] \u6253\u5F00\u804A\u5929\u9762\u677F\u5931\u8D25:", e);
+      new import_obsidian3.Notice("BuddyBridge\uFF1A\u6253\u5F00\u9762\u677F\u5931\u8D25\uFF0C\u8BF7\u67E5\u770B Console");
     }
   }
   async loadPersistedConversations() {
-    const data = await this.loadData();
+    const data = normalizePersistedData(await this.loadData());
     if (this.chatView) {
-      await this.chatView.loadConversations((data == null ? void 0 : data.conversations) || []);
+      await this.chatView.loadConversations(data.conversations || []);
     }
   }
   async loadSettings() {
-    const stored = await this.loadData();
-    this.settings = migrateSettings(stored);
+    const data = normalizePersistedData(await this.loadData());
+    this.settings = migrateSettings(data.settings);
   }
   async saveSettings() {
-    const existingData = await this.loadData() || {};
-    const merged = { ...existingData, ...this.settings };
+    const existingData = normalizePersistedData(await this.loadData());
+    const merged = { ...existingData, settings: this.settings };
     await this.saveData(merged);
     this.api.setCodebuddyPath(this.settings.codebuddyPath);
   }

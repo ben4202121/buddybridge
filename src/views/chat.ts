@@ -1,7 +1,8 @@
-import { ItemView, WorkspaceLeaf, Notice, MarkdownRenderer, Component, setIcon } from 'obsidian';
+import { ItemView, Notice, MarkdownRenderer, Component, setIcon } from 'obsidian';
+import type { WorkspaceLeaf } from 'obsidian';
 import { ConversationManager } from '../chat/manager';
-import { BuddyBridgeAPI, type StreamChunk } from '../api';
-import type { Conversation, ChatMessage } from '../types';
+import { BuddyBridgeAPI } from '../api';
+import { getErrorMessage, type Conversation, ChatMessage } from '../types';
 
 export const VIEW_TYPE_CHAT = "buddybridge-panel";
 
@@ -101,7 +102,7 @@ export class BuddyBridgeChatView extends ItemView {
         await this.renderMessages();
     }
 
-    private async deleteChat(id: string, e: MouseEvent) {
+    private async deleteChat(id: string, e: UIEvent) {
         e.stopPropagation();
         this.manager.deleteConversation(id);
         this.renderTabs();
@@ -130,11 +131,11 @@ export class BuddyBridgeChatView extends ItemView {
                 attr: { title: '关闭对话', 'aria-label': '关闭对话', role: 'button', tabindex: '0' }
             });
             setIcon(closeBtn, 'x');
-            closeBtn.onclick = (e) => this.deleteChat(conv.id, e);
-            closeBtn.onkeydown = (e) => {
+            closeBtn.onclick = (e: MouseEvent) => this.deleteChat(conv.id, e);
+            closeBtn.onkeydown = (e: KeyboardEvent) => {
                 if (e.key === 'Enter' || e.key === ' ') {
                     e.preventDefault();
-                    this.deleteChat(conv.id, e as unknown as MouseEvent);
+                    void this.deleteChat(conv.id, e);
                 }
             };
             tab.onclick = () => this.switchToChat(conv.id);
@@ -200,22 +201,25 @@ export class BuddyBridgeChatView extends ItemView {
         const toolsBlock = bubble.querySelector('.buddybridge-tools-block');
 
         // 查找或创建 Markdown 容器（复用已有容器避免频繁 DOM 创建）
-        let markdownContainer = bubble.querySelector('.buddybridge-markdown-content') as HTMLElement;
-        if (!markdownContainer) {
+        let markdownContainer = bubble.querySelector('.buddybridge-markdown-content');
+        if (!(markdownContainer instanceof HTMLElement)) {
             markdownContainer = bubble.createDiv({ cls: 'buddybridge-markdown-content' });
 
             // 如果有思考块/工具块，将 Markdown 内容插入到它们之前
-            if (thinkingBlock) {
+            if (thinkingBlock instanceof HTMLElement) {
                 bubble.insertBefore(markdownContainer, thinkingBlock);
-            } else if (toolsBlock) {
+            } else if (toolsBlock instanceof HTMLElement) {
                 bubble.insertBefore(markdownContainer, toolsBlock);
             }
         }
 
+        if (!(markdownContainer instanceof HTMLElement)) return;
+
         // 清空之前渲染的内容
         markdownContainer.empty();
 
-        await MarkdownRenderer.renderMarkdown(
+        await MarkdownRenderer.render(
+            this.app,
             content,
             markdownContainer,
             '',
@@ -284,32 +288,34 @@ ${text}`
 
             const streamingBubble = this.messageContainer.querySelector(
                 `.buddybridge-message-assistant:last-child .buddybridge-bubble`
-            ) as HTMLElement;
+            );
+            if (!(streamingBubble instanceof HTMLElement)) {
+                throw new Error('找不到 Assistant 消息气泡');
+            }
 
             for await (const chunk of this.api.sendMessage(conv.sessionId, contextText, this.vaultPath)) {
-                if (!streamingBubble) continue;
                 const bubble = streamingBubble;
 
                 if (firstChunk) {
                     firstChunk = false;
                     // 移除思考指示器
-                    const thinking = bubble.querySelector('.buddybridge-thinking') as HTMLElement;
-                    if (thinking) {
+                    const thinking = bubble.querySelector('.buddybridge-thinking');
+                    if (thinking instanceof HTMLElement) {
                         thinking.addClass('buddybridge-thinking-fadeout');
-                        await new Promise(r => setTimeout(r, 200));
+                        await new Promise(r => window.setTimeout(r, 200));
                         thinking.remove();
                     }
                 }
 
                 if (chunk.type === 'thinking') {
                     thinkingContent += chunk.content;
-                    let block = bubble.querySelector('.buddybridge-thinking-block') as HTMLElement;
-                    if (!block) {
+                    let block = bubble.querySelector('.buddybridge-thinking-block');
+                    if (!(block instanceof HTMLElement)) {
                         block = bubble.createDiv({ cls: 'buddybridge-thinking-block' });
                         const header = block.createDiv({ cls: 'buddybridge-thinking-header' });
                         const icon = header.createSpan({ cls: 'buddybridge-thinking-header-icon' });
                         setIcon(icon, 'sparkles');
-                        const label = header.createSpan({ cls: 'buddybridge-thinking-header-text', text: '思考中...' });
+                        header.createSpan({ cls: 'buddybridge-thinking-header-text', text: '思考中...' });
                         const chevron = header.createSpan({ cls: 'buddybridge-thinking-header-chevron', text: '▾' });
 
                         const bodyDiv = block.createDiv({ cls: 'buddybridge-thinking-body buddybridge-hidden' });
@@ -319,23 +325,23 @@ ${text}`
                             chevron.textContent = hidden ? '▾' : '▸';
                         });
                     }
-                    const body = block.querySelector('.buddybridge-thinking-body') as HTMLElement;
-                    if (body) {
+                    const body = block.querySelector('.buddybridge-thinking-body');
+                    if (body instanceof HTMLElement) {
                         body.setText(thinkingContent);
                     }
                 } else if (chunk.type === 'tool') {
-                    let toolsBlock = bubble.querySelector('.buddybridge-tools-block') as HTMLElement;
-                    if (!toolsBlock) {
+                    let toolsBlock = bubble.querySelector('.buddybridge-tools-block');
+                    if (!(toolsBlock instanceof HTMLElement)) {
                         toolsBlock = bubble.createDiv({ cls: 'buddybridge-tools-block' });
                         const hdr = toolsBlock.createDiv({ cls: 'buddybridge-tools-header' });
                         const icon = hdr.createSpan({ cls: 'buddybridge-tools-header-icon' });
                         setIcon(icon, 'wrench');
-                        const label = hdr.createSpan({ cls: 'buddybridge-tools-header-text', text: '工具调用' });
+                        hdr.createSpan({ cls: 'buddybridge-tools-header-text', text: '工具调用' });
                         const chevron = hdr.createSpan({ cls: 'buddybridge-tools-header-chevron', text: '▾' });
 
                         hdr.addEventListener('click', () => {
-                            const list = toolsBlock.querySelector('.buddybridge-tools-list') as HTMLElement;
-                            if (list) {
+                            const list = toolsBlock.querySelector('.buddybridge-tools-list');
+                            if (list instanceof HTMLElement) {
                                 const hidden = list.hasClass('buddybridge-hidden');
                                 list.toggleClass('buddybridge-hidden', !hidden);
                                 chevron.textContent = hidden ? '▾' : '▸';
@@ -343,8 +349,8 @@ ${text}`
                         });
                         toolsBlock.createDiv({ cls: 'buddybridge-tools-list buddybridge-hidden' });
                     }
-                    const list = toolsBlock.querySelector('.buddybridge-tools-list') as HTMLElement;
-                    if (list) {
+                    const list = toolsBlock.querySelector('.buddybridge-tools-list');
+                    if (list instanceof HTMLElement) {
                         const toolName = chunk.toolName || '';
                         const toolDetail = chunk.toolDetail || '';
                         let iconName = 'wrench';
@@ -382,17 +388,16 @@ ${text}`
             }
 
             // 流式结束后再渲染一次，确保思考指示器等占位元素被清除
-            if (streamingBubble) {
-                const thinkingLabel = streamingBubble.querySelector('.buddybridge-thinking-header-text') as HTMLElement;
-                if (thinkingLabel) {
-                    thinkingLabel.setText('已思考');
-                }
+            const thinkingLabel = streamingBubble.querySelector('.buddybridge-thinking-header-text');
+            if (thinkingLabel instanceof HTMLElement) {
+                thinkingLabel.setText('已思考');
             }
             await this.renderMessages();
             await this.manager.flush();
-        } catch (error: any) {
-            this.manager.updateMessage(convId, aiMsg.id, `错误: ${error.message}`);
-            new Notice(`请求失败: ${error.message}`);
+        } catch (error: unknown) {
+            const message = getErrorMessage(error);
+            this.manager.updateMessage(convId, aiMsg.id, `错误: ${message}`);
+            new Notice(`请求失败: ${message}`);
             await this.renderMessages();
         } finally {
             this.isStreaming = false;
