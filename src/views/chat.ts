@@ -276,9 +276,12 @@ export class BuddyBridgeChatView extends ItemView {
         let thinkingContent = '';
         let textContent = '';
         try {
-            // 注入 vault 上下文
+            // 注入 vault 上下文 + 当前文件
+            const activeFile = this.app.workspace.getActiveFile();
+            const activeFilePath = activeFile?.path || null;
             const contextText = this.vaultPath
                 ? `当前 Obsidian Vault 路径: ${this.vaultPath}
+${activeFilePath ? `当前文档: ${activeFilePath}` : ''}
 工作目录即 vault 根目录，请基于 vault 中的文件回答问题。
 
 ---
