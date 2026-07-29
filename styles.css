@@ -500,6 +500,128 @@
     border-top: 1px solid var(--background-modifier-border);
 }
 
+/* ==================== 附件区域 ==================== */
+.buddybridge-attachments-bar {
+    display: flex;
+    align-items: center;
+    gap: var(--buddybridge-gap-sm);
+    padding: 0 var(--buddybridge-gap-lg);
+    min-height: 0;
+    overflow-x: auto;
+    flex-shrink: 0;
+    transition: min-height 0.15s ease, padding 0.15s ease, opacity 0.15s ease;
+}
+
+.buddybridge-attachments-bar:empty {
+    min-height: 0;
+    padding: 0 var(--buddybridge-gap-lg);
+    opacity: 0;
+    pointer-events: none;
+}
+
+.buddybridge-attachment-chip {
+    display: flex;
+    align-items: center;
+    gap: var(--buddybridge-gap-xs);
+    padding: 2px 8px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--buddybridge-radius-lg);
+    font-size: 11px;
+    background: var(--background-secondary);
+    color: var(--text-muted);
+    white-space: nowrap;
+    flex-shrink: 0;
+    max-width: 180px;
+    cursor: default;
+}
+
+.buddybridge-attachment-chip-icon {
+    display: flex;
+    align-items: center;
+    color: var(--interactive-accent);
+    flex-shrink: 0;
+}
+
+.buddybridge-attachment-chip-icon svg {
+    width: 12px;
+    height: 12px;
+}
+
+.buddybridge-attachment-chip-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.buddybridge-attachment-chip-close {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    opacity: 0.5;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: opacity 0.15s ease, background-color 0.15s ease;
+}
+
+.buddybridge-attachment-chip-close:hover {
+    opacity: 1;
+    background: var(--background-modifier-hover);
+}
+
+.buddybridge-attachment-chip-close svg {
+    width: 10px;
+    height: 10px;
+}
+
+.buddybridge-attachment-count {
+    font-size: 10px;
+    color: var(--text-faint);
+    margin-left: auto;
+    flex-shrink: 0;
+}
+
+/* ==================== 文件选择按钮 ==================== */
+.buddybridge-file-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--buddybridge-radius-lg);
+    background: var(--background-primary);
+    color: var(--text-muted);
+    cursor: pointer;
+    align-self: flex-end;
+    flex-shrink: 0;
+    transition: color 0.15s ease, border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.buddybridge-file-btn:hover {
+    color: var(--interactive-accent);
+    border-color: var(--interactive-accent);
+    background: var(--background-secondary);
+}
+
+.buddybridge-file-btn:active {
+    transform: scale(0.96);
+}
+
+.buddybridge-file-btn svg {
+    width: 16px;
+    height: 16px;
+}
+
+/* ==================== 拖拽样式 ==================== */
+.buddybridge-drag-over {
+    outline: 2px dashed var(--interactive-accent);
+    outline-offset: -2px;
+    background: var(--background-secondary);
+}
+
 /* ==================== 输入区 ==================== */
 .buddybridge-input-area {
     display: flex;

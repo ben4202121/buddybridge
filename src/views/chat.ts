@@ -1,8 +1,11 @@
-import { ItemView, Notice, MarkdownRenderer, Component, setIcon } from 'obsidian';
+import { ItemView, Notice, MarkdownRenderer, Component, setIcon, TFile } from 'obsidian';
 import type { WorkspaceLeaf } from 'obsidian';
 import { ConversationManager } from '../chat/manager';
 import { BuddyBridgeAPI } from '../api';
-import { getErrorMessage, type Conversation, ChatMessage } from '../types';
+import { getErrorMessage, type Conversation, type AttachedFile } from '../types';
+import { VaultFilePickerModal } from './file-picker';
+
+const ALLOWED_EXTENSIONS = new Set(['txt', 'md', 'docx', 'doc', 'pdf', 'xls', 'xlsx']);
 
 export const VIEW_TYPE_CHAT = "buddybridge-panel";
 
@@ -12,6 +15,8 @@ export class BuddyBridgeChatView extends ItemView {
     private messageContainer!: HTMLElement;
     private inputEl!: HTMLTextAreaElement;
     private tabBar!: HTMLElement;
+    private attachments: AttachedFile[] = [];
+    private attachmentsBar!: HTMLElement;
     private isStreaming: boolean = false;
     private streamingMsgId: string | null = null;
     private markdownComponent: Component;
@@ -55,8 +60,18 @@ export class BuddyBridgeChatView extends ItemView {
         // 消息区域
         this.messageContainer = container.createDiv({ cls: 'buddybridge-messages' });
 
+        // 附件区域（文件 chips）
+        this.attachmentsBar = container.createDiv({ cls: 'buddybridge-attachments-bar' });
+
         // 底部输入区
         const inputArea = container.createDiv({ cls: 'buddybridge-input-area' });
+        const fileBtn = inputArea.createEl('button', {
+            cls: 'buddybridge-file-btn',
+            attr: { 'aria-label': '附加文件', title: '附加文件' }
+        });
+        setIcon(fileBtn, 'paperclip');
+        fileBtn.onclick = () => this.openFilePicker();
+
         this.inputEl = inputArea.createEl('textarea', {
             cls: 'buddybridge-input',
             attr: { placeholder: '输入消息... (Shift+Enter 换行，Enter 发送)', rows: '2' }
@@ -70,6 +85,9 @@ export class BuddyBridgeChatView extends ItemView {
             attr: { 'aria-label': '发送' }
         });
         sendBtn.onclick = () => this.sendMessage();
+
+        // 拖拽支持
+        this.setupDragDrop();
 
         // DOM 构建完成后加载历史对话
         try {
@@ -238,6 +256,123 @@ export class BuddyBridgeChatView extends ItemView {
         }
     }
 
+    private openFilePicker() {
+        const modal = new VaultFilePickerModal(this.app, (file) => {
+            this.addAttachment(file);
+        });
+        modal.open();
+    }
+
+    private addAttachment(file: AttachedFile) {
+        // 避免重复添加
+        if (this.attachments.some(a => a.path === file.path)) return;
+        this.attachments.push(file);
+        this.renderAttachments();
+    }
+
+    private removeAttachment(path: string) {
+        this.attachments = this.attachments.filter(a => a.path !== path);
+        this.renderAttachments();
+    }
+
+    private renderAttachments() {
+        this.attachmentsBar.empty();
+        if (this.attachments.length === 0) return;
+
+        for (const file of this.attachments) {
+            const chip = this.attachmentsBar.createDiv({ cls: 'buddybridge-attachment-chip' });
+            const icon = chip.createSpan({ cls: 'buddybridge-attachment-chip-icon' });
+            setIcon(icon, 'file-text');
+            chip.createSpan({ cls: 'buddybridge-attachment-chip-name', text: file.name });
+            const closeBtn = chip.createSpan({
+                cls: 'buddybridge-attachment-chip-close',
+                attr: { role: 'button', 'aria-label': '移除文件', tabindex: '0' }
+            });
+            setIcon(closeBtn, 'x');
+            closeBtn.onclick = (e) => {
+                e.stopPropagation();
+                this.removeAttachment(file.path);
+            };
+            closeBtn.onkeydown = (e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    this.removeAttachment(file.path);
+                }
+            };
+        }
+
+        // 显示文件数量
+        const count = this.attachmentsBar.createDiv({ cls: 'buddybridge-attachment-count' });
+        count.createSpan({ text: `${this.attachments.length} 个文件` });
+    }
+
+    private setupDragDrop() {
+        const container = this.containerEl;
+
+        container.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            container.addClass('buddybridge-drag-over');
+        });
+
+        container.addEventListener('dragleave', () => {
+            container.removeClass('buddybridge-drag-over');
+        });
+
+        container.addEventListener('drop', async (e) => {
+            e.preventDefault();
+            container.removeClass('buddybridge-drag-over');
+
+            // 尝试从 Obsidian 文件管理器拖拽
+            const path = e.dataTransfer?.getData('text/plain');
+            if (path) {
+                const file = this.app.vault.getAbstractFileByPath(path);
+                if (file instanceof TFile) {
+                    const ext = file.extension.toLowerCase();
+                    if (ALLOWED_EXTENSIONS.has(ext)) {
+                        this.addAttachment({
+                            name: file.name,
+                            path: file.path,
+                            extension: file.extension,
+                        });
+                        return;
+                    }
+                }
+            }
+
+            // 尝试从外部拖拽文件
+            const files = e.dataTransfer?.files;
+            if (files && files.length > 0) {
+                for (const f of Array.from(files)) {
+                    const name = f.name;
+                    const dot = name.lastIndexOf('.');
+                    if (dot === -1) continue;
+                    const ext = name.slice(dot + 1).toLowerCase();
+                    if (ALLOWED_EXTENSIONS.has(ext)) {
+                        // 外部文件尝试通过 vault 导入
+                        try {
+                            const vaultPath = this.vaultPath;
+                            if (vaultPath) {
+                                const targetPath = `buddybridge-uploads/${name}`;
+                                const buffer = await f.arrayBuffer();
+                                const existing = this.app.vault.getAbstractFileByPath(targetPath);
+                                if (!existing) {
+                                    await this.app.vault.createBinary(targetPath, buffer);
+                                }
+                                this.addAttachment({
+                                    name,
+                                    path: targetPath,
+                                    extension: ext,
+                                });
+                            }
+                        } catch (err) {
+                            console.error('[BB] 导入外部文件失败:', err);
+                        }
+                    }
+                }
+            }
+        });
+    }
+
     private async sendMessage() {
         if (this.isStreaming) return;
 
@@ -276,14 +411,17 @@ export class BuddyBridgeChatView extends ItemView {
         let thinkingContent = '';
         let textContent = '';
         try {
-            // 注入 vault 上下文 + 当前文件
+            // 注入 vault 上下文 + 当前文件 + 附件
             const activeFile = this.app.workspace.getActiveFile();
             const activeFilePath = activeFile?.path || null;
+            const filesContext = this.attachments.length > 0
+                ? `\n\n当前附带文件:\n${this.attachments.map(f => `- ${f.path}`).join('\n')}`
+                : '';
             const contextText = this.vaultPath
                 ? `当前 Obsidian Vault 路径: ${this.vaultPath}
 ${activeFilePath ? `当前文档: ${activeFilePath}` : ''}
 工作目录即 vault 根目录，请基于 vault 中的文件回答问题。
-
+${filesContext}
 ---
 
 ${text}`
@@ -397,6 +535,10 @@ ${text}`
             }
             await this.renderMessages();
             await this.manager.flush();
+
+            // 发送完成后清空附件
+            this.attachments = [];
+            this.renderAttachments();
         } catch (error: unknown) {
             const message = getErrorMessage(error);
             this.manager.updateMessage(convId, aiMsg.id, `错误: ${message}`);
