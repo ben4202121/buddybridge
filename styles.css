@@ -7,6 +7,7 @@
     --buddybridge-radius-md: 6px;
     --buddybridge-radius-lg: 8px;
     --buddybridge-radius-xl: 14px;
+    --buddybridge-primary: var(--interactive-accent);
 }
 
 /* ==================== 聊天容器 ==================== */
@@ -54,7 +55,7 @@
 }
 
 .buddybridge-tab-active {
-    background: var(--interactive-accent);
+    background: var(--buddybridge-primary, var(--interactive-accent));
     color: var(--text-on-accent);
 }
 
@@ -113,6 +114,26 @@
 .buddybridge-new-chat-btn svg {
     width: 14px;
     height: 14px;
+}
+
+/* ==================== 当前文件指示器 ==================== */
+.buddybridge-current-file {
+    padding: 3px 14px;
+    font-size: 11px;
+    color: var(--text-faint);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex-shrink: 0;
+    border-bottom: 1px solid var(--background-modifier-border);
+    min-height: 22px;
+    line-height: 22px;
+    transition: color 0.15s ease, background-color 0.15s ease;
+}
+
+.buddybridge-current-file-active {
+    color: var(--text-accent);
+    background: var(--background-primary-alt);
 }
 
 /* ==================== 消息区域 ==================== */
@@ -262,7 +283,7 @@
 }
 
 .buddybridge-message-user .buddybridge-bubble {
-    background: var(--interactive-accent);
+    background: var(--buddybridge-primary, var(--interactive-accent));
     color: var(--text-on-accent);
     border-bottom-right-radius: var(--buddybridge-radius-sm);
 }
@@ -271,7 +292,7 @@
     background: var(--background-secondary);
     color: var(--text-normal);
     border-bottom-left-radius: var(--buddybridge-radius-sm);
-    border-left: 3px solid var(--interactive-accent);
+    border-left: 3px solid var(--buddybridge-primary, var(--interactive-accent));
 }
 
 /* ==================== 思考中指示器 ==================== */
@@ -354,7 +375,7 @@
 .buddybridge-thinking-header-icon {
     display: flex;
     align-items: center;
-    color: var(--interactive-accent);
+    color: var(--buddybridge-primary, var(--interactive-accent));
 }
 
 .buddybridge-thinking-header-icon svg {
@@ -442,7 +463,7 @@
     font-size: 11px;
     font-family: var(--font-monospace);
     color: var(--text-muted);
-    border-left: 3px solid var(--interactive-accent);
+    border-left: 3px solid var(--buddybridge-primary, var(--interactive-accent));
     background: transparent;
     white-space: nowrap;
     overflow: hidden;
@@ -554,7 +575,7 @@
 .buddybridge-bubble blockquote {
     margin: 6px 0;
     padding: var(--buddybridge-gap-xs) var(--buddybridge-gap-lg);
-    border-left: 3px solid var(--interactive-accent);
+    border-left: 3px solid var(--buddybridge-primary, var(--interactive-accent));
     background: var(--background-primary-alt);
     border-radius: 0 var(--buddybridge-radius-sm) var(--buddybridge-radius-sm) 0;
 }
@@ -566,128 +587,6 @@
     border-top: 1px solid var(--background-modifier-border);
 }
 
-/* ==================== 附件区域 ==================== */
-.buddybridge-attachments-bar {
-    display: flex;
-    align-items: center;
-    gap: var(--buddybridge-gap-sm);
-    padding: 0 var(--buddybridge-gap-lg);
-    min-height: 0;
-    overflow-x: auto;
-    flex-shrink: 0;
-    transition: min-height 0.15s ease, padding 0.15s ease, opacity 0.15s ease;
-}
-
-.buddybridge-attachments-bar:empty {
-    min-height: 0;
-    padding: 0 var(--buddybridge-gap-lg);
-    opacity: 0;
-    pointer-events: none;
-}
-
-.buddybridge-attachment-chip {
-    display: flex;
-    align-items: center;
-    gap: var(--buddybridge-gap-xs);
-    padding: 2px 8px;
-    border: 1px solid var(--background-modifier-border);
-    border-radius: var(--buddybridge-radius-lg);
-    font-size: 11px;
-    background: var(--background-secondary);
-    color: var(--text-muted);
-    white-space: nowrap;
-    flex-shrink: 0;
-    max-width: 180px;
-    cursor: default;
-}
-
-.buddybridge-attachment-chip-icon {
-    display: flex;
-    align-items: center;
-    color: var(--interactive-accent);
-    flex-shrink: 0;
-}
-
-.buddybridge-attachment-chip-icon svg {
-    width: 12px;
-    height: 12px;
-}
-
-.buddybridge-attachment-chip-name {
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.buddybridge-attachment-chip-close {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 14px;
-    height: 14px;
-    border-radius: 50%;
-    opacity: 0.5;
-    cursor: pointer;
-    flex-shrink: 0;
-    transition: opacity 0.15s ease, background-color 0.15s ease;
-}
-
-.buddybridge-attachment-chip-close:hover {
-    opacity: 1;
-    background: var(--background-modifier-hover);
-}
-
-.buddybridge-attachment-chip-close svg {
-    width: 10px;
-    height: 10px;
-}
-
-.buddybridge-attachment-count {
-    font-size: 10px;
-    color: var(--text-faint);
-    margin-left: auto;
-    flex-shrink: 0;
-}
-
-/* ==================== 文件选择按钮 ==================== */
-.buddybridge-file-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 32px;
-    height: 32px;
-    padding: 0;
-    border: 1px solid var(--background-modifier-border);
-    border-radius: var(--buddybridge-radius-lg);
-    background: var(--background-primary);
-    color: var(--text-muted);
-    cursor: pointer;
-    align-self: flex-end;
-    flex-shrink: 0;
-    transition: color 0.15s ease, border-color 0.15s ease, background-color 0.15s ease;
-}
-
-.buddybridge-file-btn:hover {
-    color: var(--interactive-accent);
-    border-color: var(--interactive-accent);
-    background: var(--background-secondary);
-}
-
-.buddybridge-file-btn:active {
-    transform: scale(0.96);
-}
-
-.buddybridge-file-btn svg {
-    width: 16px;
-    height: 16px;
-}
-
-/* ==================== 拖拽样式 ==================== */
-.buddybridge-drag-over {
-    outline: 2px dashed var(--interactive-accent);
-    outline-offset: -2px;
-    background: var(--background-secondary);
-}
-
 /* ==================== 输入区 ==================== */
 .buddybridge-input-area {
     display: flex;
@@ -695,6 +594,7 @@
     padding: 10px var(--buddybridge-gap-lg);
     border-top: 1px solid var(--background-modifier-border);
     flex-shrink: 0;
+    position: relative;
 }
 
 .buddybridge-input {
@@ -717,15 +617,15 @@
 
 .buddybridge-input:focus {
     outline: none;
-    border-color: var(--interactive-accent);
-    box-shadow: 0 0 0 1px var(--interactive-accent);
+    border-color: var(--buddybridge-primary, var(--interactive-accent));
+    box-shadow: 0 0 0 1px var(--buddybridge-primary, var(--interactive-accent));
 }
 
 .buddybridge-send-btn {
     padding: var(--buddybridge-gap-sm) 16px;
     border: none;
     border-radius: var(--buddybridge-radius-lg);
-    background: var(--interactive-accent);
+    background: var(--buddybridge-primary, var(--interactive-accent));
     color: var(--text-on-accent);
     font-size: var(--font-ui-small);
     font-weight: 500;
@@ -778,6 +678,56 @@
 
 /* ==================== 不可见辅助类 ==================== */
 .buddybridge-chat-container .buddybridge-hidden { display: none; }
+
+/* ==================== 命令下拉菜单 ==================== */
+.buddybridge-command-dropdown {
+    position: absolute;
+    bottom: 100%;
+    left: 0;
+    right: 0;
+    margin: 0 8px 4px;
+    background: var(--background-primary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--buddybridge-radius-lg);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    max-height: 240px;
+    overflow-y: auto;
+    z-index: 100;
+}
+
+.buddybridge-command-item {
+    display: flex;
+    align-items: center;
+    gap: var(--buddybridge-gap-sm);
+    padding: 6px 10px;
+    cursor: pointer;
+    font-size: var(--font-ui-smaller);
+    transition: background-color 0.1s ease;
+}
+
+.buddybridge-command-item:hover {
+    background: var(--background-modifier-hover);
+}
+
+.buddybridge-command-item:first-child {
+    border-radius: var(--buddybridge-radius-lg) var(--buddybridge-radius-lg) 0 0;
+}
+
+.buddybridge-command-item:last-child {
+    border-radius: 0 0 var(--buddybridge-radius-lg) var(--buddybridge-radius-lg);
+}
+
+.buddybridge-command-name {
+    font-family: var(--font-monospace);
+    font-weight: 600;
+    color: var(--interactive-accent);
+    min-width: 80px;
+}
+
+.buddybridge-command-desc {
+    color: var(--text-muted);
+    font-size: 10px;
+}
 
 /* ==================== Reduced motion ==================== */
 @media (prefers-reduced-motion: reduce) {

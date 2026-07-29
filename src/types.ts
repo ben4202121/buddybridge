@@ -2,6 +2,7 @@
 export interface AttachedFile {
     name: string;
     path: string;
+    content?: string;
     extension: string;
 }
 
@@ -26,14 +27,16 @@ export interface Conversation {
 export interface BuddyBridgeSettings {
     codebuddyPath: string;
     maxConversations: number;
+    primaryColor: string;
     version: number;
 }
 
-const CURRENT_SETTINGS_VERSION = 3;
+const CURRENT_SETTINGS_VERSION = 4;
 
 export const DEFAULT_SETTINGS: BuddyBridgeSettings = {
     codebuddyPath: '',
     maxConversations: 20,
+    primaryColor: '',
     version: CURRENT_SETTINGS_VERSION
 };
 
@@ -73,12 +76,14 @@ export function migrateSettings(stored: unknown): BuddyBridgeSettings {
     }
 
     const maxConversations = getNumber(stored, 'maxConversations');
+    const primaryColor = getString(stored, 'primaryColor');
 
     return {
         codebuddyPath: getString(stored, 'codebuddyPath') ?? DEFAULT_SETTINGS.codebuddyPath,
         maxConversations: typeof maxConversations === 'number' && maxConversations > 0
             ? maxConversations
             : DEFAULT_SETTINGS.maxConversations,
+        primaryColor: primaryColor ?? DEFAULT_SETTINGS.primaryColor,
         version: CURRENT_SETTINGS_VERSION
     };
 }
