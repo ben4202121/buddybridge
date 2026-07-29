@@ -14,6 +14,7 @@ export class BuddyBridgeChatView extends ItemView {
     private api: BuddyBridgeAPI;
     private messageContainer!: HTMLElement;
     private inputEl!: HTMLTextAreaElement;
+    private sendBtn!: HTMLButtonElement;
     private tabBar!: HTMLElement;
     private attachments: AttachedFile[] = [];
     private attachmentsBar!: HTMLElement;
@@ -79,12 +80,12 @@ export class BuddyBridgeChatView extends ItemView {
         this.inputEl.onkeydown = (e) => this.handleKeydown(e);
         this.inputEl.oninput = () => this.adjustTextareaHeight();
 
-        const sendBtn = inputArea.createEl('button', {
+        this.sendBtn = inputArea.createEl('button', {
             text: '发送',
             cls: 'buddybridge-send-btn',
             attr: { 'aria-label': '发送' }
         });
-        sendBtn.onclick = () => this.sendMessage();
+        this.sendBtn.onclick = () => this.sendMessage();
 
         // 拖拽支持
         this.setupDragDrop();
@@ -246,7 +247,14 @@ export class BuddyBridgeChatView extends ItemView {
     }
 
     private adjustTextareaHeight() {
-        this.inputEl.style.setProperty('--buddybridge-input-height', `${this.inputEl.scrollHeight}px`);
+        this.inputEl.style.height = 'auto';
+        this.inputEl.style.height = `${this.inputEl.scrollHeight}px`;
+    }
+
+    private setInputEnabled(enabled: boolean) {
+        this.inputEl.disabled = !enabled;
+        this.sendBtn.disabled = !enabled;
+        this.sendBtn.setText(enabled ? '发送' : '发送中...');
     }
 
     private async handleKeydown(e: KeyboardEvent) {
@@ -404,6 +412,7 @@ export class BuddyBridgeChatView extends ItemView {
 
         this.streamingMsgId = aiMsg.id;
         this.isStreaming = true;
+        this.setInputEnabled(false);
         await this.renderMessages();
 
         // 流式发送
@@ -547,6 +556,7 @@ ${text}`
         } finally {
             this.isStreaming = false;
             this.streamingMsgId = null;
+            this.setInputEnabled(true);
         }
     }
 

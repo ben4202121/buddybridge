@@ -694,12 +694,12 @@ var BuddyBridgeChatView = class extends import_obsidian2.ItemView {
     });
     this.inputEl.onkeydown = (e) => this.handleKeydown(e);
     this.inputEl.oninput = () => this.adjustTextareaHeight();
-    const sendBtn = inputArea.createEl("button", {
+    this.sendBtn = inputArea.createEl("button", {
       text: "\u53D1\u9001",
       cls: "buddybridge-send-btn",
       attr: { "aria-label": "\u53D1\u9001" }
     });
-    sendBtn.onclick = () => this.sendMessage();
+    this.sendBtn.onclick = () => this.sendMessage();
     this.setupDragDrop();
     try {
       const conversations = await this.loadDataCallback();
@@ -829,7 +829,13 @@ var BuddyBridgeChatView = class extends import_obsidian2.ItemView {
     );
   }
   adjustTextareaHeight() {
-    this.inputEl.style.setProperty("--buddybridge-input-height", `${this.inputEl.scrollHeight}px`);
+    this.inputEl.style.height = "auto";
+    this.inputEl.style.height = `${this.inputEl.scrollHeight}px`;
+  }
+  setInputEnabled(enabled) {
+    this.inputEl.disabled = !enabled;
+    this.sendBtn.disabled = !enabled;
+    this.sendBtn.setText(enabled ? "\u53D1\u9001" : "\u53D1\u9001\u4E2D...");
   }
   async handleKeydown(e) {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -965,6 +971,7 @@ var BuddyBridgeChatView = class extends import_obsidian2.ItemView {
       return;
     this.streamingMsgId = aiMsg.id;
     this.isStreaming = true;
+    this.setInputEnabled(false);
     await this.renderMessages();
     let firstChunk = true;
     let thinkingContent = "";
@@ -1090,6 +1097,7 @@ ${text}` : text;
     } finally {
       this.isStreaming = false;
       this.streamingMsgId = null;
+      this.setInputEnabled(true);
     }
   }
   scrollToBottom() {

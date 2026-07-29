@@ -676,6 +676,21 @@
     transform: scale(0.98);
 }
 
+.buddybridge-send-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    transform: none;
+}
+
+.buddybridge-send-btn:disabled:hover {
+    opacity: 0.5;
+}
+
+.buddybridge-input:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
 /* ==================== 滚动条 ==================== */
 .buddybridge-messages::-webkit-scrollbar {
     width: 5px;
