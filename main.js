@@ -772,7 +772,19 @@ var BuddyBridgeChatView = class extends import_obsidian2.ItemView {
       const icon = empty.createDiv({ cls: "buddybridge-empty-chat-icon" });
       (0, import_obsidian2.setIcon)(icon, "message-square");
       empty.createDiv({ cls: "buddybridge-empty-chat-title", text: "\u5F00\u59CB\u65B0\u5BF9\u8BDD" });
-      empty.createDiv({ cls: "buddybridge-empty-chat-subtitle", text: "\u70B9\u51FB\u4E0A\u65B9 + \u6309\u94AE\u6216\u8F93\u5165\u6D88\u606F\u5F00\u59CB\u804A\u5929" });
+      empty.createDiv({ cls: "buddybridge-empty-chat-subtitle", text: "\u8F93\u5165\u6D88\u606F\u5F00\u59CB\u804A\u5929\uFF0C\u6216\u70B9\u51FB + \u65B0\u5EFA\u5BF9\u8BDD" });
+      const tips = empty.createDiv({ cls: "buddybridge-empty-chat-tips" });
+      tips.createDiv({ text: "\u{1F4A1} \u63D0\u793A" });
+      const tipList = tips.createEl("ul");
+      const tipItems = [
+        "\u53D1\u9001\u6587\u4EF6\u8BA9 AI \u8BFB\u53D6\uFF08\u652F\u6301 txt, md, pdf, docx, xlsx\uFF09",
+        "\u62D6\u62FD\u6587\u4EF6\u5230\u804A\u5929\u9762\u677F\u5FEB\u901F\u9644\u52A0",
+        "Shift+Enter \u6362\u884C\uFF0CEnter \u53D1\u9001",
+        "\u591A\u8F6E\u5BF9\u8BDD\u81EA\u52A8\u4FDD\u6301\u4E0A\u4E0B\u6587"
+      ];
+      for (const tip of tipItems) {
+        tipList.createEl("li", { text: tip });
+      }
       return;
     }
     for (const msg of conv.messages) {
@@ -789,11 +801,46 @@ var BuddyBridgeChatView = class extends import_obsidian2.ItemView {
     if (isWaiting) {
       this.renderThinkingIndicator(bubble);
     } else if (msg.role === "assistant") {
-      await this.renderMarkdownContent(bubble, msg.content);
+      if (msg.content.startsWith("\u9519\u8BEF:") || msg.content.startsWith("Error:")) {
+        this.renderErrorCard(bubble, msg.content);
+      } else {
+        await this.renderMarkdownContent(bubble, msg.content);
+      }
     } else {
-      bubble.createSpan({ text: msg.content });
+      if (msg.content.startsWith("\u9519\u8BEF:") || msg.content.startsWith("Error:")) {
+        this.renderErrorCard(bubble, msg.content);
+      } else {
+        bubble.createSpan({ text: msg.content });
+      }
     }
     return row;
+  }
+  renderErrorCard(bubble, content) {
+    const card = bubble.createDiv({ cls: "buddybridge-error-card" });
+    const icon = card.createDiv({ cls: "buddybridge-error-card-icon" });
+    (0, import_obsidian2.setIcon)(icon, "alert-triangle");
+    const errorMsg = content.replace(/^错误:\s*/, "").replace(/^Error:\s*/, "");
+    card.createDiv({ cls: "buddybridge-error-card-title", text: "\u8BF7\u6C42\u5931\u8D25" });
+    card.createDiv({ cls: "buddybridge-error-card-body", text: errorMsg });
+    const hint = this.getErrorHint(errorMsg);
+    if (hint) {
+      card.createDiv({ cls: "buddybridge-error-card-hint", text: hint });
+    }
+  }
+  getErrorHint(errorMsg) {
+    if (errorMsg.includes("\u627E\u4E0D\u5230 codebuddy") || errorMsg.includes("ENOENT") || errorMsg.includes("codebuddy")) {
+      return "\u8BF7\u5728\u8BBE\u7F6E\u4E2D\u6307\u5B9A\u6B63\u786E\u7684 CodeBuddy \u8DEF\u5F84\uFF0C\u6216\u786E\u8BA4\u5DF2\u5B89\u88C5 WorkBuddy \u684C\u9762\u7248\u3002";
+    }
+    if (errorMsg.includes("Node.js") || errorMsg.includes("node")) {
+      return "\u8BF7\u786E\u8BA4 Node.js \u5DF2\u6B63\u786E\u5B89\u88C5\uFF0C\u6216\u8FD0\u884C\u73AF\u5883\u521D\u59CB\u5316\u63D0\u793A\u8BCD\u3002";
+    }
+    if (errorMsg.includes("timeout") || errorMsg.includes("\u8D85\u65F6") || errorMsg.includes("TIMEOUT")) {
+      return "\u8BF7\u6C42\u8D85\u65F6\uFF0C\u8BF7\u91CD\u8BD5\u3002\u5982\u679C\u9891\u7E41\u51FA\u73B0\uFF0C\u8BF7\u68C0\u67E5\u7F51\u7EDC\u8FDE\u63A5\u6216 CodeBuddy \u72B6\u6001\u3002";
+    }
+    if (errorMsg.includes("\u65E0\u54CD\u5E94") || errorMsg.includes("no response") || errorMsg.includes("empty")) {
+      return "AI \u672A\u8FD4\u56DE\u4EFB\u4F55\u5185\u5BB9\uFF0C\u8BF7\u91CD\u8BD5\u3002\u5982\u679C\u95EE\u9898\u6301\u7EED\uFF0C\u8BF7\u68C0\u67E5 CodeBuddy \u662F\u5426\u6B63\u5E38\u8FD0\u884C\u3002";
+    }
+    return null;
   }
   renderThinkingIndicator(bubble) {
     const thinking = bubble.createDiv({ cls: "buddybridge-thinking" });
@@ -1079,7 +1126,7 @@ ${text}` : text;
       const finalContent = textContent || thinkingContent;
       this.manager.updateMessage(convId, aiMsg.id, finalContent);
       if (!finalContent) {
-        this.manager.updateMessage(convId, aiMsg.id, "\uFF08\u65E0\u54CD\u5E94\uFF0C\u8BF7\u91CD\u8BD5\uFF09");
+        this.manager.updateMessage(convId, aiMsg.id, "\u9519\u8BEF: AI \u672A\u8FD4\u56DE\u4EFB\u4F55\u5185\u5BB9\u3002\u8BF7\u91CD\u8BD5\uFF0C\u6216\u68C0\u67E5 CodeBuddy \u662F\u5426\u6B63\u5E38\u8FD0\u884C\u3002");
       }
       const thinkingLabel = streamingBubble.querySelector(".buddybridge-thinking-header-text");
       if (thinkingLabel instanceof HTMLElement) {

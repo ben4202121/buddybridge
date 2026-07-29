@@ -174,7 +174,21 @@ export class BuddyBridgeChatView extends ItemView {
             const icon = empty.createDiv({ cls: 'buddybridge-empty-chat-icon' });
             setIcon(icon, 'message-square');
             empty.createDiv({ cls: 'buddybridge-empty-chat-title', text: '开始新对话' });
-            empty.createDiv({ cls: 'buddybridge-empty-chat-subtitle', text: '点击上方 + 按钮或输入消息开始聊天' });
+            empty.createDiv({ cls: 'buddybridge-empty-chat-subtitle', text: '输入消息开始聊天，或点击 + 新建对话' });
+
+            // 快捷提示
+            const tips = empty.createDiv({ cls: 'buddybridge-empty-chat-tips' });
+            tips.createDiv({ text: '💡 提示' });
+            const tipList = tips.createEl('ul');
+            const tipItems = [
+                '发送文件让 AI 读取（支持 txt, md, pdf, docx, xlsx）',
+                '拖拽文件到聊天面板快速附加',
+                'Shift+Enter 换行，Enter 发送',
+                '多轮对话自动保持上下文',
+            ];
+            for (const tip of tipItems) {
+                tipList.createEl('li', { text: tip });
+            }
             return;
         }
 
@@ -196,11 +210,54 @@ export class BuddyBridgeChatView extends ItemView {
         if (isWaiting) {
             this.renderThinkingIndicator(bubble);
         } else if (msg.role === 'assistant') {
-            await this.renderMarkdownContent(bubble, msg.content);
+            // 检测是否为错误消息
+            if (msg.content.startsWith('错误:') || msg.content.startsWith('Error:')) {
+                this.renderErrorCard(bubble, msg.content);
+            } else {
+                await this.renderMarkdownContent(bubble, msg.content);
+            }
         } else {
-            bubble.createSpan({ text: msg.content });
+            // 用户消息中的错误也显示为卡片
+            if (msg.content.startsWith('错误:') || msg.content.startsWith('Error:')) {
+                this.renderErrorCard(bubble, msg.content);
+            } else {
+                bubble.createSpan({ text: msg.content });
+            }
         }
         return row;
+    }
+
+    private renderErrorCard(bubble: HTMLElement, content: string) {
+        const card = bubble.createDiv({ cls: 'buddybridge-error-card' });
+        const icon = card.createDiv({ cls: 'buddybridge-error-card-icon' });
+        setIcon(icon, 'alert-triangle');
+
+        // 提取错误消息（去掉 "错误: " 前缀）
+        const errorMsg = content.replace(/^错误:\s*/, '').replace(/^Error:\s*/, '');
+        card.createDiv({ cls: 'buddybridge-error-card-title', text: '请求失败' });
+        card.createDiv({ cls: 'buddybridge-error-card-body', text: errorMsg });
+
+        // 根据错误内容提供可操作提示
+        const hint = this.getErrorHint(errorMsg);
+        if (hint) {
+            card.createDiv({ cls: 'buddybridge-error-card-hint', text: hint });
+        }
+    }
+
+    private getErrorHint(errorMsg: string): string | null {
+        if (errorMsg.includes('找不到 codebuddy') || errorMsg.includes('ENOENT') || errorMsg.includes('codebuddy')) {
+            return '请在设置中指定正确的 CodeBuddy 路径，或确认已安装 WorkBuddy 桌面版。';
+        }
+        if (errorMsg.includes('Node.js') || errorMsg.includes('node')) {
+            return '请确认 Node.js 已正确安装，或运行环境初始化提示词。';
+        }
+        if (errorMsg.includes('timeout') || errorMsg.includes('超时') || errorMsg.includes('TIMEOUT')) {
+            return '请求超时，请重试。如果频繁出现，请检查网络连接或 CodeBuddy 状态。';
+        }
+        if (errorMsg.includes('无响应') || errorMsg.includes('no response') || errorMsg.includes('empty')) {
+            return 'AI 未返回任何内容，请重试。如果问题持续，请检查 CodeBuddy 是否正常运行。';
+        }
+        return null;
     }
 
     private renderThinkingIndicator(bubble: HTMLElement) {
@@ -534,7 +591,7 @@ ${text}`
             this.manager.updateMessage(convId, aiMsg.id, finalContent);
 
             if (!finalContent) {
-                this.manager.updateMessage(convId, aiMsg.id, '（无响应，请重试）');
+                this.manager.updateMessage(convId, aiMsg.id, '错误: AI 未返回任何内容。请重试，或检查 CodeBuddy 是否正常运行。');
             }
 
             // 流式结束后再渲染一次，确保思考指示器等占位元素被清除
