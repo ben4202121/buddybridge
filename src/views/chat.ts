@@ -78,6 +78,12 @@ export class BuddyBridgeChatView extends ItemView {
         container.empty();
         container.addClass('buddybridge-chat-container');
 
+        // 应用自定义主色调
+        const plugin = this.app.plugins.getPlugin('buddybridge');
+        if (plugin && plugin.settings && plugin.settings.primaryColor) {
+            container.style.setProperty('--buddybridge-primary', plugin.settings.primaryColor);
+        }
+
         // 顶部标签栏
         this.tabBar = container.createDiv({ cls: 'buddybridge-tab-bar' });
         const newBtn = this.tabBar.createEl('button', {

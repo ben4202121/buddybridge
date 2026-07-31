@@ -675,6 +675,10 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
     const container = this.contentEl;
     container.empty();
     container.addClass("buddybridge-chat-container");
+    const plugin = this.app.plugins.getPlugin("buddybridge");
+    if (plugin && plugin.settings && plugin.settings.primaryColor) {
+      container.style.setProperty("--buddybridge-primary", plugin.settings.primaryColor);
+    }
     this.tabBar = container.createDiv({ cls: "buddybridge-tab-bar" });
     const newBtn = this.tabBar.createEl("button", {
       text: "",
