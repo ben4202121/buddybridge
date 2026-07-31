@@ -52,6 +52,7 @@ export default class BuddyBridgePlugin extends Plugin {
             });
 
             this.addSettingTab(new BuddyBridgeSettingTab(this.app, this));
+            this.applyPrimaryColor();
         } catch (e) {
             console.error('[BB] 插件加载失败:', e);
             new Notice('BuddyBridge 加载失败，请查看 Console');
@@ -110,5 +111,17 @@ export default class BuddyBridgePlugin extends Plugin {
         const merged: PersistedData = { ...existingData, settings: this.settings };
         await this.saveData(merged);
         this.api.setCodebuddyPath(this.settings.codebuddyPath);
+        this.applyPrimaryColor();
+    }
+
+    applyPrimaryColor() {
+        const container = document.querySelector('.buddybridge-chat-container');
+        if (container instanceof HTMLElement) {
+            if (this.settings.primaryColor) {
+                container.style.setProperty('--buddybridge-primary', this.settings.primaryColor);
+            } else {
+                container.style.removeProperty('--buddybridge-primary');
+            }
+        }
     }
 }

@@ -9,3 +9,4 @@ coverage/
 *.zip
 .codegraph/daemon.pid
 fix.mjs
+.claude/

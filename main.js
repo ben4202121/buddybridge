@@ -32,7 +32,7 @@ __export(main_exports, {
   default: () => BuddyBridgePlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian4 = require("obsidian");
+var import_obsidian3 = require("obsidian");
 
 // src/api.ts
 var import_child_process = require("child_process");
@@ -40,10 +40,11 @@ var path = __toESM(require("path"));
 var fs = __toESM(require("fs"));
 
 // src/types.ts
-var CURRENT_SETTINGS_VERSION = 3;
+var CURRENT_SETTINGS_VERSION = 4;
 var DEFAULT_SETTINGS = {
   codebuddyPath: "",
   maxConversations: 20,
+  primaryColor: "",
   version: CURRENT_SETTINGS_VERSION
 };
 function isObject(value) {
@@ -72,9 +73,11 @@ function migrateSettings(stored) {
     return { ...DEFAULT_SETTINGS };
   }
   const maxConversations = getNumber(stored, "maxConversations");
+  const primaryColor = getString(stored, "primaryColor");
   return {
     codebuddyPath: (_a = getString(stored, "codebuddyPath")) != null ? _a : DEFAULT_SETTINGS.codebuddyPath,
     maxConversations: typeof maxConversations === "number" && maxConversations > 0 ? maxConversations : DEFAULT_SETTINGS.maxConversations,
+    primaryColor: primaryColor != null ? primaryColor : DEFAULT_SETTINGS.primaryColor,
     version: CURRENT_SETTINGS_VERSION
   };
 }
@@ -483,7 +486,7 @@ var BuddyBridgeAPI = class {
 };
 
 // src/views/chat.ts
-var import_obsidian2 = require("obsidian");
+var import_obsidian = require("obsidian");
 
 // src/chat/manager.ts
 var ConversationManager = class {
@@ -609,46 +612,47 @@ var ConversationManager = class {
   }
 };
 
-// src/views/file-picker.ts
-var import_obsidian = require("obsidian");
-var ALLOWED_EXTENSIONS = /* @__PURE__ */ new Set(["txt", "md", "docx", "doc", "pdf", "xls", "xlsx"]);
-var VaultFilePickerModal = class extends import_obsidian.FuzzySuggestModal {
-  constructor(app, onSelect) {
-    super(app);
-    this.onSelect = onSelect;
-    this.files = app.vault.getFiles().filter((f) => ALLOWED_EXTENSIONS.has(f.extension.toLowerCase()));
-    this.setPlaceholder("\u641C\u7D22\u6587\u4EF6...");
-    this.setInstructions([{ command: "", purpose: "\u9009\u62E9\u8981\u9644\u52A0\u7684\u6587\u4EF6\uFF08\u6309 Enter \u786E\u8BA4\uFF09" }]);
-    this.limit = 50;
-  }
-  getItems() {
-    return this.files;
-  }
-  getItemText(file) {
-    return file.path;
-  }
-  onChooseItem(file) {
-    this.onSelect({
-      name: file.name,
-      path: file.path,
-      extension: file.extension
-    });
-  }
-};
-
 // src/views/chat.ts
-var ALLOWED_EXTENSIONS2 = /* @__PURE__ */ new Set(["txt", "md", "docx", "doc", "pdf", "xls", "xlsx"]);
+var ALLOWED_EXTENSIONS = /* @__PURE__ */ new Set(["txt", "md", "docx", "doc", "pdf", "xls", "xlsx"]);
+var COMMANDS = {
+  "/clear": "\u6E05\u7A7A\u5BF9\u8BDD\uFF0C\u91CD\u65B0\u5F00\u59CB",
+  "/help": "\u663E\u793A CodeBuddy \u5E2E\u52A9\u4FE1\u606F",
+  "/status": "\u663E\u793A\u5F53\u524D\u4ED3\u5E93\u548C\u4F1A\u8BDD\u72B6\u6001",
+  "/doctor": "\u68C0\u67E5 CodeBuddy \u73AF\u5883\u72B6\u6001",
+  "/compact": "\u538B\u7F29\u4E0A\u4E0B\u6587\u4EE5\u8282\u7701\u7A7A\u95F4",
+  "/summarize": "\u603B\u7ED3\u5E76\u538B\u7F29\u5BF9\u8BDD\u4E0A\u4E0B\u6587",
+  "/context": "\u8BA1\u7B97\u5F53\u524D\u4F1A\u8BDD token \u5206\u5E03",
+  "/cost": "\u663E\u793A\u4F1A\u8BDD\u6210\u672C\u548C token \u7528\u91CF",
+  "/model": "\u67E5\u770B\u6216\u5207\u6362 AI \u6A21\u578B",
+  "/permissions": "\u7BA1\u7406\u5DE5\u5177\u548C\u76EE\u5F55\u8BBF\u95EE\u6743\u9650",
+  "/config": "\u67E5\u770B\u6216\u4FEE\u6539\u672C\u5730\u914D\u7F6E",
+  "/export": "\u5BFC\u51FA\u5F53\u524D\u5BF9\u8BDD",
+  "/resume": "\u6062\u590D\u4E4B\u524D\u7684\u4F1A\u8BDD",
+  "/rewind": "\u56DE\u9000\u5230\u4E4B\u524D\u7684\u6D88\u606F\u70B9",
+  "/init": "\u521D\u59CB\u5316 CodeBuddy \u4ED3\u5E93",
+  "/plan": "\u9884\u89C8\u8BA1\u5212\u6A21\u5F0F\u4E0B\u7684\u8BA1\u5212\u6587\u4EF6",
+  "/fork": "\u5728\u5F53\u524D\u5BF9\u8BDD\u4F4D\u7F6E\u521B\u5EFA\u5206\u652F",
+  "/memory": "\u7BA1\u7406\u957F\u671F\u8BB0\u5FC6",
+  "/mcp": "\u7BA1\u7406 MCP \u8FDE\u63A5",
+  "/todos": "\u663E\u793A\u5F85\u529E\u4E8B\u9879\u5217\u8868",
+  "/stats": "\u663E\u793A\u4F7F\u7528\u7EDF\u8BA1\u4FE1\u606F",
+  "/cr": "\u5BA1\u67E5\u4EE3\u7801\u8D28\u91CF",
+  "/fix": "\u81EA\u52A8\u4FEE\u590D\u4EE3\u7801\u95EE\u9898",
+  "/tests": "\u751F\u6210\u5355\u5143\u6D4B\u8BD5",
+  "/explain": "\u89E3\u91CA\u4EE3\u7801\u5DE5\u4F5C\u539F\u7406",
+  "/rules": "\u751F\u6210\u4EE3\u7801\u89C4\u8303\u89C4\u5219"
+};
 var VIEW_TYPE_CHAT = "buddybridge-panel";
-var BuddyBridgeChatView = class extends import_obsidian2.ItemView {
+var BuddyBridgeChatView = class extends import_obsidian.ItemView {
   constructor(leaf, api, loadDataCallback) {
     super(leaf);
     this.attachments = [];
-    this.isStreaming = false;
+    this.streamingConversations = /* @__PURE__ */ new Set();
     this.streamingMsgId = null;
     this.api = api;
     this.loadDataCallback = loadDataCallback;
     this.manager = new ConversationManager();
-    this.markdownComponent = new import_obsidian2.Component();
+    this.markdownComponent = new import_obsidian.Component();
     this.markdownComponent.load();
   }
   get vaultPath() {
@@ -677,23 +681,26 @@ var BuddyBridgeChatView = class extends import_obsidian2.ItemView {
       cls: "buddybridge-new-chat-btn",
       attr: { title: "\u65B0\u5EFA\u5BF9\u8BDD", "aria-label": "\u65B0\u5EFA\u5BF9\u8BDD" }
     });
-    (0, import_obsidian2.setIcon)(newBtn, "plus");
+    (0, import_obsidian.setIcon)(newBtn, "plus");
     newBtn.onclick = () => this.createNewChat();
+    this.currentFileBar = container.createDiv({ cls: "buddybridge-current-file" });
+    this.updateCurrentFileBar();
+    this.registerEvent(
+      this.app.workspace.on("active-leaf-change", () => {
+        this.updateCurrentFileBar();
+      })
+    );
     this.messageContainer = container.createDiv({ cls: "buddybridge-messages" });
-    this.attachmentsBar = container.createDiv({ cls: "buddybridge-attachments-bar" });
     const inputArea = container.createDiv({ cls: "buddybridge-input-area" });
-    const fileBtn = inputArea.createEl("button", {
-      cls: "buddybridge-file-btn",
-      attr: { "aria-label": "\u9644\u52A0\u6587\u4EF6", title: "\u9644\u52A0\u6587\u4EF6" }
-    });
-    (0, import_obsidian2.setIcon)(fileBtn, "paperclip");
-    fileBtn.onclick = () => this.openFilePicker();
     this.inputEl = inputArea.createEl("textarea", {
       cls: "buddybridge-input",
       attr: { placeholder: "\u8F93\u5165\u6D88\u606F... (Shift+Enter \u6362\u884C\uFF0CEnter \u53D1\u9001)", rows: "2" }
     });
     this.inputEl.onkeydown = (e) => this.handleKeydown(e);
-    this.inputEl.oninput = () => this.adjustTextareaHeight();
+    this.inputEl.oninput = () => {
+      this.adjustTextareaHeight();
+      this.updateCommandDropdown();
+    };
     this.sendBtn = inputArea.createEl("button", {
       text: "\u53D1\u9001",
       cls: "buddybridge-send-btn",
@@ -720,17 +727,67 @@ var BuddyBridgeChatView = class extends import_obsidian2.ItemView {
     this.manager.createConversation();
     this.renderTabs();
     await this.renderMessages();
+    this.setInputEnabled(true);
+    this.sendBtn.setText("\u53D1\u9001");
   }
   async switchToChat(id) {
     this.manager.switchTo(id);
     this.renderTabs();
     await this.renderMessages();
+    const isSending = this.streamingConversations.has(id);
+    this.setInputEnabled(!isSending);
+    this.sendBtn.setText(isSending ? "\u53D1\u9001\u4E2D..." : "\u53D1\u9001");
   }
   async deleteChat(id, e) {
     e.stopPropagation();
     this.manager.deleteConversation(id);
     this.renderTabs();
     await this.renderMessages();
+    this.setInputEnabled(true);
+    this.sendBtn.setText("\u53D1\u9001");
+  }
+  async continueConversation() {
+    const conv = this.manager.getActive();
+    if (!conv || conv.messages.length < 2) {
+      new import_obsidian.Notice("\u5BF9\u8BDD\u592A\u77ED\uFF0C\u65E0\u9700\u7EED\u63A5");
+      return;
+    }
+    const oldMessages = conv.messages;
+    const oldTitle = conv.title;
+    const newConv = this.manager.createConversation(oldTitle + " (\u7EED)");
+    newConv.sessionId = this.api.generateId();
+    const firstUserMsg = oldMessages.find((m) => m.role === "user");
+    const recentMsgs = oldMessages.slice(-6);
+    const summaryParts = [
+      `\u3010\u7EED\u63A5\u5BF9\u8BDD\u3011\u4E0A\u8F6E\u5BF9\u8BDD\u300C${oldTitle}\u300D\u5DF2\u5230\u8FBE\u4E0A\u9650\uFF0C\u81EA\u52A8\u5EF6\u7EED\u5230\u65B0\u5BF9\u8BDD\u3002`,
+      "",
+      `\u{1F4CB} \u4E0A\u8F6E\u5BF9\u8BDD\u6458\u8981\uFF08\u5171 ${oldMessages.length} \u6761\u6D88\u606F\uFF09`,
+      ""
+    ];
+    if (firstUserMsg) {
+      summaryParts.push(`**\u6700\u521D\u76EE\u6807**: ${firstUserMsg.content.substring(0, 200)}`);
+      summaryParts.push("");
+    }
+    summaryParts.push("**\u6700\u8FD1\u4EA4\u6D41**:");
+    for (const m of recentMsgs) {
+      const label = m.role === "user" ? "\u{1F464} \u7528\u6237" : "\u{1F916} AI";
+      const content = m.content.substring(0, 300);
+      summaryParts.push(`> ${label}: ${content}`);
+    }
+    summaryParts.push("");
+    summaryParts.push("---");
+    summaryParts.push("\u8BF7\u57FA\u4E8E\u4EE5\u4E0A\u4E0A\u4E0B\u6587\u7EE7\u7EED\u5DE5\u4F5C\u3002");
+    const summary = summaryParts.join("\n");
+    newConv.messages.push({
+      id: this.api.generateId(),
+      role: "assistant",
+      content: summary,
+      timestamp: Date.now()
+    });
+    this.renderTabs();
+    await this.renderMessages();
+    this.scrollToBottom();
+    new import_obsidian.Notice("\u5DF2\u521B\u5EFA\u7EED\u63A5\u5BF9\u8BDD\uFF0C\u4E0A\u4E0B\u6587\u5DF2\u4FDD\u7559");
   }
   /** 渲染标签栏 */
   renderTabs() {
@@ -746,11 +803,28 @@ var BuddyBridgeChatView = class extends import_obsidian2.ItemView {
         tab.addClass("buddybridge-tab-active");
       }
       tab.createSpan({ text: conv.title, cls: "buddybridge-tab-title" });
+      if (conv.messages.length >= 2) {
+        const continueBtn = tab.createSpan({
+          cls: "buddybridge-tab-continue",
+          attr: { title: "\u7EED\u63A5\u65B0\u5BF9\u8BDD", "aria-label": "\u7EED\u63A5\u65B0\u5BF9\u8BDD", role: "button", tabindex: "0" }
+        });
+        continueBtn.setText("\u21BB");
+        continueBtn.onclick = (e) => {
+          e.stopPropagation();
+          void this.continueConversation();
+        };
+        continueBtn.onkeydown = (e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            void this.continueConversation();
+          }
+        };
+      }
       const closeBtn = tab.createSpan({
         cls: "buddybridge-tab-close",
         attr: { title: "\u5173\u95ED\u5BF9\u8BDD", "aria-label": "\u5173\u95ED\u5BF9\u8BDD", role: "button", tabindex: "0" }
       });
-      (0, import_obsidian2.setIcon)(closeBtn, "x");
+      (0, import_obsidian.setIcon)(closeBtn, "x");
       closeBtn.onclick = (e) => this.deleteChat(conv.id, e);
       closeBtn.onkeydown = (e) => {
         if (e.key === "Enter" || e.key === " ") {
@@ -770,7 +844,7 @@ var BuddyBridgeChatView = class extends import_obsidian2.ItemView {
     if (!conv) {
       const empty = this.messageContainer.createDiv({ cls: "buddybridge-empty-chat" });
       const icon = empty.createDiv({ cls: "buddybridge-empty-chat-icon" });
-      (0, import_obsidian2.setIcon)(icon, "message-square");
+      (0, import_obsidian.setIcon)(icon, "message-square");
       empty.createDiv({ cls: "buddybridge-empty-chat-title", text: "\u5F00\u59CB\u65B0\u5BF9\u8BDD" });
       empty.createDiv({ cls: "buddybridge-empty-chat-subtitle", text: "\u8F93\u5165\u6D88\u606F\u5F00\u59CB\u804A\u5929\uFF0C\u6216\u70B9\u51FB + \u65B0\u5EFA\u5BF9\u8BDD" });
       const tips = empty.createDiv({ cls: "buddybridge-empty-chat-tips" });
@@ -818,7 +892,7 @@ var BuddyBridgeChatView = class extends import_obsidian2.ItemView {
   renderErrorCard(bubble, content) {
     const card = bubble.createDiv({ cls: "buddybridge-error-card" });
     const icon = card.createDiv({ cls: "buddybridge-error-card-icon" });
-    (0, import_obsidian2.setIcon)(icon, "alert-triangle");
+    (0, import_obsidian.setIcon)(icon, "alert-triangle");
     const errorMsg = content.replace(/^错误:\s*/, "").replace(/^Error:\s*/, "");
     card.createDiv({ cls: "buddybridge-error-card-title", text: "\u8BF7\u6C42\u5931\u8D25" });
     card.createDiv({ cls: "buddybridge-error-card-body", text: errorMsg });
@@ -867,7 +941,7 @@ var BuddyBridgeChatView = class extends import_obsidian2.ItemView {
     if (!(markdownContainer instanceof HTMLElement))
       return;
     markdownContainer.empty();
-    await import_obsidian2.MarkdownRenderer.render(
+    await import_obsidian.MarkdownRenderer.render(
       this.app,
       content,
       markdownContainer,
@@ -884,17 +958,43 @@ var BuddyBridgeChatView = class extends import_obsidian2.ItemView {
     this.sendBtn.disabled = !enabled;
     this.sendBtn.setText(enabled ? "\u53D1\u9001" : "\u53D1\u9001\u4E2D...");
   }
+  updateCommandDropdown() {
+    var _a, _b;
+    const val = this.inputEl.value;
+    if (val === "/") {
+      if (!this.commandDropdown) {
+        this.commandDropdown = (_b = (_a = this.inputEl.parentElement) == null ? void 0 : _a.createDiv({ cls: "buddybridge-command-dropdown" })) != null ? _b : null;
+        if (this.commandDropdown) {
+          for (const [cmd, info] of Object.entries(COMMANDS)) {
+            const item = this.commandDropdown.createDiv({ cls: "buddybridge-command-item" });
+            const nameSpan = item.createSpan({ cls: "buddybridge-command-name", text: cmd });
+            item.createSpan({ cls: "buddybridge-command-desc", text: info });
+            item.onclick = () => {
+              this.inputEl.value = cmd + " ";
+              this.inputEl.focus();
+              this.removeCommandDropdown();
+            };
+          }
+        }
+      }
+    } else {
+      this.removeCommandDropdown();
+    }
+  }
+  removeCommandDropdown() {
+    if (this.commandDropdown) {
+      this.commandDropdown.remove();
+      this.commandDropdown = null;
+    }
+  }
   async handleKeydown(e) {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       await this.sendMessage();
     }
-  }
-  openFilePicker() {
-    const modal = new VaultFilePickerModal(this.app, (file) => {
-      this.addAttachment(file);
-    });
-    modal.open();
+    if (e.key === "Escape") {
+      this.removeCommandDropdown();
+    }
   }
   addAttachment(file) {
     if (this.attachments.some((a) => a.path === file.path))
@@ -913,13 +1013,13 @@ var BuddyBridgeChatView = class extends import_obsidian2.ItemView {
     for (const file of this.attachments) {
       const chip = this.attachmentsBar.createDiv({ cls: "buddybridge-attachment-chip" });
       const icon = chip.createSpan({ cls: "buddybridge-attachment-chip-icon" });
-      (0, import_obsidian2.setIcon)(icon, "file-text");
+      (0, import_obsidian.setIcon)(icon, "file-text");
       chip.createSpan({ cls: "buddybridge-attachment-chip-name", text: file.name });
       const closeBtn = chip.createSpan({
         cls: "buddybridge-attachment-chip-close",
         attr: { role: "button", "aria-label": "\u79FB\u9664\u6587\u4EF6", tabindex: "0" }
       });
-      (0, import_obsidian2.setIcon)(closeBtn, "x");
+      (0, import_obsidian.setIcon)(closeBtn, "x");
       closeBtn.onclick = (e) => {
         e.stopPropagation();
         this.removeAttachment(file.path);
@@ -938,68 +1038,64 @@ var BuddyBridgeChatView = class extends import_obsidian2.ItemView {
     const container = this.containerEl;
     container.addEventListener("dragover", (e) => {
       e.preventDefault();
+      e.stopPropagation();
       container.addClass("buddybridge-drag-over");
     });
-    container.addEventListener("dragleave", () => {
+    container.addEventListener("dragenter", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      container.addClass("buddybridge-drag-over");
+    });
+    container.addEventListener("dragleave", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
       container.removeClass("buddybridge-drag-over");
     });
     container.addEventListener("drop", async (e) => {
       var _a, _b;
       e.preventDefault();
+      e.stopPropagation();
       container.removeClass("buddybridge-drag-over");
       const path2 = (_a = e.dataTransfer) == null ? void 0 : _a.getData("text/plain");
       if (path2) {
         const file = this.app.vault.getAbstractFileByPath(path2);
-        if (file instanceof import_obsidian2.TFile) {
+        if (file instanceof import_obsidian.TFile) {
           const ext = file.extension.toLowerCase();
-          if (ALLOWED_EXTENSIONS2.has(ext)) {
+          if (ALLOWED_EXTENSIONS.has(ext)) {
             this.addAttachment({
               name: file.name,
               path: file.path,
               extension: file.extension
             });
+            new import_obsidian.Notice(`\u5DF2\u9644\u52A0: ${file.name}`);
             return;
           }
         }
       }
-      const files = (_b = e.dataTransfer) == null ? void 0 : _b.files;
-      if (files && files.length > 0) {
-        for (const f of Array.from(files)) {
-          const name = f.name;
-          const dot = name.lastIndexOf(".");
-          if (dot === -1)
-            continue;
-          const ext = name.slice(dot + 1).toLowerCase();
-          if (ALLOWED_EXTENSIONS2.has(ext)) {
-            try {
-              const vaultPath = this.vaultPath;
-              if (vaultPath) {
-                const targetPath = `buddybridge-uploads/${name}`;
-                const buffer = await f.arrayBuffer();
-                const existing = this.app.vault.getAbstractFileByPath(targetPath);
-                if (!existing) {
-                  await this.app.vault.createBinary(targetPath, buffer);
-                }
-                this.addAttachment({
-                  name,
-                  path: targetPath,
-                  extension: ext
-                });
-              }
-            } catch (err) {
-              console.error("[BB] \u5BFC\u5165\u5916\u90E8\u6587\u4EF6\u5931\u8D25:", err);
-            }
-          }
-        }
+      const uriList = (_b = e.dataTransfer) == null ? void 0 : _b.getData("text/uri-list");
+      if (uriList) {
+        new import_obsidian.Notice("\u4E0D\u652F\u6301\u4ECE\u8BE5\u4F4D\u7F6E\u62D6\u62FD\u6587\u4EF6\uFF0C\u8BF7\u4F7F\u7528\u56DE\u5F62\u9488\u6309\u94AE\u9009\u62E9\u6587\u4EF6");
       }
     });
   }
   async sendMessage() {
-    if (this.isStreaming)
+    const activeConv = this.manager.getActive();
+    if (!activeConv)
+      return;
+    if (this.streamingConversations.has(activeConv.id))
       return;
     const text = this.inputEl.value.trim();
     if (!text)
       return;
+    if (text.startsWith("/")) {
+      const cmd = text.split(" ")[0].toLowerCase();
+      if (cmd === "/clear") {
+        this.createNewChat();
+        return;
+      }
+      await this.sendCommandToCLI(text);
+      return;
+    }
     let conv = this.manager.getActive();
     if (!conv) {
       conv = this.manager.createConversation();
@@ -1017,7 +1113,7 @@ var BuddyBridgeChatView = class extends import_obsidian2.ItemView {
     if (!aiMsg)
       return;
     this.streamingMsgId = aiMsg.id;
-    this.isStreaming = true;
+    this.streamingConversations.add(convId);
     this.setInputEnabled(false);
     await this.renderMessages();
     let firstChunk = true;
@@ -1026,25 +1122,18 @@ var BuddyBridgeChatView = class extends import_obsidian2.ItemView {
     try {
       const activeFile = this.app.workspace.getActiveFile();
       const activeFilePath = (activeFile == null ? void 0 : activeFile.path) || null;
-      const filesContext = this.attachments.length > 0 ? `
-
-\u5F53\u524D\u9644\u5E26\u6587\u4EF6:
-${this.attachments.map((f) => `- ${f.path}`).join("\n")}` : "";
-      const contextText = this.vaultPath ? `\u5F53\u524D Obsidian Vault \u8DEF\u5F84: ${this.vaultPath}
-${activeFilePath ? `\u5F53\u524D\u6587\u6863: ${activeFilePath}` : ""}
-\u5DE5\u4F5C\u76EE\u5F55\u5373 vault \u6839\u76EE\u5F55\uFF0C\u8BF7\u57FA\u4E8E vault \u4E2D\u7684\u6587\u4EF6\u56DE\u7B54\u95EE\u9898\u3002
-${filesContext}
----
-
-${text}` : text;
-      const streamingBubble = this.messageContainer.querySelector(
-        `.buddybridge-message-assistant:last-child .buddybridge-bubble`
-      );
-      if (!(streamingBubble instanceof HTMLElement)) {
+      const filesContext = "";
+      const contextText = text;
+      const bubbles = this.messageContainer.querySelectorAll(".buddybridge-message-assistant .buddybridge-bubble");
+      const streamingBubble = bubbles.length > 0 ? bubbles[bubbles.length - 1] : null;
+      if (!streamingBubble) {
         throw new Error("\u627E\u4E0D\u5230 Assistant \u6D88\u606F\u6C14\u6CE1");
       }
       for await (const chunk of this.api.sendMessage(conv.sessionId, contextText, this.vaultPath)) {
         const bubble = streamingBubble;
+        if (chunk.type === "text" && /(Working directory|文件操作规则|待命中|已锁定|已确认)/.test(chunk.content)) {
+          continue;
+        }
         if (firstChunk) {
           firstChunk = false;
           const thinking = bubble.querySelector(".buddybridge-thinking");
@@ -1061,7 +1150,7 @@ ${text}` : text;
             block = bubble.createDiv({ cls: "buddybridge-thinking-block" });
             const header = block.createDiv({ cls: "buddybridge-thinking-header" });
             const icon = header.createSpan({ cls: "buddybridge-thinking-header-icon" });
-            (0, import_obsidian2.setIcon)(icon, "sparkles");
+            (0, import_obsidian.setIcon)(icon, "sparkles");
             header.createSpan({ cls: "buddybridge-thinking-header-text", text: "\u601D\u8003\u4E2D..." });
             const chevron = header.createSpan({ cls: "buddybridge-thinking-header-chevron", text: "\u25BE" });
             const bodyDiv = block.createDiv({ cls: "buddybridge-thinking-body buddybridge-hidden" });
@@ -1081,7 +1170,7 @@ ${text}` : text;
             toolsBlock = bubble.createDiv({ cls: "buddybridge-tools-block" });
             const hdr = toolsBlock.createDiv({ cls: "buddybridge-tools-header" });
             const icon = hdr.createSpan({ cls: "buddybridge-tools-header-icon" });
-            (0, import_obsidian2.setIcon)(icon, "wrench");
+            (0, import_obsidian.setIcon)(icon, "wrench");
             hdr.createSpan({ cls: "buddybridge-tools-header-text", text: "\u5DE5\u5177\u8C03\u7528" });
             const chevron = hdr.createSpan({ cls: "buddybridge-tools-header-chevron", text: "\u25BE" });
             hdr.addEventListener("click", () => {
@@ -1108,7 +1197,7 @@ ${text}` : text;
             }
             const row = list.createDiv({ cls: "buddybridge-tool-call" });
             const icon = row.createSpan({ cls: "buddybridge-tool-call-icon" });
-            (0, import_obsidian2.setIcon)(icon, iconName);
+            (0, import_obsidian.setIcon)(icon, iconName);
             row.createSpan({
               cls: "buddybridge-tool-call-text",
               text: `${toolName} ${toolDetail}`.trim()
@@ -1120,7 +1209,7 @@ ${text}` : text;
           await this.renderMarkdownContent(bubble, textContent);
         } else if (chunk.type === "error") {
           this.manager.updateMessage(convId, aiMsg.id, `\u9519\u8BEF: ${chunk.content}`, true);
-          new import_obsidian2.Notice(`\u8BF7\u6C42\u5931\u8D25: ${chunk.content}`);
+          new import_obsidian.Notice(`\u8BF7\u6C42\u5931\u8D25: ${chunk.content}`);
         }
       }
       const finalContent = textContent || thinkingContent;
@@ -1134,17 +1223,77 @@ ${text}` : text;
       }
       await this.renderMessages();
       await this.manager.flush();
-      this.attachments = [];
-      this.renderAttachments();
     } catch (error) {
       const message = getErrorMessage(error);
       this.manager.updateMessage(convId, aiMsg.id, `\u9519\u8BEF: ${message}`);
-      new import_obsidian2.Notice(`\u8BF7\u6C42\u5931\u8D25: ${message}`);
+      new import_obsidian.Notice(`\u8BF7\u6C42\u5931\u8D25: ${message}`);
       await this.renderMessages();
     } finally {
-      this.isStreaming = false;
+      this.streamingConversations.delete(convId);
       this.streamingMsgId = null;
       this.setInputEnabled(true);
+    }
+  }
+  async sendCommandToCLI(command) {
+    let conv = this.manager.getActive();
+    if (!conv) {
+      conv = this.manager.createConversation();
+      this.renderTabs();
+    }
+    if (!conv.sessionId) {
+      conv.sessionId = this.api.generateId();
+    }
+    const convId = conv.id;
+    this.manager.addMessage(convId, "user", command);
+    this.inputEl.value = "";
+    this.adjustTextareaHeight();
+    await this.renderMessages();
+    const aiMsg = this.manager.addMessage(convId, "assistant", "");
+    if (!aiMsg)
+      return;
+    this.streamingMsgId = aiMsg.id;
+    this.streamingConversations.add(convId);
+    this.setInputEnabled(false);
+    await this.renderMessages();
+    let responseText = "";
+    try {
+      for await (const chunk of this.api.sendMessage(conv.sessionId, command, this.vaultPath)) {
+        if (chunk.type === "text") {
+          responseText += chunk.content;
+          this.manager.updateMessage(convId, aiMsg.id, responseText, true);
+          const bubs = this.messageContainer.querySelectorAll(".buddybridge-message-assistant .buddybridge-bubble");
+          const bubble = bubs.length > 0 ? bubs[bubs.length - 1] : null;
+          if (bubble) {
+            await this.renderMarkdownContent(bubble, responseText);
+          }
+        } else if (chunk.type === "error") {
+          this.manager.updateMessage(convId, aiMsg.id, `\u9519\u8BEF: ${chunk.content}`, true);
+          new import_obsidian.Notice(`\u547D\u4EE4\u6267\u884C\u5931\u8D25: ${chunk.content}`);
+        }
+      }
+      const finalContent = responseText || "\uFF08\u547D\u4EE4\u6267\u884C\u5B8C\u6210\uFF0C\u65E0\u8F93\u51FA\uFF09";
+      this.manager.updateMessage(convId, aiMsg.id, finalContent);
+      await this.renderMessages();
+      await this.manager.flush();
+    } catch (error) {
+      const message = getErrorMessage(error);
+      this.manager.updateMessage(convId, aiMsg.id, `\u9519\u8BEF: ${message}`);
+      new import_obsidian.Notice(`\u547D\u4EE4\u6267\u884C\u5931\u8D25: ${message}`);
+      await this.renderMessages();
+    } finally {
+      this.streamingConversations.delete(convId);
+      this.streamingMsgId = null;
+      this.setInputEnabled(true);
+    }
+  }
+  updateCurrentFileBar() {
+    const file = this.app.workspace.getActiveFile();
+    if (file) {
+      this.currentFileBar.setText(`\u{1F4C4} ${file.path}`);
+      this.currentFileBar.addClass("buddybridge-current-file-active");
+    } else {
+      this.currentFileBar.setText("");
+      this.currentFileBar.removeClass("buddybridge-current-file-active");
     }
   }
   scrollToBottom() {
@@ -1153,8 +1302,8 @@ ${text}` : text;
 };
 
 // src/settings/tab.ts
-var import_obsidian3 = require("obsidian");
-var BuddyBridgeSettingTab = class extends import_obsidian3.PluginSettingTab {
+var import_obsidian2 = require("obsidian");
+var BuddyBridgeSettingTab = class extends import_obsidian2.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
@@ -1162,24 +1311,63 @@ var BuddyBridgeSettingTab = class extends import_obsidian3.PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    new import_obsidian3.Setting(containerEl).setName("Configuration").setHeading();
-    new import_obsidian3.Setting(containerEl).setName("CodeBuddy \u8DEF\u5F84").setDesc("codebuddy \u53EF\u6267\u884C\u6587\u4EF6\u8DEF\u5F84\u3002\u5982 WorkBuddy \u81EA\u5B9A\u4E49\u5B89\u88C5\uFF0C\u8DEF\u5F84\u901A\u5E38\u4E3A\uFF1A\u5B89\u88C5\u76EE\u5F55\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy\uFF08\u53F3\u952E WorkBuddy \u5FEB\u6377\u65B9\u5F0F \u2192 \u6253\u5F00\u6587\u4EF6\u4F4D\u7F6E \u53EF\u627E\u5230\u5B89\u88C5\u76EE\u5F55\uFF09").addText((text) => text.setPlaceholder("WorkBuddy\u5B89\u88C5\u76EE\u5F55\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy").setValue(this.plugin.settings.codebuddyPath).onChange(async (value) => {
-      this.plugin.settings.codebuddyPath = value;
-      this.plugin.api.setCodebuddyPath(value);
-      await this.plugin.saveSettings();
-    }));
-    new import_obsidian3.Setting(containerEl).setName("\u6700\u5927\u5BF9\u8BDD\u6570").setDesc("\u6700\u591A\u4FDD\u7559\u591A\u5C11\u4E2A\u5BF9\u8BDD\uFF08\u65E7\u5BF9\u8BDD\u5C06\u88AB\u81EA\u52A8\u5220\u9664\uFF09").addText((text) => text.setPlaceholder("20").setValue(String(this.plugin.settings.maxConversations)).onChange(async (value) => {
+    new import_obsidian2.Setting(containerEl).setName("\u901A\u7528").setHeading();
+    new import_obsidian2.Setting(containerEl).setName("\u6700\u5927\u5BF9\u8BDD\u6570").setDesc("\u6700\u591A\u4FDD\u7559\u591A\u5C11\u4E2A\u5BF9\u8BDD\uFF08\u65E7\u5BF9\u8BDD\u5C06\u88AB\u81EA\u52A8\u5220\u9664\uFF09").addText((text) => text.setPlaceholder("20").setValue(String(this.plugin.settings.maxConversations)).onChange(async (value) => {
       const num = parseInt(value);
       if (!isNaN(num) && num > 0) {
         this.plugin.settings.maxConversations = num;
         await this.plugin.saveSettings();
       }
     }));
+    new import_obsidian2.Setting(containerEl).setName("CodeBuddy").setHeading();
+    new import_obsidian2.Setting(containerEl).setName("CLI \u8DEF\u5F84").setDesc("codebuddy \u53EF\u6267\u884C\u6587\u4EF6\u8DEF\u5F84\u3002\u7559\u7A7A\u81EA\u52A8\u68C0\u6D4B\u3002").addText((text) => text.setPlaceholder("\u81EA\u52A8\u68C0\u6D4B").setValue(this.plugin.settings.codebuddyPath).onChange(async (value) => {
+      this.plugin.settings.codebuddyPath = value;
+      this.plugin.api.setCodebuddyPath(value);
+      await this.plugin.saveSettings();
+    }));
+    new import_obsidian2.Setting(containerEl).setName("\u5916\u89C2").setHeading();
+    const colorSetting = new import_obsidian2.Setting(containerEl).setName("\u4E3B\u8272\u8C03").setDesc("\u804A\u5929\u9762\u677F\u7684\u4E3B\u9898\u8272\u3002\u7559\u7A7A\u4F7F\u7528 Obsidian \u9ED8\u8BA4\u5F3A\u8C03\u8272\u3002");
+    const colorWrapper = colorSetting.controlEl.createDiv({ cls: "buddybridge-color-wrapper" });
+    const colorInput = colorWrapper.createEl("input", {
+      attr: { type: "color" }
+    });
+    colorInput.value = this.plugin.settings.primaryColor || "#8b5cf6";
+    const hexInput = colorWrapper.createEl("input", {
+      cls: "buddybridge-hex-input",
+      attr: { type: "text", placeholder: "#8b5cf6" }
+    });
+    hexInput.value = this.plugin.settings.primaryColor || "";
+    const applyColor = (value) => {
+      this.plugin.settings.primaryColor = value;
+      this.plugin.saveSettings();
+    };
+    colorInput.addEventListener("input", () => {
+      const val = colorInput.value;
+      hexInput.value = val;
+      applyColor(val);
+    });
+    hexInput.addEventListener("change", () => {
+      const val = hexInput.value.trim();
+      if (/^#[0-9a-fA-F]{6}$/.test(val)) {
+        colorInput.value = val;
+        applyColor(val);
+      }
+    });
+    new import_obsidian2.Setting(containerEl).setName("\u7BA1\u7406").setHeading();
+    new import_obsidian2.Setting(containerEl).setName("\u91CD\u7F6E\u4E3A\u9ED8\u8BA4").setDesc("\u5C06\u6240\u6709\u8BBE\u7F6E\u6062\u590D\u4E3A\u9ED8\u8BA4\u503C").addButton((btn) => {
+      btn.setButtonText("\u91CD\u7F6E").onClick(async () => {
+        this.plugin.settings = { ...DEFAULT_SETTINGS };
+        this.plugin.api.setCodebuddyPath("");
+        await this.plugin.saveSettings();
+        this.plugin.applyPrimaryColor();
+        this.display();
+      });
+    });
   }
 };
 
 // src/main.ts
-var BuddyBridgePlugin = class extends import_obsidian4.Plugin {
+var BuddyBridgePlugin = class extends import_obsidian3.Plugin {
   constructor() {
     super(...arguments);
     this.chatView = null;
@@ -1216,9 +1404,10 @@ var BuddyBridgePlugin = class extends import_obsidian4.Plugin {
         }
       });
       this.addSettingTab(new BuddyBridgeSettingTab(this.app, this));
+      this.applyPrimaryColor();
     } catch (e) {
       console.error("[BB] \u63D2\u4EF6\u52A0\u8F7D\u5931\u8D25:", e);
-      new import_obsidian4.Notice("BuddyBridge \u52A0\u8F7D\u5931\u8D25\uFF0C\u8BF7\u67E5\u770B Console");
+      new import_obsidian3.Notice("BuddyBridge \u52A0\u8F7D\u5931\u8D25\uFF0C\u8BF7\u67E5\u770B Console");
     }
   }
   onunload() {
@@ -1241,11 +1430,11 @@ var BuddyBridgePlugin = class extends import_obsidian4.Plugin {
         await workspace.revealLeaf(leaf);
         workspace.setActiveLeaf(leaf, { focus: true });
       } else {
-        new import_obsidian4.Notice("BuddyBridge\uFF1A\u65E0\u6CD5\u521B\u5EFA\u804A\u5929\u9762\u677F");
+        new import_obsidian3.Notice("BuddyBridge\uFF1A\u65E0\u6CD5\u521B\u5EFA\u804A\u5929\u9762\u677F");
       }
     } catch (e) {
       console.error("[BB] \u6253\u5F00\u804A\u5929\u9762\u677F\u5931\u8D25:", e);
-      new import_obsidian4.Notice("BuddyBridge\uFF1A\u6253\u5F00\u9762\u677F\u5931\u8D25\uFF0C\u8BF7\u67E5\u770B Console");
+      new import_obsidian3.Notice("BuddyBridge\uFF1A\u6253\u5F00\u9762\u677F\u5931\u8D25\uFF0C\u8BF7\u67E5\u770B Console");
     }
   }
   async loadPersistedConversations() {
@@ -1263,5 +1452,16 @@ var BuddyBridgePlugin = class extends import_obsidian4.Plugin {
     const merged = { ...existingData, settings: this.settings };
     await this.saveData(merged);
     this.api.setCodebuddyPath(this.settings.codebuddyPath);
+    this.applyPrimaryColor();
+  }
+  applyPrimaryColor() {
+    const container = document.querySelector(".buddybridge-chat-container");
+    if (container instanceof HTMLElement) {
+      if (this.settings.primaryColor) {
+        container.style.setProperty("--buddybridge-primary", this.settings.primaryColor);
+      } else {
+        container.style.removeProperty("--buddybridge-primary");
+      }
+    }
   }
 };
