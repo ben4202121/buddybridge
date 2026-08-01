@@ -81,7 +81,7 @@ export class BuddyBridgeChatView extends ItemView {
         // 应用自定义主色调
         const plugin = this.app.plugins.getPlugin('buddybridge');
         if (plugin && plugin.settings && plugin.settings.primaryColor) {
-            container.style.setProperty('--buddybridge-primary', plugin.settings.primaryColor);
+            this.setCssProps(container, { '--buddybridge-primary': plugin.settings.primaryColor });
         }
 
         // 顶部标签栏
@@ -430,8 +430,8 @@ export class BuddyBridgeChatView extends ItemView {
     }
 
     private adjustTextareaHeight() {
-        this.inputEl.style.height = 'auto';
-        this.inputEl.style.height = `${this.inputEl.scrollHeight}px`;
+        this.setCssProps(this.inputEl, { '--buddybridge-input-height': 'auto' });
+        this.setCssProps(this.inputEl, { '--buddybridge-input-height': `${this.inputEl.scrollHeight}px` });
     }
 
     private setInputEnabled(enabled: boolean) {

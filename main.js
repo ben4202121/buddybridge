@@ -677,7 +677,7 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
     container.addClass("buddybridge-chat-container");
     const plugin = this.app.plugins.getPlugin("buddybridge");
     if (plugin && plugin.settings && plugin.settings.primaryColor) {
-      container.style.setProperty("--buddybridge-primary", plugin.settings.primaryColor);
+      this.setCssProps(container, { "--buddybridge-primary": plugin.settings.primaryColor });
     }
     this.tabBar = container.createDiv({ cls: "buddybridge-tab-bar" });
     const newBtn = this.tabBar.createEl("button", {
@@ -954,8 +954,8 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
     );
   }
   adjustTextareaHeight() {
-    this.inputEl.style.height = "auto";
-    this.inputEl.style.height = `${this.inputEl.scrollHeight}px`;
+    this.setCssProps(this.inputEl, { "--buddybridge-input-height": "auto" });
+    this.setCssProps(this.inputEl, { "--buddybridge-input-height": `${this.inputEl.scrollHeight}px` });
   }
   setInputEnabled(enabled) {
     this.inputEl.disabled = !enabled;
@@ -1462,9 +1462,9 @@ var BuddyBridgePlugin = class extends import_obsidian3.Plugin {
     const container = document.querySelector(".buddybridge-chat-container");
     if (container instanceof HTMLElement) {
       if (this.settings.primaryColor) {
-        container.style.setProperty("--buddybridge-primary", this.settings.primaryColor);
+        this.setCssProps(container, { "--buddybridge-primary": this.settings.primaryColor });
       } else {
-        container.style.removeProperty("--buddybridge-primary");
+        this.setCssProps(container, { "--buddybridge-primary": null });
       }
     }
   }

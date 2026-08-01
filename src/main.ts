@@ -118,9 +118,9 @@ export default class BuddyBridgePlugin extends Plugin {
         const container = document.querySelector('.buddybridge-chat-container');
         if (container instanceof HTMLElement) {
             if (this.settings.primaryColor) {
-                container.style.setProperty('--buddybridge-primary', this.settings.primaryColor);
+                this.setCssProps(container, { '--buddybridge-primary': this.settings.primaryColor });
             } else {
-                container.style.removeProperty('--buddybridge-primary');
+                this.setCssProps(container, { '--buddybridge-primary': null });
             }
         }
     }
