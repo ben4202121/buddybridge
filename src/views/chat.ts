@@ -1,10 +1,10 @@
-import { ItemView, Notice, MarkdownRenderer, Component, setIcon, TFile } from 'obsidian';
+import { ItemView, Notice, MarkdownRenderer, Component, setIcon } from 'obsidian';
 import type { WorkspaceLeaf } from 'obsidian';
 import { ConversationManager } from '../chat/manager';
 import { BuddyBridgeAPI } from '../api';
-import { getErrorMessage, type Conversation, type AttachedFile } from '../types';
+import { getErrorMessage, type Conversation, ChatMessage } from '../types';
 
-const ALLOWED_EXTENSIONS = new Set(['txt', 'md', 'docx', 'doc', 'pdf', 'xls', 'xlsx']);
+export const VIEW_TYPE_CHAT = "buddybridge-panel";
 
 const COMMANDS: Record<string, string> = {
     '/clear': '清空对话，重新开始',
@@ -35,8 +35,6 @@ const COMMANDS: Record<string, string> = {
     '/rules': '生成代码规范规则',
 };
 
-export const VIEW_TYPE_CHAT = "buddybridge-panel";
-
 export class BuddyBridgeChatView extends ItemView {
     private manager: ConversationManager;
     private api: BuddyBridgeAPI;
@@ -45,13 +43,11 @@ export class BuddyBridgeChatView extends ItemView {
     private sendBtn!: HTMLButtonElement;
     private tabBar!: HTMLElement;
     private currentFileBar!: HTMLElement;
-    private attachments: AttachedFile[] = [];
-    private attachmentsBar!: HTMLElement;
+    private commandDropdown!: HTMLElement | null;
     private streamingConversations: Set<string> = new Set();
     private streamingMsgId: string | null = null;
     private markdownComponent: Component;
     private loadDataCallback: () => Promise<Conversation[]>;
-    private commandDropdown!: HTMLElement | null;
 
     private get vaultPath(): string | undefined {
         const adapter = this.app.vault.adapter as { basePath?: string };
@@ -78,10 +74,14 @@ export class BuddyBridgeChatView extends ItemView {
         container.empty();
         container.addClass('buddybridge-chat-container');
 
-        // 应用自定义主色调
-        const plugin = this.app.plugins.getPlugin('buddybridge');
-        if (plugin && plugin.settings && plugin.settings.primaryColor) {
-            this.setCssProps(container, { '--buddybridge-primary': plugin.settings.primaryColor });
+        // 应用自定义主色调（安全访问，失败不影响面板）
+        try {
+            const plugin = (this.app as any).plugins?.plugins?.['buddybridge'];
+            if (plugin?.settings?.primaryColor) {
+                container.style.setProperty('--buddybridge-primary', plugin.settings.primaryColor);
+            }
+        } catch (e) {
+            console.error('[BB] 应用主色调失败:', e);
         }
 
         // 顶部标签栏
@@ -97,8 +97,6 @@ export class BuddyBridgeChatView extends ItemView {
         // 当前文件指示器
         this.currentFileBar = container.createDiv({ cls: 'buddybridge-current-file' });
         this.updateCurrentFileBar();
-
-        // 监听文件切换
         this.registerEvent(
             this.app.workspace.on('active-leaf-change', () => {
                 this.updateCurrentFileBar();
@@ -108,9 +106,9 @@ export class BuddyBridgeChatView extends ItemView {
         // 消息区域
         this.messageContainer = container.createDiv({ cls: 'buddybridge-messages' });
 
-                // 底部输入区
+        // 底部输入区
         const inputArea = container.createDiv({ cls: 'buddybridge-input-area' });
-                this.inputEl = inputArea.createEl('textarea', {
+        this.inputEl = inputArea.createEl('textarea', {
             cls: 'buddybridge-input',
             attr: { placeholder: '输入消息... (Shift+Enter 换行，Enter 发送)', rows: '2' }
         });
@@ -126,9 +124,6 @@ export class BuddyBridgeChatView extends ItemView {
             attr: { 'aria-label': '发送' }
         });
         this.sendBtn.onclick = () => this.sendMessage();
-
-        // 拖拽支持
-        this.setupDragDrop();
 
         // DOM 构建完成后加载历史对话
         try {
@@ -154,16 +149,15 @@ export class BuddyBridgeChatView extends ItemView {
         this.renderTabs();
         await this.renderMessages();
         this.setInputEnabled(true);
-        this.sendBtn.setText('发送');
     }
 
     private async switchToChat(id: string) {
         this.manager.switchTo(id);
         this.renderTabs();
         await this.renderMessages();
+        // 切换到该对话时，根据其发送状态更新输入框
         const isSending = this.streamingConversations.has(id);
         this.setInputEnabled(!isSending);
-        this.sendBtn.setText(isSending ? '发送中...' : '发送');
     }
 
     private async deleteChat(id: string, e: UIEvent) {
@@ -171,67 +165,6 @@ export class BuddyBridgeChatView extends ItemView {
         this.manager.deleteConversation(id);
         this.renderTabs();
         await this.renderMessages();
-        this.setInputEnabled(true);
-        this.sendBtn.setText('发送');
-    }
-
-    private async continueConversation() {
-        const conv = this.manager.getActive();
-        if (!conv || conv.messages.length < 2) {
-            new Notice('对话太短，无需续接');
-            return;
-        }
-
-        // 保存旧消息用于构建摘要
-        const oldMessages = conv.messages;
-        const oldTitle = conv.title;
-
-        // 创建新对话
-        const newConv = this.manager.createConversation(oldTitle + ' (续)');
-        newConv.sessionId = this.api.generateId();
-
-        // 构建摘要：取首条用户消息 + 最近几条消息
-        const firstUserMsg = oldMessages.find(m => m.role === 'user');
-        const recentMsgs = oldMessages.slice(-6);
-
-        const summaryParts: string[] = [
-            `【续接对话】上轮对话「${oldTitle}」已到达上限，自动延续到新对话。`,
-            '',
-            `📋 上轮对话摘要（共 ${oldMessages.length} 条消息）`,
-            '',
-        ];
-
-        if (firstUserMsg) {
-            summaryParts.push(`**最初目标**: ${firstUserMsg.content.substring(0, 200)}`);
-            summaryParts.push('');
-        }
-
-        summaryParts.push('**最近交流**:');
-        for (const m of recentMsgs) {
-            const label = m.role === 'user' ? '👤 用户' : '🤖 AI';
-            const content = m.content.substring(0, 300);
-            summaryParts.push(`> ${label}: ${content}`);
-        }
-
-        summaryParts.push('');
-        summaryParts.push('---');
-        summaryParts.push('请基于以上上下文继续工作。');
-
-        const summary = summaryParts.join('\n');
-
-        // 把摘要作为新对话的第一条消息
-        newConv.messages.push({
-            id: this.api.generateId(),
-            role: 'assistant',
-            content: summary,
-            timestamp: Date.now(),
-        });
-
-        // 切换到新对话
-        this.renderTabs();
-        await this.renderMessages();
-        this.scrollToBottom();
-        new Notice('已创建续接对话，上下文已保留');
     }
 
     /** 渲染标签栏 */
@@ -251,26 +184,6 @@ export class BuddyBridgeChatView extends ItemView {
                 tab.addClass('buddybridge-tab-active');
             }
             tab.createSpan({ text: conv.title, cls: 'buddybridge-tab-title' });
-
-            // 续接按钮（仅当有消息时显示）
-            if (conv.messages.length >= 2) {
-                const continueBtn = tab.createSpan({
-                    cls: 'buddybridge-tab-continue',
-                    attr: { title: '续接新对话', 'aria-label': '续接新对话', role: 'button', tabindex: '0' }
-                });
-                continueBtn.setText('↻');
-                continueBtn.onclick = (e: MouseEvent) => {
-                    e.stopPropagation();
-                    void this.continueConversation();
-                };
-                continueBtn.onkeydown = (e: KeyboardEvent) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault();
-                        void this.continueConversation();
-                    }
-                };
-            }
-
             const closeBtn = tab.createSpan({
                 cls: 'buddybridge-tab-close',
                 attr: { title: '关闭对话', 'aria-label': '关闭对话', role: 'button', tabindex: '0' }
@@ -307,9 +220,8 @@ export class BuddyBridgeChatView extends ItemView {
             tips.createDiv({ text: '💡 提示' });
             const tipList = tips.createEl('ul');
             const tipItems = [
-                '发送文件让 AI 读取（支持 txt, md, pdf, docx, xlsx）',
-                '拖拽文件到聊天面板快速附加',
                 'Shift+Enter 换行，Enter 发送',
+                '输入 / 查看可用命令',
                 '多轮对话自动保持上下文',
             ];
             for (const tip of tipItems) {
@@ -343,12 +255,7 @@ export class BuddyBridgeChatView extends ItemView {
                 await this.renderMarkdownContent(bubble, msg.content);
             }
         } else {
-            // 用户消息中的错误也显示为卡片
-            if (msg.content.startsWith('错误:') || msg.content.startsWith('Error:')) {
-                this.renderErrorCard(bubble, msg.content);
-            } else {
-                bubble.createSpan({ text: msg.content });
-            }
+            bubble.createSpan({ text: msg.content });
         }
         return row;
     }
@@ -358,12 +265,10 @@ export class BuddyBridgeChatView extends ItemView {
         const icon = card.createDiv({ cls: 'buddybridge-error-card-icon' });
         setIcon(icon, 'alert-triangle');
 
-        // 提取错误消息（去掉 "错误: " 前缀）
         const errorMsg = content.replace(/^错误:\s*/, '').replace(/^Error:\s*/, '');
         card.createDiv({ cls: 'buddybridge-error-card-title', text: '请求失败' });
         card.createDiv({ cls: 'buddybridge-error-card-body', text: errorMsg });
 
-        // 根据错误内容提供可操作提示
         const hint = this.getErrorHint(errorMsg);
         if (hint) {
             card.createDiv({ cls: 'buddybridge-error-card-hint', text: hint });
@@ -378,10 +283,7 @@ export class BuddyBridgeChatView extends ItemView {
             return '请确认 Node.js 已正确安装，或运行环境初始化提示词。';
         }
         if (errorMsg.includes('timeout') || errorMsg.includes('超时') || errorMsg.includes('TIMEOUT')) {
-            return '请求超时，请重试。如果频繁出现，请检查网络连接或 CodeBuddy 状态。';
-        }
-        if (errorMsg.includes('无响应') || errorMsg.includes('no response') || errorMsg.includes('empty')) {
-            return 'AI 未返回任何内容，请重试。如果问题持续，请检查 CodeBuddy 是否正常运行。';
+            return '请求超时，请重试。';
         }
         return null;
     }
@@ -430,8 +332,7 @@ export class BuddyBridgeChatView extends ItemView {
     }
 
     private adjustTextareaHeight() {
-        this.setCssProps(this.inputEl, { '--buddybridge-input-height': 'auto' });
-        this.setCssProps(this.inputEl, { '--buddybridge-input-height': `${this.inputEl.scrollHeight}px` });
+        this.inputEl.style.setProperty('--buddybridge-input-height', `${this.inputEl.scrollHeight}px`);
     }
 
     private setInputEnabled(enabled: boolean) {
@@ -442,21 +343,20 @@ export class BuddyBridgeChatView extends ItemView {
 
     private updateCommandDropdown() {
         const val = this.inputEl.value;
-        // 只显示命令列表
         if (val === '/') {
             if (!this.commandDropdown) {
-                this.commandDropdown = this.inputEl.parentElement?.createDiv({ cls: 'buddybridge-command-dropdown' }) ?? null;
-                if (this.commandDropdown) {
-                    for (const [cmd, info] of Object.entries(COMMANDS)) {
-                        const item = this.commandDropdown.createDiv({ cls: 'buddybridge-command-item' });
-                        const nameSpan = item.createSpan({ cls: 'buddybridge-command-name', text: cmd });
-                        item.createSpan({ cls: 'buddybridge-command-desc', text: info });
-                        item.onclick = () => {
-                            this.inputEl.value = cmd + ' ';
-                            this.inputEl.focus();
-                            this.removeCommandDropdown();
-                        };
-                    }
+                const parent = this.inputEl.parentElement;
+                if (!parent) return;
+                this.commandDropdown = parent.createDiv({ cls: 'buddybridge-command-dropdown' });
+                for (const [cmd, desc] of Object.entries(COMMANDS)) {
+                    const item = this.commandDropdown.createDiv({ cls: 'buddybridge-command-item' });
+                    item.createSpan({ cls: 'buddybridge-command-name', text: cmd });
+                    item.createSpan({ cls: 'buddybridge-command-desc', text: desc });
+                    item.onclick = () => {
+                        this.inputEl.value = cmd + ' ';
+                        this.inputEl.focus();
+                        this.removeCommandDropdown();
+                    };
                 }
             }
         } else {
@@ -481,106 +381,10 @@ export class BuddyBridgeChatView extends ItemView {
         }
     }
 
-    private addAttachment(file: AttachedFile) {
-        // 避免重复添加
-        if (this.attachments.some(a => a.path === file.path)) return;
-        this.attachments.push(file);
-        this.renderAttachments();
-    }
-
-    private removeAttachment(path: string) {
-        this.attachments = this.attachments.filter(a => a.path !== path);
-        this.renderAttachments();
-    }
-
-    private renderAttachments() {
-        this.attachmentsBar.empty();
-        if (this.attachments.length === 0) return;
-
-        for (const file of this.attachments) {
-            const chip = this.attachmentsBar.createDiv({ cls: 'buddybridge-attachment-chip' });
-            const icon = chip.createSpan({ cls: 'buddybridge-attachment-chip-icon' });
-            setIcon(icon, 'file-text');
-            chip.createSpan({ cls: 'buddybridge-attachment-chip-name', text: file.name });
-            const closeBtn = chip.createSpan({
-                cls: 'buddybridge-attachment-chip-close',
-                attr: { role: 'button', 'aria-label': '移除文件', tabindex: '0' }
-            });
-            setIcon(closeBtn, 'x');
-            closeBtn.onclick = (e) => {
-                e.stopPropagation();
-                this.removeAttachment(file.path);
-            };
-            closeBtn.onkeydown = (e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault();
-                    this.removeAttachment(file.path);
-                }
-            };
-        }
-
-        // 显示文件数量
-        const count = this.attachmentsBar.createDiv({ cls: 'buddybridge-attachment-count' });
-        count.createSpan({ text: `${this.attachments.length} 个文件` });
-    }
-
-    private setupDragDrop() {
-        const container = this.containerEl;
-
-        container.addEventListener('dragover', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            container.addClass('buddybridge-drag-over');
-        });
-
-        container.addEventListener('dragenter', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            container.addClass('buddybridge-drag-over');
-        });
-
-        container.addEventListener('dragleave', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            container.removeClass('buddybridge-drag-over');
-        });
-
-        container.addEventListener('drop', async (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            container.removeClass('buddybridge-drag-over');
-
-            // 尝试从 Obsidian 文件管理器拖拽（text/plain 包含文件路径）
-            const path = e.dataTransfer?.getData('text/plain');
-            if (path) {
-                const file = this.app.vault.getAbstractFileByPath(path);
-                if (file instanceof TFile) {
-                    const ext = file.extension.toLowerCase();
-                    if (ALLOWED_EXTENSIONS.has(ext)) {
-                        this.addAttachment({
-                            name: file.name,
-                            path: file.path,
-                            extension: file.extension,
-                        });
-                        new Notice(`已附加: ${file.name}`);
-                        return;
-                    }
-                }
-            }
-
-            // 可能是 Obsidian 内部拖拽，尝试其他数据格式
-            const uriList = e.dataTransfer?.getData('text/uri-list');
-            if (uriList) {
-                new Notice('不支持从该位置拖拽文件，请使用回形针按钮选择文件');
-            }
-        });
-    }
-
     private async sendMessage() {
-        // 检查该对话是否正在流式响应
+        // 该对话正在流式响应时阻止重复发送
         const activeConv = this.manager.getActive();
-        if (!activeConv) return;
-        if (this.streamingConversations.has(activeConv.id)) return;
+        if (activeConv && this.streamingConversations.has(activeConv.id)) return;
 
         const text = this.inputEl.value.trim();
         if (!text) return;
@@ -592,9 +396,7 @@ export class BuddyBridgeChatView extends ItemView {
                 this.createNewChat();
                 return;
             }
-            // 其他命令（含 /help）透传给 CLI
-            await this.sendCommandToCLI(text);
-            return;
+            // 其他命令透传给 CLI
         }
 
         // 确保有活跃对话
@@ -630,16 +432,13 @@ export class BuddyBridgeChatView extends ItemView {
         let thinkingContent = '';
         let textContent = '';
         try {
-            // 注入 vault 上下文 + 当前文件 + 附件
-            const activeFile = this.app.workspace.getActiveFile();
-            const activeFilePath = activeFile?.path || null;
-            const filesContext = '';
+            // 直接发送用户消息（vault 路径已通过 cwd 传给 CLI）
             const contextText = text;
 
-            // 用 querySelectorAll 取最后一个 assistant bubble，不受 continue 等元素干扰
-            const bubbles = this.messageContainer.querySelectorAll('.buddybridge-message-assistant .buddybridge-bubble');
-            const streamingBubble = bubbles.length > 0 ? bubbles[bubbles.length - 1] as HTMLElement : null;
-            if (!streamingBubble) {
+            const streamingBubble = this.messageContainer.querySelector(
+                `.buddybridge-message-assistant:last-child .buddybridge-bubble`
+            );
+            if (!(streamingBubble instanceof HTMLElement)) {
                 throw new Error('找不到 Assistant 消息气泡');
             }
 
@@ -647,7 +446,7 @@ export class BuddyBridgeChatView extends ItemView {
                 const bubble = streamingBubble;
 
                 // 过滤 CLI 的启动确认消息
-                if (chunk.type === 'text' && /(Working directory|文件操作规则|待命中|已锁定|已确认)/.test(chunk.content)) {
+                if (chunk.type === 'text' && /(Working directory|file.operation|file rules|Standing by|Awaiting|Confirmed|Vault path|待命中|文件操作|已锁定|已确认|工作目录)/.test(chunk.content)) {
                     continue;
                 }
 
@@ -739,7 +538,7 @@ export class BuddyBridgeChatView extends ItemView {
             this.manager.updateMessage(convId, aiMsg.id, finalContent);
 
             if (!finalContent) {
-                this.manager.updateMessage(convId, aiMsg.id, '错误: AI 未返回任何内容。请重试，或检查 CodeBuddy 是否正常运行。');
+                this.manager.updateMessage(convId, aiMsg.id, '（无响应，请重试）');
             }
 
             // 流式结束后再渲染一次，确保思考指示器等占位元素被清除
@@ -749,8 +548,6 @@ export class BuddyBridgeChatView extends ItemView {
             }
             await this.renderMessages();
             await this.manager.flush();
-
-            
         } catch (error: unknown) {
             const message = getErrorMessage(error);
             this.manager.updateMessage(convId, aiMsg.id, `错误: ${message}`);
@@ -763,72 +560,12 @@ export class BuddyBridgeChatView extends ItemView {
         }
     }
 
-    private async sendCommandToCLI(command: string) {
-        let conv = this.manager.getActive();
-        if (!conv) {
-            conv = this.manager.createConversation();
-            this.renderTabs();
-        }
-        if (!conv.sessionId) {
-            conv.sessionId = this.api.generateId();
-        }
-
-        const convId = conv.id;
-        this.manager.addMessage(convId, 'user', command);
-        this.inputEl.value = '';
-        this.adjustTextareaHeight();
-        await this.renderMessages();
-
-        const aiMsg = this.manager.addMessage(convId, 'assistant', '');
-        if (!aiMsg) return;
-
-        this.streamingMsgId = aiMsg.id;
-        this.streamingConversations.add(convId);
-        this.setInputEnabled(false);
-        await this.renderMessages();
-
-        let responseText = '';
-        try {
-            for await (const chunk of this.api.sendMessage(conv.sessionId, command, this.vaultPath)) {
-                if (chunk.type === 'text') {
-                    responseText += chunk.content;
-                    this.manager.updateMessage(convId, aiMsg.id, responseText, true);
-                    // 更新气泡
-                    const bubs = this.messageContainer.querySelectorAll('.buddybridge-message-assistant .buddybridge-bubble');
-                    const bubble = bubs.length > 0 ? bubs[bubs.length - 1] as HTMLElement : null;
-                    if (bubble) {
-                        await this.renderMarkdownContent(bubble, responseText);
-                    }
-                } else if (chunk.type === 'error') {
-                    this.manager.updateMessage(convId, aiMsg.id, `错误: ${chunk.content}`, true);
-                    new Notice(`命令执行失败: ${chunk.content}`);
-                }
-            }
-
-            const finalContent = responseText || '（命令执行完成，无输出）';
-            this.manager.updateMessage(convId, aiMsg.id, finalContent);
-            await this.renderMessages();
-            await this.manager.flush();
-        } catch (error: unknown) {
-            const message = getErrorMessage(error);
-            this.manager.updateMessage(convId, aiMsg.id, `错误: ${message}`);
-            new Notice(`命令执行失败: ${message}`);
-            await this.renderMessages();
-        } finally {
-            this.streamingConversations.delete(convId);
-            this.streamingMsgId = null;
-            this.setInputEnabled(true);
-        }
-    }
-
     private updateCurrentFileBar() {
         const file = this.app.workspace.getActiveFile();
         if (file) {
             this.currentFileBar.setText(`📄 ${file.path}`);
-            this.currentFileBar.addClass('buddybridge-current-file-active');
         } else {
             this.currentFileBar.setText('');
-            this.currentFileBar.removeClass('buddybridge-current-file-active');
         }
     }
 

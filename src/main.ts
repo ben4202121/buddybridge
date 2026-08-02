@@ -115,13 +115,17 @@ export default class BuddyBridgePlugin extends Plugin {
     }
 
     applyPrimaryColor() {
-        const container = document.querySelector('.buddybridge-chat-container');
-        if (container instanceof HTMLElement) {
-            if (this.settings.primaryColor) {
-                this.setCssProps(container, { '--buddybridge-primary': this.settings.primaryColor });
-            } else {
-                this.setCssProps(container, { '--buddybridge-primary': null });
+        try {
+            const container = document.querySelector('.buddybridge-chat-container');
+            if (container instanceof HTMLElement) {
+                if (this.settings.primaryColor) {
+                    this.setCssProps(container, { '--buddybridge-primary': this.settings.primaryColor });
+                } else {
+                    this.setCssProps(container, { '--buddybridge-primary': null });
+                }
             }
+        } catch (e) {
+            console.error('[BB] 应用主色调失败:', e);
         }
     }
 }

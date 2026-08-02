@@ -1,11 +1,3 @@
-// ==================== 附件类型 ====================
-export interface AttachedFile {
-    name: string;
-    path: string;
-    content?: string;
-    extension: string;
-}
-
 // ==================== 聊天类型 ====================
 export interface ChatMessage {
     id: string;

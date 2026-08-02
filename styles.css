@@ -126,14 +126,8 @@
     text-overflow: ellipsis;
     flex-shrink: 0;
     border-bottom: 1px solid var(--background-modifier-border);
-    min-height: 22px;
-    line-height: 22px;
-    transition: color 0.15s ease, background-color 0.15s ease;
-}
-
-.buddybridge-current-file-active {
-    color: var(--text-accent);
-    background: var(--background-primary-alt);
+    min-height: 20px;
+    line-height: 20px;
 }
 
 /* ==================== 消息区域 ==================== */
@@ -184,7 +178,7 @@
     margin-top: 24px;
     padding: 12px 16px;
     background: var(--background-secondary);
-    border-radius: var(--buddybridge-radius-lg);
+    border-radius: 8px;
     font-size: var(--font-ui-smaller);
     color: var(--text-muted);
     text-align: left;
@@ -205,12 +199,12 @@
 .buddybridge-error-card {
     display: flex;
     flex-direction: column;
-    gap: var(--buddybridge-gap-sm);
-    padding: 12px 14px;
+    gap: 6px;
+    padding: 10px 12px;
     background: var(--background-primary-alt);
     border: 1px solid var(--background-modifier-border);
     border-left: 3px solid var(--color-red, #e03131);
-    border-radius: var(--buddybridge-radius-lg);
+    border-radius: 8px;
     font-size: var(--font-ui-small);
 }
 
@@ -240,7 +234,7 @@
     margin-top: 4px;
     padding: 6px 8px;
     background: var(--background-secondary);
-    border-radius: var(--buddybridge-radius-sm);
+    border-radius: 4px;
     color: var(--text-muted);
     font-size: 11px;
     line-height: 1.5;
@@ -597,6 +591,47 @@
     position: relative;
 }
 
+/* ==================== 命令下拉菜单 ==================== */
+.buddybridge-command-dropdown {
+    position: absolute;
+    bottom: 100%;
+    left: 0;
+    right: 0;
+    margin: 0 8px 4px;
+    background: var(--background-primary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    max-height: 240px;
+    overflow-y: auto;
+    z-index: 100;
+}
+
+.buddybridge-command-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    cursor: pointer;
+    font-size: var(--font-ui-smaller);
+}
+
+.buddybridge-command-item:hover {
+    background: var(--background-modifier-hover);
+}
+
+.buddybridge-command-name {
+    font-family: var(--font-monospace);
+    font-weight: 600;
+    color: var(--buddybridge-primary, var(--interactive-accent));
+    min-width: 80px;
+}
+
+.buddybridge-command-desc {
+    color: var(--text-muted);
+    font-size: 10px;
+}
+
 .buddybridge-input {
     flex: 1;
     resize: none;
@@ -642,21 +677,6 @@
     transform: scale(0.98);
 }
 
-.buddybridge-send-btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-    transform: none;
-}
-
-.buddybridge-send-btn:disabled:hover {
-    opacity: 0.5;
-}
-
-.buddybridge-input:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-}
-
 /* ==================== 滚动条 ==================== */
 .buddybridge-messages::-webkit-scrollbar {
     width: 5px;
@@ -678,56 +698,6 @@
 
 /* ==================== 不可见辅助类 ==================== */
 .buddybridge-chat-container .buddybridge-hidden { display: none; }
-
-/* ==================== 命令下拉菜单 ==================== */
-.buddybridge-command-dropdown {
-    position: absolute;
-    bottom: 100%;
-    left: 0;
-    right: 0;
-    margin: 0 8px 4px;
-    background: var(--background-primary);
-    border: 1px solid var(--background-modifier-border);
-    border-radius: var(--buddybridge-radius-lg);
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-    max-height: 240px;
-    overflow-y: auto;
-    z-index: 100;
-}
-
-.buddybridge-command-item {
-    display: flex;
-    align-items: center;
-    gap: var(--buddybridge-gap-sm);
-    padding: 6px 10px;
-    cursor: pointer;
-    font-size: var(--font-ui-smaller);
-    transition: background-color 0.1s ease;
-}
-
-.buddybridge-command-item:hover {
-    background: var(--background-modifier-hover);
-}
-
-.buddybridge-command-item:first-child {
-    border-radius: var(--buddybridge-radius-lg) var(--buddybridge-radius-lg) 0 0;
-}
-
-.buddybridge-command-item:last-child {
-    border-radius: 0 0 var(--buddybridge-radius-lg) var(--buddybridge-radius-lg);
-}
-
-.buddybridge-command-name {
-    font-family: var(--font-monospace);
-    font-weight: 600;
-    color: var(--interactive-accent);
-    min-width: 80px;
-}
-
-.buddybridge-command-desc {
-    color: var(--text-muted);
-    font-size: 10px;
-}
 
 /* ==================== Reduced motion ==================== */
 @media (prefers-reduced-motion: reduce) {
