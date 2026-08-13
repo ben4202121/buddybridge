@@ -677,6 +677,15 @@
     transform: scale(0.98);
 }
 
+.buddybridge-send-btn-stop {
+    background: var(--color-red, #e03131);
+}
+
+.buddybridge-send-btn-stop:hover {
+    background: var(--color-red, #e03131);
+    opacity: 0.9;
+}
+
 /* ==================== 滚动条 ==================== */
 .buddybridge-messages::-webkit-scrollbar {
     width: 5px;

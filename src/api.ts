@@ -324,6 +324,7 @@ export function needsWindowsShell(scriptPath: string): boolean {
 export class BuddyBridgeAPI {
     private timeout: number;
     private scriptPath: string;
+    private currentProc: ReturnType<typeof spawn> | null = null;
 
     constructor(timeout: number = TIMEOUT) {
         this.timeout = timeout;
@@ -371,6 +372,7 @@ export class BuddyBridgeAPI {
             const nodeBin = findNodeExecutable() || 'node';
             proc = spawn(nodeBin, [scriptPath, ...cliArgs], procOptions);
         }
+        this.currentProc = proc;
 
         let buffer = '';
         let errOut = '';
@@ -406,6 +408,7 @@ export class BuddyBridgeAPI {
 
         proc.on('close', (code, signal) => {
             console.log('[BB] exit:', code, signal ? 'signal:' + signal : '', '| err:', errOut.substring(0, 200));
+            this.currentProc = null;
             closed = true;
             if (resolveQueue) {
                 if (errOut && !hasOutput) {
@@ -461,5 +464,15 @@ export class BuddyBridgeAPI {
         }
     }
 
-    cancel(): void {}
+    cancel(): void {
+        if (this.currentProc) {
+            try {
+                this.currentProc.kill();
+                console.log('[BB] 已终止 CLI 进程');
+            } catch (e) {
+                console.error('[BB] 终止进程失败:', e);
+            }
+            this.currentProc = null;
+        }
+    }
 }

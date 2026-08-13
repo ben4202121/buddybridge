@@ -46,7 +46,10 @@ export class BuddyBridgeChatView extends ItemView {
     private commandDropdown!: HTMLElement | null;
     private streamingConversations: Set<string> = new Set();
     private streamingMsgId: string | null = null;
+    private stopRequested: boolean = false;
     private markdownComponent: Component;
+    private fileIndex: { paths: Map<string, string>; basenames: Map<string, string[]> } | null = null;
+    private fileIndexBuiltAt = 0;
     private loadDataCallback: () => Promise<Conversation[]>;
 
     private get vaultPath(): string | undefined {
@@ -77,8 +80,8 @@ export class BuddyBridgeChatView extends ItemView {
         // 应用自定义主色调（安全访问，失败不影响面板）
         try {
             const plugin = (this.app as any).plugins?.plugins?.['buddybridge'];
-            if (plugin?.settings?.primaryColor) {
-                container.style.setProperty('--buddybridge-primary', plugin.settings.primaryColor);
+            if (plugin?.applyPrimaryColor) {
+                plugin.applyPrimaryColor();
             }
         } catch (e) {
             console.error('[BB] 应用主色调失败:', e);
@@ -123,7 +126,14 @@ export class BuddyBridgeChatView extends ItemView {
             cls: 'buddybridge-send-btn',
             attr: { 'aria-label': '发送' }
         });
-        this.sendBtn.onclick = () => this.sendMessage();
+        this.sendBtn.onclick = () => {
+            const conv = this.manager.getActive();
+            if (conv && this.streamingConversations.has(conv.id)) {
+                this.stopStreaming();
+            } else {
+                this.sendMessage();
+            }
+        };
 
         // DOM 构建完成后加载历史对话
         try {
@@ -329,6 +339,115 @@ export class BuddyBridgeChatView extends ItemView {
             '',
             this.markdownComponent
         );
+
+        // 把回复中提到的、vault 里真实存在的文件名转为可点击链接
+        this.linkFileReferences(markdownContainer);
+    }
+
+    /** 构建/复用 vault 文件索引（带过期时间，避免每次渲染都重建） */
+    private getFileIndex(): { paths: Map<string, string>; basenames: Map<string, string[]> } {
+        const now = Date.now();
+        if (this.fileIndex && now - this.fileIndexBuiltAt < 10000) {
+            return this.fileIndex;
+        }
+        const paths = new Map<string, string>();
+        const basenames = new Map<string, string[]>();
+        for (const file of this.app.vault.getFiles()) {
+            const normalized = file.path.toLowerCase().replace(/\\/g, '/');
+            paths.set(normalized, file.path);
+            const key = (file.basename + '.' + file.extension).toLowerCase();
+            const list = basenames.get(key);
+            if (list) {
+                list.push(file.path);
+            } else {
+                basenames.set(key, [file.path]);
+            }
+        }
+        this.fileIndex = { paths, basenames };
+        this.fileIndexBuiltAt = now;
+        return this.fileIndex;
+    }
+
+    /** 遍历 markdown 容器，把文件名文本节点替换为可点击链接 */
+    private linkFileReferences(container: HTMLElement): void {
+        const index = this.getFileIndex();
+        const walker = document.createTreeWalker(
+            container,
+            NodeFilter.SHOW_TEXT,
+            {
+                acceptNode: (node: Node) => {
+                    const parent = node.parentElement;
+                    if (!parent) return NodeFilter.FILTER_REJECT;
+                    // 跳过已有链接和代码块，避免破坏
+                    if (parent.closest('a')) return NodeFilter.FILTER_REJECT;
+                    if (parent.closest('pre')) return NodeFilter.FILTER_REJECT;
+                    return NodeFilter.FILTER_ACCEPT;
+                },
+            }
+        );
+        const textNodes: Text[] = [];
+        while (walker.nextNode()) {
+            textNodes.push(walker.currentNode as Text);
+        }
+        for (const node of textNodes) {
+            this.linkTextNode(node, index);
+        }
+    }
+
+    /** 解析候选词：优先全路径匹配，其次唯一文件名匹配 */
+    private resolveFilePath(token: string, index: { paths: Map<string, string>; basenames: Map<string, string[]> }): string | null {
+        const normalized = token.toLowerCase().replace(/\\/g, '/');
+        const full = index.paths.get(normalized);
+        if (full) return full;
+        const sep = Math.max(normalized.lastIndexOf('/'), normalized.lastIndexOf('\\'));
+        const base = sep >= 0 ? normalized.slice(sep + 1) : normalized;
+        const list = index.basenames.get(base);
+        if (list && list.length === 1) return list[0];
+        return null;
+    }
+
+    /** 把单个文本节点中匹配到的文件名替换为可点击链接 */
+    private linkTextNode(node: Text, index: { paths: Map<string, string>; basenames: Map<string, string[]> }): void {
+        const raw = node.nodeValue || '';
+        if (!raw) return;
+
+        // 候选词：ASCII 单词/数字 + 中文 + 路径分隔符 + 扩展名
+        const re = /[\u4e00-\u9fff\u3400-\u4dbf\w./\\-]+/g;
+        const matches: { start: number; end: number; path: string }[] = [];
+        let m: RegExpExecArray | null;
+        while ((m = re.exec(raw)) !== null) {
+            const token = m[0].replace(/[.,;:!?)\]}>'"。，；：！？）】》’"」》]+$/, '');
+            if (!token) continue;
+            const resolved = this.resolveFilePath(token, index);
+            if (resolved) {
+                matches.push({ start: m.index, end: m.index + token.length, path: resolved });
+            }
+        }
+        if (matches.length === 0) return;
+
+        const frag = document.createDocumentFragment();
+        let cursor = 0;
+        for (const match of matches) {
+            if (match.start > cursor) {
+                frag.append(document.createTextNode(raw.slice(cursor, match.start)));
+            }
+            const link = document.createElement('a');
+            link.addClass('internal-link');
+            link.setAttribute('data-href', match.path);
+            link.setAttribute('href', match.path);
+            link.textContent = raw.slice(match.start, match.end);
+            link.addEventListener('click', (e: MouseEvent) => {
+                e.preventDefault();
+                e.stopPropagation();
+                void this.app.workspace.openLinkText(match.path, '');
+            });
+            frag.append(link);
+            cursor = match.end;
+        }
+        if (cursor < raw.length) {
+            frag.append(document.createTextNode(raw.slice(cursor)));
+        }
+        node.parentNode?.replaceChild(frag, node);
     }
 
     private adjustTextareaHeight() {
@@ -337,8 +456,14 @@ export class BuddyBridgeChatView extends ItemView {
 
     private setInputEnabled(enabled: boolean) {
         this.inputEl.disabled = !enabled;
-        this.sendBtn.disabled = !enabled;
-        this.sendBtn.setText(enabled ? '发送' : '发送中...');
+        this.sendBtn.disabled = false;
+        this.sendBtn.setText(enabled ? '发送' : '停止');
+        this.sendBtn.toggleClass('buddybridge-send-btn-stop', !enabled);
+    }
+
+    private stopStreaming() {
+        this.stopRequested = true;
+        this.api.cancel();
     }
 
     private updateCommandDropdown() {
@@ -538,7 +663,13 @@ export class BuddyBridgeChatView extends ItemView {
             this.manager.updateMessage(convId, aiMsg.id, finalContent);
 
             if (!finalContent) {
-                this.manager.updateMessage(convId, aiMsg.id, '（无响应，请重试）');
+                if (this.stopRequested) {
+                    this.manager.updateMessage(convId, aiMsg.id, '（已停止）');
+                } else {
+                    this.manager.updateMessage(convId, aiMsg.id, '（无响应，请重试）');
+                }
+            } else if (this.stopRequested) {
+                this.manager.updateMessage(convId, aiMsg.id, finalContent + '\n\n（已停止）');
             }
 
             // 流式结束后再渲染一次，确保思考指示器等占位元素被清除
@@ -556,6 +687,7 @@ export class BuddyBridgeChatView extends ItemView {
         } finally {
             this.streamingConversations.delete(convId);
             this.streamingMsgId = null;
+            this.stopRequested = false;
             this.setInputEnabled(true);
         }
     }

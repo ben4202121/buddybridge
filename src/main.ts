@@ -116,14 +116,14 @@ export default class BuddyBridgePlugin extends Plugin {
 
     applyPrimaryColor() {
         try {
-            const container = document.querySelector('.buddybridge-chat-container');
-            if (container instanceof HTMLElement) {
-                if (this.settings.primaryColor) {
-                    this.setCssProps(container, { '--buddybridge-primary': this.settings.primaryColor });
-                } else {
-                    this.setCssProps(container, { '--buddybridge-primary': null });
+            // setCssProps 的 key 原样透传（不自动补 --），CSS 变量必须带前缀
+            const value = this.settings.primaryColor || 'var(--interactive-accent)';
+            const containers = document.querySelectorAll('.buddybridge-chat-container');
+            containers.forEach((container) => {
+                if (container instanceof HTMLElement) {
+                    container.setCssProps({ '--buddybridge-primary': value });
                 }
-            }
+            });
         } catch (e) {
             console.error('[BB] 应用主色调失败:', e);
         }
