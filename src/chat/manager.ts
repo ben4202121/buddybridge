@@ -11,7 +11,7 @@ export class ConversationManager {
         this.persistCallback = callback;
     }
 
-    /** 设置最大对话数；创建新对话后按 updatedAt 裁剪（P0.4）。 */
+    /** 设置最大对话数；达到上限时禁止新建（方向 A，由 UI 层守卫提示）。 */
     setMaxConversations(max: number): void {
         if (typeof max === 'number' && max > 0) {
             this.maxConversations = max;
@@ -69,27 +69,13 @@ export class ConversationManager {
         };
         this.conversations.set(id, conv);
         this.activeId = id;
-        this.trimConversations();
         this.persist().catch((err) => this.handlePersistError(err));
         return conv;
     }
 
-    /**
-     * P0.4：按 updatedAt 降序保留最近 maxConversations 个会话，删除更旧的。
-     * 若当前活跃会话被裁掉，回退到保留列表中最新的一条。
-     */
-    private trimConversations(): void {
-        if (this.maxConversations <= 0) return;
-        const all = this.getAll(); // 已按 updatedAt 降序
-        if (all.length <= this.maxConversations) return;
-
-        const keepIds = new Set(all.slice(0, this.maxConversations).map(c => c.id));
-        for (const conv of all.slice(this.maxConversations)) {
-            this.conversations.delete(conv.id);
-        }
-        if (this.activeId && !keepIds.has(this.activeId)) {
-            this.activeId = all[0]?.id ?? null;
-        }
+    /** 是否已达到最大对话数（方向 A：达到上限禁止新建，由 UI 层守卫提示）。 */
+    atMaxConversations(): boolean {
+        return this.conversations.size >= this.maxConversations;
     }
 
     /** 删除指定消息（用于错误卡重试时移除失败的 user+assistant 对）。返回实际删除条数。 */

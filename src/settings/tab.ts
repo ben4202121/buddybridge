@@ -63,7 +63,7 @@ export class BuddyBridgeSettingTab extends PluginSettingTab {
 
         new Setting(containerEl)
             .setName('注入当前笔记链接')
-            .setDesc('发送消息时自动在消息前附加 [当前笔记: 路径]，让 AI 知道你在看哪个笔记（默认开启）')
+            .setDesc('发送消息时自动在消息前附加 [系统注入·当前笔记: 路径]，让 AI 知道你在看哪个笔记（默认开启）')
             .addToggle(toggle => toggle
                 .setValue(plugin.settings.noteLinkInjection)
                 .onChange(async (value) => {
@@ -73,7 +73,7 @@ export class BuddyBridgeSettingTab extends PluginSettingTab {
 
         new Setting(containerEl)
             .setName('注入 Vault 上下文')
-            .setDesc('额外附加 [Vault: 仓库根路径]，帮助 AI 理解笔记所在的仓库（默认关闭）')
+            .setDesc('额外附加 [系统注入·Vault: 仓库根路径]，帮助 AI 理解笔记所在的仓库（默认关闭）')
             .addToggle(toggle => toggle
                 .setValue(plugin.settings.vaultContextInjection)
                 .onChange(async (value) => {

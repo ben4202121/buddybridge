@@ -23,10 +23,10 @@ export interface PromptContextInput {
 export function buildPromptContext(input: PromptContextInput): string {
     const lines: string[] = [];
     if (input.noteLinkInjection && input.notePath) {
-        lines.push(`[当前笔记: ${input.notePath}]`);
+        lines.push(`[系统注入·当前笔记: ${input.notePath}]`);
     }
     if (input.vaultContextInjection && input.vaultPath) {
-        lines.push(`[Vault: ${input.vaultPath}]`);
+        lines.push(`[系统注入·Vault: ${input.vaultPath}]`);
     }
     if (lines.length === 0) {
         return input.userText;
@@ -66,7 +66,7 @@ export interface PromptContextState {
  * - prev 为 null（本会话第一条消息）：始终注入完整当前上下文。
  * - 上下文与 prev 相同：原样返回用户文本（不注入）。
  * - 上下文变化（切换笔记 / 关闭笔记 / 开关变化）：注入当前完整上下文。
- * - 笔记由非空变为空：前置 `[当前笔记: 无]`，告知 agent 不再沿用旧笔记。
+ * - 笔记由非空变为空：前置 `[系统注入·当前笔记: 无]`，告知 agent 不再沿用旧笔记。
  *
  * @returns 实际发送的文本 + 本轮应记录的最新 state（供调用方回写缓存）。
  */
@@ -90,7 +90,7 @@ export function buildDedupedPrompt(
 
     // 笔记由非空变为空：显式告知「无笔记」，防止 agent 继续按旧笔记行动
     if (flags.noteLinkInjection && prev?.notePath && !current.notePath) {
-        text = `[当前笔记: 无]\n\n${text}`;
+        text = `[系统注入·当前笔记: 无]\n\n${text}`;
     }
 
     return { text, state: current };

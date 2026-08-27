@@ -612,7 +612,7 @@ var ConversationManager = class {
   setPersistCallback(callback) {
     this.persistCallback = callback;
   }
-  /** 设置最大对话数；创建新对话后按 updatedAt 裁剪（P0.4）。 */
+  /** 设置最大对话数；达到上限时禁止新建（方向 A，由 UI 层守卫提示）。 */
   setMaxConversations(max) {
     if (typeof max === "number" && max > 0) {
       this.maxConversations = max;
@@ -663,28 +663,12 @@ var ConversationManager = class {
     };
     this.conversations.set(id, conv);
     this.activeId = id;
-    this.trimConversations();
     this.persist().catch((err) => this.handlePersistError(err));
     return conv;
   }
-  /**
-   * P0.4：按 updatedAt 降序保留最近 maxConversations 个会话，删除更旧的。
-   * 若当前活跃会话被裁掉，回退到保留列表中最新的一条。
-   */
-  trimConversations() {
-    var _a, _b;
-    if (this.maxConversations <= 0)
-      return;
-    const all = this.getAll();
-    if (all.length <= this.maxConversations)
-      return;
-    const keepIds = new Set(all.slice(0, this.maxConversations).map((c) => c.id));
-    for (const conv of all.slice(this.maxConversations)) {
-      this.conversations.delete(conv.id);
-    }
-    if (this.activeId && !keepIds.has(this.activeId)) {
-      this.activeId = (_b = (_a = all[0]) == null ? void 0 : _a.id) != null ? _b : null;
-    }
+  /** 是否已达到最大对话数（方向 A：达到上限禁止新建，由 UI 层守卫提示）。 */
+  atMaxConversations() {
+    return this.conversations.size >= this.maxConversations;
   }
   /** 删除指定消息（用于错误卡重试时移除失败的 user+assistant 对）。返回实际删除条数。 */
   removeMessages(convId, ids) {
@@ -793,10 +777,10 @@ var ConversationManager = class {
 function buildPromptContext(input) {
   const lines = [];
   if (input.noteLinkInjection && input.notePath) {
-    lines.push(`[\u5F53\u524D\u7B14\u8BB0: ${input.notePath}]`);
+    lines.push(`[\u7CFB\u7EDF\u6CE8\u5165\xB7\u5F53\u524D\u7B14\u8BB0: ${input.notePath}]`);
   }
   if (input.vaultContextInjection && input.vaultPath) {
-    lines.push(`[Vault: ${input.vaultPath}]`);
+    lines.push(`[\u7CFB\u7EDF\u6CE8\u5165\xB7Vault: ${input.vaultPath}]`);
   }
   if (lines.length === 0) {
     return input.userText;
@@ -815,7 +799,7 @@ function buildDedupedPrompt(prev, current, userText, flags) {
     vaultContextInjection: flags.vaultContextInjection
   });
   if (flags.noteLinkInjection && (prev == null ? void 0 : prev.notePath) && !current.notePath) {
-    text = `[\u5F53\u524D\u7B14\u8BB0: \u65E0]
+    text = `[\u7CFB\u7EDF\u6CE8\u5165\xB7\u5F53\u524D\u7B14\u8BB0: \u65E0]
 
 ${text}`;
   }
@@ -884,7 +868,7 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
   /**
    * 构建发送给 CLI 的上下文文本：会话内去重。
    * 笔记 / Vault 上下文「没变化」就不再重复注入，只在变化时注入，
-   * 避免 CLI 历史里堆叠 N 行 `[当前笔记: ...]` 导致 agent 误判。
+   * 避免 CLI 历史里堆叠 N 行 `[系统注入·当前笔记: ...]` 导致 agent 误判。
    */
   buildContextText(convId, text) {
     var _a, _b, _c, _d;
@@ -990,7 +974,18 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
     this.renderTabs();
     await this.renderMessages();
   }
+  /** 会话上限守卫：达到上限时提示并返回 true（调用方应中止新建）。 */
+  atConversationLimit() {
+    const max = this.manager.getMaxConversations();
+    if (this.manager.atMaxConversations()) {
+      new import_obsidian.Notice(`\u5BF9\u8BDD\u5DF2\u6EE1\uFF08\u6700\u591A ${max} \u4E2A\uFF09\uFF0C\u8BF7\u5148\u5220\u9664\u65E7\u5BF9\u8BDD\u518D\u65B0\u5EFA`);
+      return true;
+    }
+    return false;
+  }
   async createNewChat() {
+    if (this.atConversationLimit())
+      return;
     this.manager.createConversation();
     this.renderTabs();
     await this.renderMessages();
@@ -1444,6 +1439,8 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
     }
     let conv = this.manager.getActive();
     if (!conv) {
+      if (this.atConversationLimit())
+        return;
       conv = this.manager.createConversation();
       this.renderTabs();
     }
@@ -1612,11 +1609,11 @@ var BuddyBridgeSettingTab = class extends import_obsidian3.PluginSettingTab {
       }
     }));
     new import_obsidian3.Setting(containerEl).setName("\u4E0A\u4E0B\u6587\u6CE8\u5165").setHeading();
-    new import_obsidian3.Setting(containerEl).setName("\u6CE8\u5165\u5F53\u524D\u7B14\u8BB0\u94FE\u63A5").setDesc("\u53D1\u9001\u6D88\u606F\u65F6\u81EA\u52A8\u5728\u6D88\u606F\u524D\u9644\u52A0 [\u5F53\u524D\u7B14\u8BB0: \u8DEF\u5F84]\uFF0C\u8BA9 AI \u77E5\u9053\u4F60\u5728\u770B\u54EA\u4E2A\u7B14\u8BB0\uFF08\u9ED8\u8BA4\u5F00\u542F\uFF09").addToggle((toggle) => toggle.setValue(plugin.settings.noteLinkInjection).onChange(async (value) => {
+    new import_obsidian3.Setting(containerEl).setName("\u6CE8\u5165\u5F53\u524D\u7B14\u8BB0\u94FE\u63A5").setDesc("\u53D1\u9001\u6D88\u606F\u65F6\u81EA\u52A8\u5728\u6D88\u606F\u524D\u9644\u52A0 [\u7CFB\u7EDF\u6CE8\u5165\xB7\u5F53\u524D\u7B14\u8BB0: \u8DEF\u5F84]\uFF0C\u8BA9 AI \u77E5\u9053\u4F60\u5728\u770B\u54EA\u4E2A\u7B14\u8BB0\uFF08\u9ED8\u8BA4\u5F00\u542F\uFF09").addToggle((toggle) => toggle.setValue(plugin.settings.noteLinkInjection).onChange(async (value) => {
       plugin.settings.noteLinkInjection = value;
       await plugin.saveSettings();
     }));
-    new import_obsidian3.Setting(containerEl).setName("\u6CE8\u5165 Vault \u4E0A\u4E0B\u6587").setDesc("\u989D\u5916\u9644\u52A0 [Vault: \u4ED3\u5E93\u6839\u8DEF\u5F84]\uFF0C\u5E2E\u52A9 AI \u7406\u89E3\u7B14\u8BB0\u6240\u5728\u7684\u4ED3\u5E93\uFF08\u9ED8\u8BA4\u5173\u95ED\uFF09").addToggle((toggle) => toggle.setValue(plugin.settings.vaultContextInjection).onChange(async (value) => {
+    new import_obsidian3.Setting(containerEl).setName("\u6CE8\u5165 Vault \u4E0A\u4E0B\u6587").setDesc("\u989D\u5916\u9644\u52A0 [\u7CFB\u7EDF\u6CE8\u5165\xB7Vault: \u4ED3\u5E93\u6839\u8DEF\u5F84]\uFF0C\u5E2E\u52A9 AI \u7406\u89E3\u7B14\u8BB0\u6240\u5728\u7684\u4ED3\u5E93\uFF08\u9ED8\u8BA4\u5173\u95ED\uFF09").addToggle((toggle) => toggle.setValue(plugin.settings.vaultContextInjection).onChange(async (value) => {
       plugin.settings.vaultContextInjection = value;
       await plugin.saveSettings();
     }));

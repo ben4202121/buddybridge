@@ -113,39 +113,26 @@ describe('ConversationManager', () => {
         expect(manager.getMaxConversations()).toBe(3); // 非法值被忽略
     });
 
-    it('trims oldest conversations to maxConversations (P0.4)', async () => {
+    it('atMaxConversations is false below the limit and true at the limit', () => {
+        manager.setMaxConversations(2);
+        expect(manager.atMaxConversations()).toBe(false);
+        manager.createConversation('A');
+        expect(manager.atMaxConversations()).toBe(false);
+        manager.createConversation('B');
+        expect(manager.atMaxConversations()).toBe(true);
+    });
+
+    it('keeps all conversations when creating beyond the limit (direction A, no trim)', () => {
         manager.setMaxConversations(2);
         const a = manager.createConversation('A');
-        await new Promise(r => setTimeout(r, 5));
         const b = manager.createConversation('B');
-        await new Promise(r => setTimeout(r, 5));
         const c = manager.createConversation('C');
-
-        expect(manager.getAll()).toHaveLength(2);
-        expect(manager.getActive()?.id).toBe(c.id);
-        // 最旧的 A 被裁剪，B/C 保留
-        expect(manager.getAll().some(x => x.id === a.id)).toBe(false);
+        // 方向 A：达到上限不再自动裁剪，旧会话全部保留；是否允许新建由 UI 守卫决定
+        expect(manager.getAll()).toHaveLength(3);
+        expect(manager.getAll().some(x => x.id === a.id)).toBe(true);
         expect(manager.getAll().some(x => x.id === b.id)).toBe(true);
         expect(manager.getAll().some(x => x.id === c.id)).toBe(true);
-    });
-
-    it('does not trim when within limit', async () => {
-        manager.setMaxConversations(5);
-        manager.createConversation('A');
-        manager.createConversation('B');
-        expect(manager.getAll()).toHaveLength(2);
-    });
-
-    it('keeps newest conversations when created rapidly (equal timestamps)', async () => {
-        manager.setMaxConversations(2);
-        const a = manager.createConversation('A');
-        const b = manager.createConversation('B');
-        const c = manager.createConversation('C');
-        const ids = manager.getAll().map(x => x.id);
-        // 即使时间戳相同，也应保留最晚创建的 B/C，裁掉最早的 A
-        expect(ids).toContain(b.id);
-        expect(ids).toContain(c.id);
-        expect(ids).not.toContain(a.id);
+        expect(manager.atMaxConversations()).toBe(true);
     });
 
     it('removes specified messages (retry support)', async () => {

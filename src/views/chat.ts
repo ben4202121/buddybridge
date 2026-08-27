@@ -72,7 +72,7 @@ export class BuddyBridgeChatView extends ItemView {
     /**
      * 构建发送给 CLI 的上下文文本：会话内去重。
      * 笔记 / Vault 上下文「没变化」就不再重复注入，只在变化时注入，
-     * 避免 CLI 历史里堆叠 N 行 `[当前笔记: ...]` 导致 agent 误判。
+     * 避免 CLI 历史里堆叠 N 行 `[系统注入·当前笔记: ...]` 导致 agent 误判。
      */
     private buildContextText(convId: string, text: string): string {
         const settings = this.pluginSettings;
@@ -198,7 +198,18 @@ export class BuddyBridgeChatView extends ItemView {
         await this.renderMessages();
     }
 
+    /** 会话上限守卫：达到上限时提示并返回 true（调用方应中止新建）。 */
+    private atConversationLimit(): boolean {
+        const max = this.manager.getMaxConversations();
+        if (this.manager.atMaxConversations()) {
+            new Notice(`对话已满（最多 ${max} 个），请先删除旧对话再新建`);
+            return true;
+        }
+        return false;
+    }
+
     private async createNewChat() {
+        if (this.atConversationLimit()) return;
         this.manager.createConversation();
         this.renderTabs();
         await this.renderMessages();
@@ -702,9 +713,10 @@ export class BuddyBridgeChatView extends ItemView {
             // 其他命令透传给 CLI
         }
 
-        // 确保有活跃对话
+        // 确保有活跃对话（无活跃会话时新建；达到上限则提示中止）
         let conv = this.manager.getActive();
         if (!conv) {
+            if (this.atConversationLimit()) return;
             conv = this.manager.createConversation();
             this.renderTabs();
         }
