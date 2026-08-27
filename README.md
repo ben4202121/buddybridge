@@ -42,7 +42,8 @@ If BuddyBridge cannot find CodeBuddy or Node.js automatically, follow the enviro
 - Streaming responses in real time
 - Collapsible thinking blocks and tool-call cards
 - Markdown rendering for assistant messages (code, tables, lists, quotes)
-- Vault-aware context injection
+- Vault-aware context injection (current note path is injected automatically)
+- Current-note awareness: the active note's path is attached to each message
 - Conversation persistence across Obsidian restarts
 - Automatic CodeBuddy / Node.js path discovery on Windows
 - Configurable CLI path in settings
@@ -109,7 +110,7 @@ If BuddyBridge cannot find CodeBuddy or Node.js automatically, follow the enviro
 - 流式输出，实时显示文字
 - 可折叠的思考过程与工具调用卡片
 - Assistant 消息 Markdown 渲染（代码块、表格、列表、引用）
-- Vault 感知的上下文注入
+- 当前笔记感知：发送消息时自动注入当前打开笔记的路径
 - 会话管理，重启后恢复对话历史
 - CodeBuddy CLI 和 Node.js 路径自动发现
 - 设置中可配置 CLI 路径
@@ -141,12 +142,25 @@ If BuddyBridge cannot find CodeBuddy or Node.js automatically, follow the enviro
 
 完成后**完全退出** WorkBuddy/CodeBuddy（系统托盘右键退出），重新打开即可生效。
 
-## 设置
+## Settings / 设置
 
-| 设置项          | 说明                  | 默认值 |
-| ------------ | ------------------- | --- |
-| CodeBuddy 路径 | CLI 可执行文件路径（留空自动检测） | 自动  |
-| 最大对话数        | 最多保留多少个对话           | 20  |
+The settings page is grouped into four sections:
+
+- **Connection** — CodeBuddy path, optional Node path, CLI timeout (seconds, default 300)
+- **Context injection** — inject current note link (default on), inject vault context (default off)
+- **Appearance** — primary accent color
+- **Management** — max conversations, export/import settings (including chat history, versioned JSON), reset to defaults
+
+| Setting | Description | Default |
+| --- | --- | --- |
+| CodeBuddy 路径 | CLI 可执行文件路径（留空自动检测） | 自动 |
+| Node 路径（可选） | 手动指定 node.exe（留空自动检测） | 自动 |
+| CLI 超时时长（秒） | 请求超时后自动终止并提示 | 300 |
+| 注入当前笔记链接 | 发送时附加 `[当前笔记: 路径]` | 开 |
+| 注入 Vault 上下文 | 额外附加 `[Vault: 路径]` | 关 |
+| 最大对话数 | 最多保留多少个对话 | 20 |
+| 导出/导入设置 | 备份或迁移设置 + 聊天记录（带版本号 JSON） | — |
+| 重置为默认 | 恢复默认设置（保留聊天记录，需确认） | — |
 
 ## 开发
 

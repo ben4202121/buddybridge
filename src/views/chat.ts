@@ -1,8 +1,9 @@
 import { ItemView, Notice, MarkdownRenderer, Component, setIcon } from 'obsidian';
 import type { WorkspaceLeaf } from 'obsidian';
 import { ConversationManager } from '../chat/manager';
-import { BuddyBridgeAPI } from '../api';
-import { getErrorMessage, type Conversation, ChatMessage } from '../types';
+import { BuddyBridgeAPI, isStartupBanner } from '../api';
+import { getErrorMessage, type Conversation, ChatMessage, MessagePart, BuddyBridgeSettings } from '../types';
+import { buildPromptContext, buildDedupedPrompt, type PromptContextState } from '../context';
 
 export const VIEW_TYPE_CHAT = "buddybridge-panel";
 
@@ -51,10 +52,43 @@ export class BuddyBridgeChatView extends ItemView {
     private fileIndex: { paths: Map<string, string>; basenames: Map<string, string[]> } | null = null;
     private fileIndexBuiltAt = 0;
     private loadDataCallback: () => Promise<Conversation[]>;
+    /** 会话内已注入的上下文签名（去重用，内存态；面板重开时重置为重新注入一次） */
+    private contextStates = new Map<string, PromptContextState>();
 
     private get vaultPath(): string | undefined {
         const adapter = this.app.vault.adapter as { basePath?: string };
         return adapter.basePath;
+    }
+
+    /** 读取插件设置（用于上下文注入开关等）；加载失败时返回 undefined。 */
+    private get pluginSettings(): Partial<BuddyBridgeSettings> | undefined {
+        try {
+            return (this.app as any).plugins?.plugins?.['buddybridge']?.settings as Partial<BuddyBridgeSettings> | undefined;
+        } catch {
+            return undefined;
+        }
+    }
+
+    /**
+     * 构建发送给 CLI 的上下文文本：会话内去重。
+     * 笔记 / Vault 上下文「没变化」就不再重复注入，只在变化时注入，
+     * 避免 CLI 历史里堆叠 N 行 `[当前笔记: ...]` 导致 agent 误判。
+     */
+    private buildContextText(convId: string, text: string): string {
+        const settings = this.pluginSettings;
+        const noteLink = settings?.noteLinkInjection !== false;
+        const vaultCtx = !!settings?.vaultContextInjection;
+        const current: PromptContextState = {
+            notePath: noteLink ? (this.app.workspace.getActiveFile()?.path ?? null) : null,
+            vaultPath: vaultCtx ? (this.vaultPath ?? null) : null,
+        };
+        const prev = this.contextStates.get(convId) ?? null;
+        const { text: out, state } = buildDedupedPrompt(prev, current, text, {
+            noteLinkInjection: noteLink,
+            vaultContextInjection: vaultCtx,
+        });
+        this.contextStates.set(convId, state);
+        return out;
     }
 
     constructor(leaf: WorkspaceLeaf, api: BuddyBridgeAPI, loadDataCallback: () => Promise<Conversation[]>) {
@@ -134,6 +168,16 @@ export class BuddyBridgeChatView extends ItemView {
                 this.sendMessage();
             }
         };
+
+        // 从插件设置同步最大对话数（P0.4 会话裁剪）
+        try {
+            const plugin = (this.app as any).plugins?.plugins?.['buddybridge'];
+            if (plugin?.settings?.maxConversations) {
+                this.manager.setMaxConversations(plugin.settings.maxConversations);
+            }
+        } catch (e) {
+            console.error('[BB] 同步最大对话数失败:', e);
+        }
 
         // DOM 构建完成后加载历史对话
         try {
@@ -241,13 +285,13 @@ export class BuddyBridgeChatView extends ItemView {
         }
 
         for (const msg of conv.messages) {
-            await this.renderMessage(msg);
+            await this.renderMessage(msg, () => this.retryLastExchange());
         }
 
         this.scrollToBottom();
     }
 
-    private async renderMessage(msg: ChatMessage) {
+    private async renderMessage(msg: ChatMessage, onRetry?: () => void) {
         const row = this.messageContainer.createDiv({
             cls: `buddybridge-message-row buddybridge-message-${msg.role}`
         });
@@ -260,8 +304,12 @@ export class BuddyBridgeChatView extends ItemView {
         } else if (msg.role === 'assistant') {
             // 检测是否为错误消息
             if (msg.content.startsWith('错误:') || msg.content.startsWith('Error:')) {
-                this.renderErrorCard(bubble, msg.content);
+                this.renderErrorCard(bubble, msg.content, onRetry);
             } else {
+                // 先重建持久化的结构化 parts（可折叠思考块 / 工具卡）
+                if (msg.parts && msg.parts.length > 0) {
+                    this.renderMessageParts(bubble, msg.parts);
+                }
                 await this.renderMarkdownContent(bubble, msg.content);
             }
         } else {
@@ -270,7 +318,122 @@ export class BuddyBridgeChatView extends ItemView {
         return row;
     }
 
-    private renderErrorCard(bubble: HTMLElement, content: string) {
+    /** 从持久化的 parts 重建思考块与工具卡（流式结束后、切标签、重启后仍保留）。 */
+    private renderMessageParts(bubble: HTMLElement, parts: MessagePart[]): void {
+        let toolsBlock: HTMLElement | null = null;
+        for (const part of parts) {
+            if (part.kind === 'thinking') {
+                this.renderThinkingBlock(bubble, part.content || '', '已思考');
+            } else if (part.kind === 'tool') {
+                if (!toolsBlock) {
+                    toolsBlock = this.renderToolsBlock(bubble);
+                }
+                this.appendToolRow(toolsBlock, part.name || '', part.detail || '');
+            }
+        }
+    }
+
+    /** 创建/复用可折叠思考块，并更新标题与正文。 */
+    private renderThinkingBlock(bubble: HTMLElement, content: string, label: string): HTMLElement {
+        let block = bubble.querySelector('.buddybridge-thinking-block') as HTMLElement | null;
+        if (!block) {
+            block = bubble.createDiv({ cls: 'buddybridge-thinking-block' });
+            const header = block.createDiv({ cls: 'buddybridge-thinking-header' });
+            const icon = header.createSpan({ cls: 'buddybridge-thinking-header-icon' });
+            setIcon(icon, 'sparkles');
+            header.createSpan({ cls: 'buddybridge-thinking-header-text', text: label });
+            const chevron = header.createSpan({ cls: 'buddybridge-thinking-header-chevron', text: '▾' });
+            const bodyDiv = block.createDiv({ cls: 'buddybridge-thinking-body buddybridge-hidden' });
+            header.addEventListener('click', () => {
+                const hidden = bodyDiv.hasClass('buddybridge-hidden');
+                bodyDiv.toggleClass('buddybridge-hidden', !hidden);
+                chevron.textContent = hidden ? '▾' : '▸';
+            });
+        }
+        const headerText = block.querySelector('.buddybridge-thinking-header-text');
+        if (headerText instanceof HTMLElement) {
+            headerText.setText(label);
+        }
+        const body = block.querySelector('.buddybridge-thinking-body');
+        if (body instanceof HTMLElement) {
+            body.setText(content);
+        }
+        return block;
+    }
+
+    /** 创建/复用工具卡容器。 */
+    private renderToolsBlock(bubble: HTMLElement): HTMLElement {
+        let toolsBlock = bubble.querySelector('.buddybridge-tools-block') as HTMLElement | null;
+        if (!toolsBlock) {
+            toolsBlock = bubble.createDiv({ cls: 'buddybridge-tools-block' });
+            const hdr = toolsBlock.createDiv({ cls: 'buddybridge-tools-header' });
+            const icon = hdr.createSpan({ cls: 'buddybridge-tools-header-icon' });
+            setIcon(icon, 'wrench');
+            hdr.createSpan({ cls: 'buddybridge-tools-header-text', text: '工具调用' });
+            const chevron = hdr.createSpan({ cls: 'buddybridge-tools-header-chevron', text: '▾' });
+            hdr.addEventListener('click', () => {
+                const list = toolsBlock.querySelector('.buddybridge-tools-list');
+                if (list instanceof HTMLElement) {
+                    const hidden = list.hasClass('buddybridge-hidden');
+                    list.toggleClass('buddybridge-hidden', !hidden);
+                    chevron.textContent = hidden ? '▾' : '▸';
+                }
+            });
+            toolsBlock.createDiv({ cls: 'buddybridge-tools-list buddybridge-hidden' });
+        }
+        return toolsBlock;
+    }
+
+    /** 向工具卡容器追加一行工具调用。 */
+    private appendToolRow(toolsBlock: HTMLElement, toolName: string, toolDetail: string): void {
+        const list = toolsBlock.querySelector('.buddybridge-tools-list');
+        if (!(list instanceof HTMLElement)) return;
+        let iconName = 'wrench';
+        if (toolName.includes('read') || toolName.includes('查看') || toolName.includes('读取')) {
+            iconName = 'file-text';
+        } else if (toolName.includes('write') || toolName.includes('编辑') || toolName.includes('写入')) {
+            iconName = 'pencil';
+        } else if (toolName.includes('search') || toolName.includes('搜索') || toolName.includes('查找')) {
+            iconName = 'search';
+        }
+        const row = list.createDiv({ cls: 'buddybridge-tool-call' });
+        const icon = row.createSpan({ cls: 'buddybridge-tool-call-icon' });
+        setIcon(icon, iconName);
+        row.createSpan({
+            cls: 'buddybridge-tool-call-text',
+            text: `${toolName} ${toolDetail}`.trim()
+        });
+    }
+
+    /**
+     * 错误卡「重试」（P0.3）：删除最近一对 user+assistant 消息（失败的那对），
+     * 将 user 消息放回输入框并自动重发。超时/致命错误均可触发。
+     */
+    private retryLastExchange(): void {
+        const conv = this.manager.getActive();
+        if (!conv || conv.messages.length === 0) return;
+
+        let lastUserIdx = -1;
+        for (let i = conv.messages.length - 1; i >= 0; i--) {
+            if (conv.messages[i].role === 'user') {
+                lastUserIdx = i;
+                break;
+            }
+        }
+        if (lastUserIdx < 0) return;
+
+        const userMsg = conv.messages[lastUserIdx];
+        // 移除该用户消息及其之后的所有 assistant 消息（通常为紧邻的错误回复）
+        const idsToRemove = conv.messages.slice(lastUserIdx).map(m => m.id);
+        this.manager.removeMessages(conv.id, idsToRemove);
+
+        this.inputEl.value = userMsg.content;
+        this.adjustTextareaHeight();
+        void this.renderMessages();
+        void this.sendMessage();
+    }
+
+    private renderErrorCard(bubble: HTMLElement, content: string, onRetry?: () => void) {
         const card = bubble.createDiv({ cls: 'buddybridge-error-card' });
         const icon = card.createDiv({ cls: 'buddybridge-error-card-icon' });
         setIcon(icon, 'alert-triangle');
@@ -282,6 +445,21 @@ export class BuddyBridgeChatView extends ItemView {
         const hint = this.getErrorHint(errorMsg);
         if (hint) {
             card.createDiv({ cls: 'buddybridge-error-card-hint', text: hint });
+        }
+
+        // P0.3：错误卡提供「重试」操作，超时/致命错误不再是无头提示
+        if (onRetry) {
+            const actions = card.createDiv({ cls: 'buddybridge-error-card-actions' });
+            const retryBtn = actions.createEl('button', {
+                text: '重试',
+                cls: 'mod-cta buddybridge-error-retry-btn',
+                attr: { 'aria-label': '重试上次发送' }
+            });
+            retryBtn.onclick = (e: MouseEvent) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onRetry();
+            };
         }
     }
 
@@ -556,9 +734,14 @@ export class BuddyBridgeChatView extends ItemView {
         let firstChunk = true;
         let thinkingContent = '';
         let textContent = '';
+        let parts: MessagePart[] = [];
+        let streamingError: string | null = null;
         try {
-            // 直接发送用户消息（vault 路径已通过 cwd 传给 CLI）
-            const contextText = text;
+            // 当前文档感知（ROADMAP 1.1）+ 注入开关（P2.6）+ 会话内去重：普通消息只在上下文变化时注入；
+            // 斜杠命令原样透传，不注入上下文。注入文本不进对话历史，聊天仍显示原文。
+            const contextText = text.startsWith('/')
+                ? text
+                : this.buildContextText(convId, text);
 
             const streamingBubble = this.messageContainer.querySelector(
                 `.buddybridge-message-assistant:last-child .buddybridge-bubble`
@@ -570,8 +753,10 @@ export class BuddyBridgeChatView extends ItemView {
             for await (const chunk of this.api.sendMessage(conv.sessionId, contextText, this.vaultPath)) {
                 const bubble = streamingBubble;
 
-                // 过滤 CLI 的启动确认消息
-                if (chunk.type === 'text' && /(Working directory|file.operation|file rules|Standing by|Awaiting|Confirmed|Vault path|待命中|文件操作|已锁定|已确认|工作目录)/.test(chunk.content)) {
+                // 仅在尚未产出任何真实内容时，过滤 CLI 启动横幅；
+                // 整行开头匹配 + 已产出正文后不再过滤，避免误吞回复正文中的关键词
+                const hasRealContent = textContent.length > 0 || thinkingContent.length > 0 || parts.length > 0;
+                if (chunk.type === 'text' && !hasRealContent && isStartupBanner(chunk.content)) {
                     continue;
                 }
 
@@ -588,95 +773,47 @@ export class BuddyBridgeChatView extends ItemView {
 
                 if (chunk.type === 'thinking') {
                     thinkingContent += chunk.content;
-                    let block = bubble.querySelector('.buddybridge-thinking-block');
-                    if (!(block instanceof HTMLElement)) {
-                        block = bubble.createDiv({ cls: 'buddybridge-thinking-block' });
-                        const header = block.createDiv({ cls: 'buddybridge-thinking-header' });
-                        const icon = header.createSpan({ cls: 'buddybridge-thinking-header-icon' });
-                        setIcon(icon, 'sparkles');
-                        header.createSpan({ cls: 'buddybridge-thinking-header-text', text: '思考中...' });
-                        const chevron = header.createSpan({ cls: 'buddybridge-thinking-header-chevron', text: '▾' });
-
-                        const bodyDiv = block.createDiv({ cls: 'buddybridge-thinking-body buddybridge-hidden' });
-                        header.addEventListener('click', () => {
-                            const hidden = bodyDiv.hasClass('buddybridge-hidden');
-                            bodyDiv.toggleClass('buddybridge-hidden', !hidden);
-                            chevron.textContent = hidden ? '▾' : '▸';
-                        });
+                    // 更新持久化 parts（思考合并为单个部分，内容流式追加）
+                    const lastPart = parts[parts.length - 1];
+                    if (lastPart && lastPart.kind === 'thinking') {
+                        lastPart.content = thinkingContent;
+                    } else {
+                        parts.push({ kind: 'thinking', content: thinkingContent });
                     }
-                    const body = block.querySelector('.buddybridge-thinking-body');
-                    if (body instanceof HTMLElement) {
-                        body.setText(thinkingContent);
-                    }
+                    this.manager.updateMessageParts(convId, aiMsg.id, parts, true);
+                    this.renderThinkingBlock(bubble, thinkingContent, '思考中...');
                 } else if (chunk.type === 'tool') {
-                    let toolsBlock = bubble.querySelector('.buddybridge-tools-block');
-                    if (!(toolsBlock instanceof HTMLElement)) {
-                        toolsBlock = bubble.createDiv({ cls: 'buddybridge-tools-block' });
-                        const hdr = toolsBlock.createDiv({ cls: 'buddybridge-tools-header' });
-                        const icon = hdr.createSpan({ cls: 'buddybridge-tools-header-icon' });
-                        setIcon(icon, 'wrench');
-                        hdr.createSpan({ cls: 'buddybridge-tools-header-text', text: '工具调用' });
-                        const chevron = hdr.createSpan({ cls: 'buddybridge-tools-header-chevron', text: '▾' });
-
-                        hdr.addEventListener('click', () => {
-                            const list = toolsBlock.querySelector('.buddybridge-tools-list');
-                            if (list instanceof HTMLElement) {
-                                const hidden = list.hasClass('buddybridge-hidden');
-                                list.toggleClass('buddybridge-hidden', !hidden);
-                                chevron.textContent = hidden ? '▾' : '▸';
-                            }
-                        });
-                        toolsBlock.createDiv({ cls: 'buddybridge-tools-list buddybridge-hidden' });
-                    }
-                    const list = toolsBlock.querySelector('.buddybridge-tools-list');
-                    if (list instanceof HTMLElement) {
-                        const toolName = chunk.toolName || '';
-                        const toolDetail = chunk.toolDetail || '';
-                        let iconName = 'wrench';
-                        if (toolName.includes('read') || toolName.includes('查看') || toolName.includes('读取')) {
-                            iconName = 'file-text';
-                        } else if (toolName.includes('write') || toolName.includes('编辑') || toolName.includes('写入')) {
-                            iconName = 'pencil';
-                        } else if (toolName.includes('search') || toolName.includes('搜索') || toolName.includes('查找')) {
-                            iconName = 'search';
-                        }
-
-                        const row = list.createDiv({ cls: 'buddybridge-tool-call' });
-                        const icon = row.createSpan({ cls: 'buddybridge-tool-call-icon' });
-                        setIcon(icon, iconName);
-                        row.createSpan({
-                            cls: 'buddybridge-tool-call-text',
-                            text: `${toolName} ${toolDetail}`.trim()
-                        });
-                    }
+                    parts.push({ kind: 'tool', name: chunk.toolName || '', detail: chunk.toolDetail || '' });
+                    this.manager.updateMessageParts(convId, aiMsg.id, parts, true);
+                    const toolsBlock = this.renderToolsBlock(bubble);
+                    this.appendToolRow(toolsBlock, chunk.toolName || '', chunk.toolDetail || '');
                 } else if (chunk.type === 'text') {
                     textContent += chunk.content;
                     this.manager.updateMessage(convId, aiMsg.id, textContent, true);
                     await this.renderMarkdownContent(bubble, textContent);
                 } else if (chunk.type === 'error') {
+                    streamingError = chunk.content;
                     this.manager.updateMessage(convId, aiMsg.id, `错误: ${chunk.content}`, true);
                     new Notice(`请求失败: ${chunk.content}`);
                 }
             }
 
-            const finalContent = textContent || thinkingContent;
-            this.manager.updateMessage(convId, aiMsg.id, finalContent);
-
-            if (!finalContent) {
-                if (this.stopRequested) {
-                    this.manager.updateMessage(convId, aiMsg.id, '（已停止）');
-                } else {
-                    this.manager.updateMessage(convId, aiMsg.id, '（无响应，请重试）');
+            if (streamingError) {
+                // P0.3/P0.5：错误卡直接写入内容，并清空可能残留的 parts
+                this.manager.updateMessage(convId, aiMsg.id, `错误: ${streamingError}`);
+                this.manager.updateMessageParts(convId, aiMsg.id, undefined, true);
+            } else {
+                // 正文只存文本；思考/工具调用已通过 parts 持久化（流式结束后由 parts 重建可折叠块）
+                this.manager.updateMessage(convId, aiMsg.id, textContent);
+                const hasContent = Boolean(textContent || thinkingContent || parts.length > 0);
+                if (!hasContent) {
+                    this.manager.updateMessage(convId, aiMsg.id, this.stopRequested ? '（已停止）' : '（无响应，请重试）');
+                } else if (this.stopRequested && textContent) {
+                    this.manager.updateMessage(convId, aiMsg.id, textContent + '\n\n（已停止）');
                 }
-            } else if (this.stopRequested) {
-                this.manager.updateMessage(convId, aiMsg.id, finalContent + '\n\n（已停止）');
             }
 
-            // 流式结束后再渲染一次，确保思考指示器等占位元素被清除
-            const thinkingLabel = streamingBubble.querySelector('.buddybridge-thinking-header-text');
-            if (thinkingLabel instanceof HTMLElement) {
-                thinkingLabel.setText('已思考');
-            }
+            // 流式结束后从 parts 重建（思考块标签变「已思考」、工具卡保留可折叠）
             await this.renderMessages();
             await this.manager.flush();
         } catch (error: unknown) {

@@ -1,4 +1,4 @@
-import { DEFAULT_SETTINGS, migrateSettings, isObject, getString, getNumber, getErrorMessage, normalizePersistedData, type Conversation } from '../src/types';
+import { DEFAULT_SETTINGS, migrateSettings, isObject, getString, getNumber, getErrorMessage, normalizePersistedData, normalizeConversation, DATA_VERSION, type Conversation } from '../src/types';
 
 describe('DEFAULT_SETTINGS', () => {
     it('should accept empty codebuddyPath', () => {
@@ -6,6 +6,9 @@ describe('DEFAULT_SETTINGS', () => {
     });
     it('should have sensible maxConversations', () => {
         expect(DEFAULT_SETTINGS.maxConversations).toBeGreaterThan(0);
+    });
+    it('should default timeoutSeconds to 300', () => {
+        expect(DEFAULT_SETTINGS.timeoutSeconds).toBe(300);
     });
 });
 
@@ -37,6 +40,49 @@ describe('migrateSettings', () => {
     it('should reset version to current', () => {
         const r = migrateSettings({ version: 1 });
         expect(r.version).toBe(DEFAULT_SETTINGS.version);
+    });
+
+    it('should migrate v1.0.20 shape to v2.0 with timeoutSeconds default (P0.7)', () => {
+        // v1.0.20 存储结构：无 timeoutSeconds、version 为 1
+        const r = migrateSettings({
+            codebuddyPath: 'C:\\old\\codebuddy',
+            maxConversations: 7,
+            primaryColor: '#ff0000',
+            version: 1
+        });
+        expect(r.codebuddyPath).toBe('C:\\old\\codebuddy');
+        expect(r.maxConversations).toBe(7);
+        expect(r.primaryColor).toBe('#ff0000');
+        expect(r.timeoutSeconds).toBe(300); // 新字段回落默认
+        expect(r.version).toBe(DEFAULT_SETTINGS.version);
+    });
+
+    it('should preserve timeoutSeconds when present and valid', () => {
+        expect(migrateSettings({ timeoutSeconds: 60 }).timeoutSeconds).toBe(60);
+        expect(migrateSettings({ timeoutSeconds: 0 }).timeoutSeconds).toBe(300);
+        expect(migrateSettings({ timeoutSeconds: -1 }).timeoutSeconds).toBe(300);
+        expect(migrateSettings({ timeoutSeconds: '300' }).timeoutSeconds).toBe(300);
+    });
+
+    it('should migrate nodePath from stored value', () => {
+        expect(migrateSettings({ nodePath: 'C:\\node.exe' }).nodePath).toBe('C:\\node.exe');
+    });
+
+    it('should default new toggles correctly', () => {
+        const r = migrateSettings({});
+        expect(r.nodePath).toBe('');
+        expect(r.noteLinkInjection).toBe(true);
+        expect(r.vaultContextInjection).toBe(false);
+    });
+
+    it('should preserve boolean toggle values', () => {
+        expect(migrateSettings({ noteLinkInjection: false }).noteLinkInjection).toBe(false);
+        expect(migrateSettings({ vaultContextInjection: true }).vaultContextInjection).toBe(true);
+    });
+
+    it('should treat non-boolean toggles as defaults', () => {
+        expect(migrateSettings({ noteLinkInjection: 'yes' }).noteLinkInjection).toBe(true);
+        expect(migrateSettings({ vaultContextInjection: 1 }).vaultContextInjection).toBe(false);
     });
 });
 
@@ -93,20 +139,67 @@ describe('type helpers', () => {
     });
 
     describe('normalizePersistedData', () => {
-        it('returns empty object for invalid input', () => {
-            expect(normalizePersistedData(null)).toEqual({});
-            expect(normalizePersistedData('string')).toEqual({});
+        it('returns dataVersion for invalid input', () => {
+            expect(normalizePersistedData(null)).toEqual({ dataVersion: DATA_VERSION });
+            expect(normalizePersistedData('string')).toEqual({ dataVersion: DATA_VERSION });
         });
 
-        it('preserves conversations array', () => {
+        it('preserves conversations array and stamps dataVersion', () => {
             const conversations: Conversation[] = [{ id: '1', title: 't', sessionId: '', messages: [], createdAt: 0, updatedAt: 0 }];
-            expect(normalizePersistedData({ conversations })).toEqual({ conversations });
+            expect(normalizePersistedData({ conversations })).toEqual({ dataVersion: DATA_VERSION, conversations });
         });
 
         it('normalizes settings object', () => {
             const result = normalizePersistedData({ settings: { codebuddyPath: '/path' } });
             expect(result.settings?.codebuddyPath).toBe('/path');
             expect(result.settings?.version).toBe(DEFAULT_SETTINGS.version);
+        });
+
+        it('keeps existing dataVersion', () => {
+            const result = normalizePersistedData({ dataVersion: 9, conversations: [] });
+            expect(result.dataVersion).toBe(9);
+        });
+
+        it('filters out invalid conversation entries (P0.7)', () => {
+            const result = normalizePersistedData({ conversations: [null, 'x', 42] });
+            expect(result.conversations).toEqual([]);
+        });
+    });
+
+    describe('normalizeConversation', () => {
+        it('fills missing fields with defaults', () => {
+            const conv = normalizeConversation({ id: 'abc' });
+            expect(conv).not.toBeNull();
+            expect(conv!.id).toBe('abc');
+            expect(conv!.title).toBe('新对话');
+            expect(conv!.sessionId).toBe('');
+            expect(conv!.messages).toEqual([]);
+            expect(typeof conv!.createdAt).toBe('number');
+            expect(conv!.updatedAt).toBe(conv!.createdAt);
+        });
+
+        it('keeps provided values intact', () => {
+            const conv = normalizeConversation({
+                id: '1', title: 't', sessionId: 'uuid', messages: [{ id: 'm', role: 'user', content: 'hi', timestamp: 1 }], createdAt: 100, updatedAt: 200
+            });
+            expect(conv!.sessionId).toBe('uuid');
+            expect(conv!.messages).toHaveLength(1);
+            expect(conv!.updatedAt).toBe(200);
+        });
+
+        it('returns null for invalid input', () => {
+            expect(normalizeConversation(null)).toBeNull();
+            expect(normalizeConversation('x')).toBeNull();
+            expect(normalizeConversation([])).toBeNull();
+        });
+
+        it('keeps message parts intact (thinking/tool persistence)', () => {
+            const conv = normalizeConversation({
+                id: '1', title: 't', sessionId: 's',
+                messages: [{ id: 'm', role: 'assistant', content: '', timestamp: 1, parts: [{ kind: 'thinking', content: 'x' }] }],
+                createdAt: 0, updatedAt: 0
+            });
+            expect(conv!.messages[0].parts).toEqual([{ kind: 'thinking', content: 'x' }]);
         });
     });
 });

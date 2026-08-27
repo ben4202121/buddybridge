@@ -240,6 +240,19 @@
     line-height: 1.5;
 }
 
+/* 错误卡操作区（P0.3 重试按钮） */
+.buddybridge-error-card-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 6px;
+}
+
+.buddybridge-error-card-actions button {
+    align-self: flex-start;
+    padding: 3px 14px;
+    font-size: var(--font-ui-smaller);
+}
+
 /* ==================== 消息行 ==================== */
 .buddybridge-message-row {
     display: flex;
@@ -703,6 +716,18 @@
 .buddybridge-tab-bar::-webkit-scrollbar-thumb {
     background: var(--background-modifier-border);
     border-radius: 2px;
+}
+
+/* ==================== 确认弹窗（P2.6 导入/重置二次确认） ==================== */
+.buddybridge-confirm-message {
+    margin: 0 0 12px 0;
+    color: var(--text-normal);
+}
+
+.buddybridge-confirm-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
 }
 
 /* ==================== 不可见辅助类 ==================== */

@@ -1,5 +1,5 @@
 import { spawn } from 'child_process';
-import { BuddyBridgeAPI, parseStreamLine, parseMessageBlock, blockToChunk, parseStreamEvent, isWindowsWrapper, isBareFallback, needsWindowsShell, resolveCodebuddyPath, type StreamChunk } from '../src/api';
+import { BuddyBridgeAPI, parseStreamLine, parseMessageBlock, blockToChunk, parseStreamEvent, isWindowsWrapper, isBareFallback, needsWindowsShell, escapeCmdArg, isStartupBanner, resolveCodebuddyPath, type StreamChunk } from '../src/api';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -213,6 +213,7 @@ describe('path helpers', () => {
 
 describe('resolveCodebuddyPath', () => {
     const originalAppData = process.env.APPDATA;
+    const originalLocalAppData = process.env.LOCALAPPDATA;
     let tempDir: string;
 
     beforeEach(() => {
@@ -221,10 +222,13 @@ describe('resolveCodebuddyPath', () => {
         fs.mkdirSync(npmDir);
         fs.writeFileSync(path.join(npmDir, 'codebuddy.cmd'), '');
         process.env.APPDATA = tempDir;
+        // 隔离真实安装：LOCALAPPDATA 指向不存在的目录，避免命中本机真实 WorkBuddy
+        process.env.LOCALAPPDATA = path.join(tempDir, 'no-workbuddy');
     });
 
     afterEach(() => {
         process.env.APPDATA = originalAppData;
+        process.env.LOCALAPPDATA = originalLocalAppData;
         fs.rmSync(tempDir, { recursive: true, force: true });
     });
 
@@ -344,5 +348,227 @@ describe('parseStreamLine', () => {
     it('returns null for unknown events without fallback text', () => {
         const line = JSON.stringify({ type: 'unknown', value: 123 });
         expect(parseStreamLine(line)).toBeNull();
+    });
+});
+
+describe('isStartupBanner (启动横幅过滤, 防误伤正文)', () => {
+    it('detects CLI startup banner lines', () => {
+        expect(isStartupBanner('Working directory: C:\\vault')).toBe(true);
+        expect(isStartupBanner('Vault path: C:\\vault')).toBe(true);
+        expect(isStartupBanner('已确认')).toBe(true);
+        expect(isStartupBanner('Standing by...')).toBe(true);
+    });
+
+    it('does not flag reply text that merely contains keywords mid-sentence', () => {
+        expect(isStartupBanner('好的，我已经完成了文件操作，结果如下')).toBe(false);
+        expect(isStartupBanner('这个工作目录的配置需要调整')).toBe(false);
+        expect(isStartupBanner('我已经确认了你的要求')).toBe(false);
+        expect(isStartupBanner('请确认后再执行下一步')).toBe(false);
+    });
+});
+
+describe('escapeCmdArg (P0.2 shell safety)', () => {
+    it('wraps empty string in quotes', () => {
+        expect(escapeCmdArg('')).toBe('""');
+    });
+
+    it('wraps plain text with spaces in quotes', () => {
+        expect(escapeCmdArg('hello world')).toBe('"hello world"');
+    });
+
+    it('escapes cmd special characters', () => {
+        expect(escapeCmdArg('a&b|c>d<e^f"g')).toBe('"a^&b^|c^>d^<e^^f^"g"');
+    });
+
+    it('keeps chinese characters intact', () => {
+        expect(escapeCmdArg('中文消息 & 更多')).toBe('"中文消息 ^& 更多"');
+    });
+
+    it('keeps newlines as literal characters inside quotes', () => {
+        expect(escapeCmdArg('line1\nline2')).toBe('"line1\nline2"');
+    });
+});
+
+describe('sendMessage shell branch (P0.2)', () => {
+    let tempDir: string;
+    const originalPlatform = process.platform;
+
+    beforeEach(() => {
+        Object.defineProperty(process, 'platform', { value: 'win32' });
+        tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bb-shell-'));
+        jest.clearAllMocks();
+    });
+
+    afterEach(() => {
+        Object.defineProperty(process, 'platform', { value: originalPlatform });
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    it('spawns .exe without shell and passes raw text', async () => {
+        const exePath = path.join(tempDir, 'codebuddy.exe');
+        fs.writeFileSync(exePath, '');
+        mockedSpawn.mockReturnValue(createFakeProc().proc as any);
+
+        const api = new BuddyBridgeAPI();
+        api.setCodebuddyPath(exePath);
+        void api.sendMessage('s1', 'hello & world').next();
+
+        const call = mockedSpawn.mock.calls[0];
+        expect(call[0]).toBe(exePath);
+        const args = call[1] as string[];
+        expect(args[args.length - 1]).toBe('hello & world'); // 原样透传，不进 shell
+        expect((call[2] as any).shell).toBeFalsy();
+    });
+
+    it('spawns .cmd with shell:true and escapes user text', async () => {
+        const cmdPath = path.join(tempDir, 'codebuddy.cmd');
+        fs.writeFileSync(cmdPath, '');
+        mockedSpawn.mockReturnValue(createFakeProc().proc as any);
+
+        const api = new BuddyBridgeAPI();
+        api.setCodebuddyPath(cmdPath);
+        void api.sendMessage('s1', 'a&b').next();
+
+        const call = mockedSpawn.mock.calls[0];
+        expect(call[0]).toBe(cmdPath);
+        const args = call[1] as string[];
+        expect(args[args.length - 1]).toBe(escapeCmdArg('a&b'));
+        expect((call[2] as any).shell).toBe(true);
+    });
+});
+
+describe('sendMessage exit code classification (P0.5)', () => {
+    it('treats exit 0 with stdout as success', async () => {
+        const { proc, emit } = createFakeProc();
+        mockedSpawn.mockReturnValue(proc as any);
+        const api = new BuddyBridgeAPI();
+        api.setCodebuddyPath('C:\\fake\\codebuddy.exe');
+        const gen = api.sendMessage('s1', 'hi');
+        const p = gen.next();
+        emit('stdout', 'data', Buffer.from(JSON.stringify({ type: 'text', text: 'ok' }) + '\n'));
+        const first = await p;
+        expect(first.done).toBe(false);
+        const p2 = gen.next();
+        emit('', 'close', 0, null);
+        const second = await p2;
+        expect(second.done).toBe(true);
+    });
+
+    it('treats exit 0 with only stderr as benign warning (no throw)', async () => {
+        const { proc, emit } = createFakeProc();
+        mockedSpawn.mockReturnValue(proc as any);
+        const api = new BuddyBridgeAPI();
+        api.setCodebuddyPath('C:\\fake\\codebuddy.exe');
+        const gen = api.sendMessage('s1', 'hi');
+        const p = gen.next();
+        emit('stderr', 'data', Buffer.from('warning only'));
+        emit('', 'close', 0, null);
+        const result = await p;
+        expect(result.done).toBe(true);
+    });
+
+    it('throws error when non-zero exit and empty stdout', async () => {
+        const { proc, emit } = createFakeProc();
+        mockedSpawn.mockReturnValue(proc as any);
+        const api = new BuddyBridgeAPI();
+        api.setCodebuddyPath('C:\\fake\\codebuddy.exe');
+        const gen = api.sendMessage('s1', 'hi');
+        const p = gen.next();
+        emit('', 'close', 1, null);
+        await expect(p).rejects.toThrow(/退出码 1/);
+    });
+
+    it('treats non-zero exit with stdout as normal finish (stderr logged only)', async () => {
+        const { proc, emit } = createFakeProc();
+        mockedSpawn.mockReturnValue(proc as any);
+        const api = new BuddyBridgeAPI();
+        api.setCodebuddyPath('C:\\fake\\codebuddy.exe');
+        const gen = api.sendMessage('s1', 'hi');
+        const p = gen.next();
+        emit('stdout', 'data', Buffer.from(JSON.stringify({ type: 'text', text: 'partial' }) + '\n'));
+        const first = await p;
+        expect(first.done).toBe(false);
+        const p2 = gen.next();
+        emit('', 'close', 1, null);
+        const second = await p2;
+        expect(second.done).toBe(true);
+    });
+});
+
+describe('sendMessage timeout (P0.3)', () => {
+    it('yields a clear timeout error chunk and ends', async () => {
+        const { proc } = createFakeProc();
+        mockedSpawn.mockReturnValue(proc as any);
+
+        const api = new BuddyBridgeAPI(50); // 50ms 超时
+        api.setCodebuddyPath('C:\\fake\\codebuddy.exe');
+        const gen = api.sendMessage('s1', 'hi');
+
+        const p = gen.next();
+        const first = await p; // 等待插件侧超时触发
+        expect(first.done).toBe(false);
+        expect(first.value).toMatchObject({ type: 'error' });
+        expect((first.value as StreamChunk).content).toContain('请求超时');
+
+        const second = await gen.next();
+        expect(second.done).toBe(true);
+    });
+});
+
+describe('resolveCodebuddyPath .exe priority (P0.2)', () => {
+    const originalLocal = process.env.LOCALAPPDATA;
+    const originalApp = process.env.APPDATA;
+    let tempDir: string;
+
+    beforeEach(() => {
+        tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bb-exe-'));
+        const bin = path.join(tempDir, 'Programs', 'WorkBuddy', 'resources', 'app.asar.unpacked', 'cli', 'bin');
+        fs.mkdirSync(bin, { recursive: true });
+        fs.writeFileSync(path.join(bin, 'codebuddy.exe'), '');
+        fs.writeFileSync(path.join(bin, 'codebuddy.cmd'), '');
+        process.env.LOCALAPPDATA = tempDir;
+        process.env.APPDATA = tempDir;
+    });
+
+    afterEach(() => {
+        process.env.LOCALAPPDATA = originalLocal;
+        process.env.APPDATA = originalApp;
+        fs.rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    it('prefers .exe over .cmd in the same WorkBuddy install dir', () => {
+        if (process.platform !== 'win32') return; // 仅 Windows 候选路径包含该结构
+        const result = resolveCodebuddyPath('');
+        expect(result.toLowerCase().endsWith('codebuddy.exe')).toBe(true);
+    });
+
+    it('keeps a non-existent explicit custom path so spawn surfaces a clear error', () => {
+        const custom = 'C:\\Definitely\\Not\\Exist\\codebuddy.exe';
+        expect(resolveCodebuddyPath(custom)).toBe(custom);
+    });
+});
+
+describe('sendMessage nodePath override (P2.6)', () => {
+    it('uses the manually specified node path for a bare script', async () => {
+        const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bb-node-'));
+        try {
+            const nodePath = path.join(tempDir, 'node.exe');
+            fs.writeFileSync(nodePath, '');
+            const scriptPath = path.join(tempDir, 'codebuddy'); // 无扩展名绝对路径 → 走 node 启动分支
+            fs.writeFileSync(scriptPath, '');
+            mockedSpawn.mockReturnValue(createFakeProc().proc as any);
+            jest.clearAllMocks();
+
+            const api = new BuddyBridgeAPI();
+            api.setCodebuddyPath(scriptPath);
+            api.setNodePath(nodePath);
+            void api.sendMessage('s1', 'hi').next();
+
+            const call = mockedSpawn.mock.calls[0];
+            expect(call[0]).toBe(nodePath);
+            expect(call[1]).toContain(scriptPath);
+        } finally {
+            fs.rmSync(tempDir, { recursive: true, force: true });
+        }
     });
 });

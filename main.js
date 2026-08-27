@@ -37,7 +37,7 @@ __export(main_exports, {
   default: () => BuddyBridgePlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian3 = require("obsidian");
+var import_obsidian4 = require("obsidian");
 
 // src/api.ts
 var import_child_process = require("child_process");
@@ -45,11 +45,16 @@ var path = __toESM(require("path"));
 var fs = __toESM(require("fs"));
 
 // src/types.ts
-var CURRENT_SETTINGS_VERSION = 4;
+var CURRENT_SETTINGS_VERSION = 7;
+var DATA_VERSION = 1;
 var DEFAULT_SETTINGS = {
   codebuddyPath: "",
   maxConversations: 20,
   primaryColor: "",
+  timeoutSeconds: 300,
+  nodePath: "",
+  noteLinkInjection: true,
+  vaultContextInjection: false,
   version: CURRENT_SETTINGS_VERSION
 };
 function isObject(value) {
@@ -79,10 +84,18 @@ function migrateSettings(stored) {
   }
   const maxConversations = getNumber(stored, "maxConversations");
   const primaryColor = getString(stored, "primaryColor");
+  const timeoutSeconds = getNumber(stored, "timeoutSeconds");
+  const nodePath = getString(stored, "nodePath");
+  const noteLinkInjection = typeof stored.noteLinkInjection === "boolean" ? stored.noteLinkInjection : DEFAULT_SETTINGS.noteLinkInjection;
+  const vaultContextInjection = typeof stored.vaultContextInjection === "boolean" ? stored.vaultContextInjection : DEFAULT_SETTINGS.vaultContextInjection;
   return {
     codebuddyPath: (_a = getString(stored, "codebuddyPath")) != null ? _a : DEFAULT_SETTINGS.codebuddyPath,
     maxConversations: typeof maxConversations === "number" && maxConversations > 0 ? maxConversations : DEFAULT_SETTINGS.maxConversations,
     primaryColor: primaryColor != null ? primaryColor : DEFAULT_SETTINGS.primaryColor,
+    timeoutSeconds: typeof timeoutSeconds === "number" && timeoutSeconds > 0 ? timeoutSeconds : DEFAULT_SETTINGS.timeoutSeconds,
+    nodePath: nodePath != null ? nodePath : DEFAULT_SETTINGS.nodePath,
+    noteLinkInjection,
+    vaultContextInjection,
     version: CURRENT_SETTINGS_VERSION
   };
 }
@@ -93,13 +106,35 @@ function generateId() {
     return v.toString(16);
   });
 }
+function normalizeConversation(raw) {
+  var _a, _b, _c, _d, _e;
+  if (!isObject(raw))
+    return null;
+  const id = (_a = getString(raw, "id")) != null ? _a : generateId();
+  const title = (_b = getString(raw, "title")) != null ? _b : "\u65B0\u5BF9\u8BDD";
+  const sessionId = (_c = getString(raw, "sessionId")) != null ? _c : "";
+  const messages = Array.isArray(raw.messages) ? raw.messages : [];
+  const createdAt = (_d = getNumber(raw, "createdAt")) != null ? _d : Date.now();
+  const updatedAt = (_e = getNumber(raw, "updatedAt")) != null ? _e : createdAt;
+  return { id, title, sessionId, messages, createdAt, updatedAt };
+}
 function normalizePersistedData(raw) {
-  const result = {};
+  const result = { dataVersion: DATA_VERSION };
   if (!isObject(raw)) {
     return result;
   }
+  const dataVersion = getNumber(raw, "dataVersion");
+  if (typeof dataVersion === "number") {
+    result.dataVersion = dataVersion;
+  }
   if (Array.isArray(raw.conversations)) {
-    result.conversations = raw.conversations;
+    const convs = [];
+    for (const item of raw.conversations) {
+      const conv = normalizeConversation(item);
+      if (conv)
+        convs.push(conv);
+    }
+    result.conversations = convs;
   }
   if (isObject(raw.settings)) {
     result.settings = migrateSettings(raw.settings);
@@ -179,7 +214,7 @@ function findNodeExecutable() {
   return "node";
 }
 function resolveCodebuddyPath(customPath) {
-  if (customPath && fs.existsSync(customPath)) {
+  if (customPath) {
     return customPath;
   }
   if (process.env.CODEBUDDY_PATH && fs.existsSync(process.env.CODEBUDDY_PATH)) {
@@ -360,20 +395,46 @@ function parseStreamLine(line) {
 function isWindowsWrapper(scriptPath) {
   return scriptPath.endsWith(".cmd") || scriptPath.endsWith(".exe") || scriptPath.endsWith(".bat");
 }
+function isStartupBanner(text) {
+  return /^(Working directory|file operation|file rules|Standing by|Awaiting|Confirmed|Vault path|待命中|文件操作|已锁定|已确认|工作目录)/i.test(text.trim());
+}
 function isBareFallback(scriptPath) {
   return scriptPath === "codebuddy" || !path.isAbsolute(scriptPath);
 }
 function needsWindowsShell(scriptPath) {
   return process.platform === "win32" && (scriptPath.endsWith(".cmd") || scriptPath.endsWith(".bat"));
 }
+function escapeCmdArg(text) {
+  if (text === "")
+    return '""';
+  const escaped = text.replace(/([&|><^"()%!])/g, "^$1");
+  return `"${escaped}"`;
+}
 var BuddyBridgeAPI = class {
   constructor(timeout = TIMEOUT) {
+    this.nodePath = "";
     this.currentProc = null;
     this.timeout = timeout;
     this.scriptPath = resolveCodebuddyPath("");
   }
   setCodebuddyPath(p) {
     this.scriptPath = resolveCodebuddyPath(p);
+  }
+  /** 手动指定 Node.js 路径（设置项 nodePath）；留空则自动检测。 */
+  setNodePath(p) {
+    this.nodePath = p || "";
+  }
+  getNodePath() {
+    return this.nodePath;
+  }
+  /** 设置请求超时时长（毫秒）。由设置页 timeoutSeconds 驱动（默认 300s）。 */
+  setTimeoutMs(ms) {
+    if (typeof ms === "number" && ms > 0) {
+      this.timeout = ms;
+    }
+  }
+  getTimeoutMs() {
+    return this.timeout;
   }
   generateId() {
     return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
@@ -383,27 +444,50 @@ var BuddyBridgeAPI = class {
     });
   }
   async *sendMessage(sessionId, text, vaultPath) {
-    var _a;
+    var _a, _b;
     const scriptPath = this.scriptPath;
     const procOptions = {
-      timeout: this.timeout,
+      // 不再使用 spawn 的 timeout（P0.3）：改为插件侧计时，超时产出明确错误卡
       stdio: ["ignore", "pipe", "pipe"]
     };
     if (vaultPath) {
       procOptions.cwd = vaultPath;
     }
-    const cliArgs = ["--print", "--output-format", "stream-json", "--session-id", sessionId, text];
+    let cliArgs = ["--print", "--output-format", "stream-json", "--session-id", sessionId, text];
     if (needsWindowsShell(scriptPath)) {
       procOptions.shell = true;
+      cliArgs = [...cliArgs.slice(0, -1), escapeCmdArg(text)];
     }
     let proc;
     if (isWindowsWrapper(scriptPath) || isBareFallback(scriptPath)) {
       proc = (0, import_child_process.spawn)(scriptPath, cliArgs, procOptions);
     } else {
-      const nodeBin = findNodeExecutable() || "node";
+      const nodeBin = this.nodePath || findNodeExecutable() || "node";
       proc = (0, import_child_process.spawn)(nodeBin, [scriptPath, ...cliArgs], procOptions);
     }
     this.currentProc = proc;
+    let timedOut = false;
+    const timeoutSeconds = Math.max(1, Math.round(this.timeout / 1e3));
+    const timer = setTimeout(() => {
+      if (closed)
+        return;
+      timedOut = true;
+      try {
+        proc.kill();
+      } catch (e) {
+      }
+      const errChunk = {
+        type: "error",
+        content: `\u8BF7\u6C42\u8D85\u65F6\uFF08\u5DF2\u7B49\u5F85 ${timeoutSeconds} \u79D2\uFF09\uFF0C\u8BF7\u68C0\u67E5 CodeBuddy CLI \u662F\u5426\u6B63\u5E38\u8FD0\u884C\u6216\u5C1D\u8BD5\u91CD\u8BD5`
+      };
+      if (resolveQueue) {
+        resolveQueue({ value: errChunk, done: false });
+        resolveQueue = null;
+      } else {
+        chunkQueue.push(errChunk);
+      }
+    }, this.timeout);
+    (_a = timer.unref) == null ? void 0 : _a.call(timer);
     let buffer = "";
     let errOut = "";
     let hasOutput = false;
@@ -436,18 +520,25 @@ var BuddyBridgeAPI = class {
     proc.on("close", (code, signal) => {
       console.log("[BB] exit:", code, signal ? "signal:" + signal : "", "| err:", errOut.substring(0, 200));
       this.currentProc = null;
+      clearTimeout(timer);
       closed = true;
       if (resolveQueue) {
-        if (errOut && !hasOutput) {
-          resolveQueue({ value: { type: "error", content: errOut }, done: true });
+        let result;
+        if (hasOutput) {
+          result = { value: { type: "done", content: "" }, done: true };
+        } else if (code !== 0) {
+          const detail = errOut.trim() || `\u8FDB\u7A0B\u5F02\u5E38\u9000\u51FA\uFF08\u9000\u51FA\u7801 ${code}${signal ? `, \u4FE1\u53F7 ${signal}` : ""}\uFF09\uFF0C\u8BF7\u68C0\u67E5 CodeBuddy CLI \u662F\u5426\u6B63\u5E38\u8FD0\u884C`;
+          result = { value: { type: "error", content: detail }, done: true };
         } else {
-          resolveQueue({ value: { type: "done", content: "" }, done: true });
+          result = { value: { type: "done", content: "" }, done: true };
         }
+        resolveQueue(result);
         resolveQueue = null;
       }
     });
     proc.on("error", (e) => {
       console.log("[BB] spawn err:", e.message, "| scriptPath:", scriptPath);
+      clearTimeout(timer);
       closed = true;
       if (resolveQueue) {
         let hint = e.message;
@@ -470,6 +561,10 @@ var BuddyBridgeAPI = class {
           continue;
         }
       }
+      if (timedOut) {
+        clearTimeout(timer);
+        break;
+      }
       if (closed) {
         if (buffer.trim()) {
           const chunk = parseStreamLine(buffer);
@@ -482,12 +577,13 @@ var BuddyBridgeAPI = class {
         resolveQueue = r;
       });
       if (next.done) {
-        if (((_a = next.value) == null ? void 0 : _a.type) === "error")
+        if (((_b = next.value) == null ? void 0 : _b.type) === "error")
           throw new Error(next.value.content);
         break;
       }
       yield next.value;
     }
+    clearTimeout(timer);
   }
   cancel() {
     if (this.currentProc) {
@@ -510,10 +606,20 @@ var ConversationManager = class {
   constructor() {
     this.conversations = /* @__PURE__ */ new Map();
     this.activeId = null;
+    this.maxConversations = 20;
     this.persistCallback = null;
   }
   setPersistCallback(callback) {
     this.persistCallback = callback;
+  }
+  /** 设置最大对话数；创建新对话后按 updatedAt 裁剪（P0.4）。 */
+  setMaxConversations(max) {
+    if (typeof max === "number" && max > 0) {
+      this.maxConversations = max;
+    }
+  }
+  getMaxConversations() {
+    return this.maxConversations;
   }
   async persist() {
     if (this.persistCallback) {
@@ -541,6 +647,11 @@ var ConversationManager = class {
   /** 创建新对话 */
   createConversation(title) {
     const id = generateId();
+    let updatedAt = Date.now();
+    for (const c of this.conversations.values()) {
+      if (c.updatedAt >= updatedAt)
+        updatedAt = c.updatedAt + 1;
+    }
     const conv = {
       id,
       title: title || "\u65B0\u5BF9\u8BDD",
@@ -548,12 +659,46 @@ var ConversationManager = class {
       // 首次发送消息时由 Gateway 分配
       messages: [],
       createdAt: Date.now(),
-      updatedAt: Date.now()
+      updatedAt
     };
     this.conversations.set(id, conv);
     this.activeId = id;
+    this.trimConversations();
     this.persist().catch((err) => this.handlePersistError(err));
     return conv;
+  }
+  /**
+   * P0.4：按 updatedAt 降序保留最近 maxConversations 个会话，删除更旧的。
+   * 若当前活跃会话被裁掉，回退到保留列表中最新的一条。
+   */
+  trimConversations() {
+    var _a, _b;
+    if (this.maxConversations <= 0)
+      return;
+    const all = this.getAll();
+    if (all.length <= this.maxConversations)
+      return;
+    const keepIds = new Set(all.slice(0, this.maxConversations).map((c) => c.id));
+    for (const conv of all.slice(this.maxConversations)) {
+      this.conversations.delete(conv.id);
+    }
+    if (this.activeId && !keepIds.has(this.activeId)) {
+      this.activeId = (_b = (_a = all[0]) == null ? void 0 : _a.id) != null ? _b : null;
+    }
+  }
+  /** 删除指定消息（用于错误卡重试时移除失败的 user+assistant 对）。返回实际删除条数。 */
+  removeMessages(convId, ids) {
+    const conv = this.conversations.get(convId);
+    if (!conv || !ids || ids.length === 0)
+      return 0;
+    const before = conv.messages.length;
+    conv.messages = conv.messages.filter((m) => !ids.includes(m.id));
+    const removed = before - conv.messages.length;
+    if (removed > 0) {
+      conv.updatedAt = Date.now();
+      this.persist().catch((err) => this.handlePersistError(err));
+    }
+    return removed;
   }
   /** 删除对话 */
   deleteConversation(id) {
@@ -619,6 +764,21 @@ var ConversationManager = class {
     }
     return true;
   }
+  /** 更新指定消息的结构化 parts（思考 / 工具调用），供流式结束后重建展示块。 */
+  updateMessageParts(convId, msgId, parts, skipSave = false) {
+    const conv = this.conversations.get(convId);
+    if (!conv)
+      return false;
+    const msg = conv.messages.find((m) => m.id === msgId);
+    if (!msg)
+      return false;
+    msg.parts = parts ? [...parts] : void 0;
+    conv.updatedAt = Date.now();
+    if (!skipSave) {
+      this.persist().catch((err) => this.handlePersistError(err));
+    }
+    return true;
+  }
   /** 设置对话的 Gateway sessionId */
   setSessionId(convId, sessionId) {
     const conv = this.conversations.get(convId);
@@ -628,6 +788,39 @@ var ConversationManager = class {
     return true;
   }
 };
+
+// src/context.ts
+function buildPromptContext(input) {
+  const lines = [];
+  if (input.noteLinkInjection && input.notePath) {
+    lines.push(`[\u5F53\u524D\u7B14\u8BB0: ${input.notePath}]`);
+  }
+  if (input.vaultContextInjection && input.vaultPath) {
+    lines.push(`[Vault: ${input.vaultPath}]`);
+  }
+  if (lines.length === 0) {
+    return input.userText;
+  }
+  return lines.join("\n") + "\n\n" + input.userText;
+}
+function buildDedupedPrompt(prev, current, userText, flags) {
+  if (prev && prev.notePath === current.notePath && prev.vaultPath === current.vaultPath) {
+    return { text: userText, state: current };
+  }
+  let text = buildPromptContext({
+    userText,
+    notePath: current.notePath,
+    vaultPath: current.vaultPath,
+    noteLinkInjection: flags.noteLinkInjection,
+    vaultContextInjection: flags.vaultContextInjection
+  });
+  if (flags.noteLinkInjection && (prev == null ? void 0 : prev.notePath) && !current.notePath) {
+    text = `[\u5F53\u524D\u7B14\u8BB0: \u65E0]
+
+${text}`;
+  }
+  return { text, state: current };
+}
 
 // src/views/chat.ts
 var VIEW_TYPE_CHAT = "buddybridge-panel";
@@ -667,6 +860,8 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
     this.stopRequested = false;
     this.fileIndex = null;
     this.fileIndexBuiltAt = 0;
+    /** 会话内已注入的上下文签名（去重用，内存态；面板重开时重置为重新注入一次） */
+    this.contextStates = /* @__PURE__ */ new Map();
     this.api = api;
     this.loadDataCallback = loadDataCallback;
     this.manager = new ConversationManager();
@@ -676,6 +871,37 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
   get vaultPath() {
     const adapter = this.app.vault.adapter;
     return adapter.basePath;
+  }
+  /** 读取插件设置（用于上下文注入开关等）；加载失败时返回 undefined。 */
+  get pluginSettings() {
+    var _a, _b, _c;
+    try {
+      return (_c = (_b = (_a = this.app.plugins) == null ? void 0 : _a.plugins) == null ? void 0 : _b["buddybridge"]) == null ? void 0 : _c.settings;
+    } catch (e) {
+      return void 0;
+    }
+  }
+  /**
+   * 构建发送给 CLI 的上下文文本：会话内去重。
+   * 笔记 / Vault 上下文「没变化」就不再重复注入，只在变化时注入，
+   * 避免 CLI 历史里堆叠 N 行 `[当前笔记: ...]` 导致 agent 误判。
+   */
+  buildContextText(convId, text) {
+    var _a, _b, _c, _d;
+    const settings = this.pluginSettings;
+    const noteLink = (settings == null ? void 0 : settings.noteLinkInjection) !== false;
+    const vaultCtx = !!(settings == null ? void 0 : settings.vaultContextInjection);
+    const current = {
+      notePath: noteLink ? (_b = (_a = this.app.workspace.getActiveFile()) == null ? void 0 : _a.path) != null ? _b : null : null,
+      vaultPath: vaultCtx ? (_c = this.vaultPath) != null ? _c : null : null
+    };
+    const prev = (_d = this.contextStates.get(convId)) != null ? _d : null;
+    const { text: out, state } = buildDedupedPrompt(prev, current, text, {
+      noteLinkInjection: noteLink,
+      vaultContextInjection: vaultCtx
+    });
+    this.contextStates.set(convId, state);
+    return out;
   }
   getViewType() {
     return VIEW_TYPE_CHAT;
@@ -690,7 +916,7 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
     return this.manager;
   }
   async onOpen() {
-    var _a, _b;
+    var _a, _b, _c, _d, _e;
     const container = this.contentEl;
     container.empty();
     container.addClass("buddybridge-chat-container");
@@ -741,6 +967,14 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
         this.sendMessage();
       }
     };
+    try {
+      const plugin = (_d = (_c = this.app.plugins) == null ? void 0 : _c.plugins) == null ? void 0 : _d["buddybridge"];
+      if ((_e = plugin == null ? void 0 : plugin.settings) == null ? void 0 : _e.maxConversations) {
+        this.manager.setMaxConversations(plugin.settings.maxConversations);
+      }
+    } catch (e) {
+      console.error("[BB] \u540C\u6B65\u6700\u5927\u5BF9\u8BDD\u6570\u5931\u8D25:", e);
+    }
     try {
       const conversations = await this.loadDataCallback();
       await this.loadConversations(conversations);
@@ -830,11 +1064,11 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
       return;
     }
     for (const msg of conv.messages) {
-      await this.renderMessage(msg);
+      await this.renderMessage(msg, () => this.retryLastExchange());
     }
     this.scrollToBottom();
   }
-  async renderMessage(msg) {
+  async renderMessage(msg, onRetry) {
     const row = this.messageContainer.createDiv({
       cls: `buddybridge-message-row buddybridge-message-${msg.role}`
     });
@@ -844,8 +1078,11 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
       this.renderThinkingIndicator(bubble);
     } else if (msg.role === "assistant") {
       if (msg.content.startsWith("\u9519\u8BEF:") || msg.content.startsWith("Error:")) {
-        this.renderErrorCard(bubble, msg.content);
+        this.renderErrorCard(bubble, msg.content, onRetry);
       } else {
+        if (msg.parts && msg.parts.length > 0) {
+          this.renderMessageParts(bubble, msg.parts);
+        }
         await this.renderMarkdownContent(bubble, msg.content);
       }
     } else {
@@ -853,7 +1090,116 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
     }
     return row;
   }
-  renderErrorCard(bubble, content) {
+  /** 从持久化的 parts 重建思考块与工具卡（流式结束后、切标签、重启后仍保留）。 */
+  renderMessageParts(bubble, parts) {
+    let toolsBlock = null;
+    for (const part of parts) {
+      if (part.kind === "thinking") {
+        this.renderThinkingBlock(bubble, part.content || "", "\u5DF2\u601D\u8003");
+      } else if (part.kind === "tool") {
+        if (!toolsBlock) {
+          toolsBlock = this.renderToolsBlock(bubble);
+        }
+        this.appendToolRow(toolsBlock, part.name || "", part.detail || "");
+      }
+    }
+  }
+  /** 创建/复用可折叠思考块，并更新标题与正文。 */
+  renderThinkingBlock(bubble, content, label) {
+    let block = bubble.querySelector(".buddybridge-thinking-block");
+    if (!block) {
+      block = bubble.createDiv({ cls: "buddybridge-thinking-block" });
+      const header = block.createDiv({ cls: "buddybridge-thinking-header" });
+      const icon = header.createSpan({ cls: "buddybridge-thinking-header-icon" });
+      (0, import_obsidian.setIcon)(icon, "sparkles");
+      header.createSpan({ cls: "buddybridge-thinking-header-text", text: label });
+      const chevron = header.createSpan({ cls: "buddybridge-thinking-header-chevron", text: "\u25BE" });
+      const bodyDiv = block.createDiv({ cls: "buddybridge-thinking-body buddybridge-hidden" });
+      header.addEventListener("click", () => {
+        const hidden = bodyDiv.hasClass("buddybridge-hidden");
+        bodyDiv.toggleClass("buddybridge-hidden", !hidden);
+        chevron.textContent = hidden ? "\u25BE" : "\u25B8";
+      });
+    }
+    const headerText = block.querySelector(".buddybridge-thinking-header-text");
+    if (headerText instanceof HTMLElement) {
+      headerText.setText(label);
+    }
+    const body = block.querySelector(".buddybridge-thinking-body");
+    if (body instanceof HTMLElement) {
+      body.setText(content);
+    }
+    return block;
+  }
+  /** 创建/复用工具卡容器。 */
+  renderToolsBlock(bubble) {
+    let toolsBlock = bubble.querySelector(".buddybridge-tools-block");
+    if (!toolsBlock) {
+      toolsBlock = bubble.createDiv({ cls: "buddybridge-tools-block" });
+      const hdr = toolsBlock.createDiv({ cls: "buddybridge-tools-header" });
+      const icon = hdr.createSpan({ cls: "buddybridge-tools-header-icon" });
+      (0, import_obsidian.setIcon)(icon, "wrench");
+      hdr.createSpan({ cls: "buddybridge-tools-header-text", text: "\u5DE5\u5177\u8C03\u7528" });
+      const chevron = hdr.createSpan({ cls: "buddybridge-tools-header-chevron", text: "\u25BE" });
+      hdr.addEventListener("click", () => {
+        const list = toolsBlock.querySelector(".buddybridge-tools-list");
+        if (list instanceof HTMLElement) {
+          const hidden = list.hasClass("buddybridge-hidden");
+          list.toggleClass("buddybridge-hidden", !hidden);
+          chevron.textContent = hidden ? "\u25BE" : "\u25B8";
+        }
+      });
+      toolsBlock.createDiv({ cls: "buddybridge-tools-list buddybridge-hidden" });
+    }
+    return toolsBlock;
+  }
+  /** 向工具卡容器追加一行工具调用。 */
+  appendToolRow(toolsBlock, toolName, toolDetail) {
+    const list = toolsBlock.querySelector(".buddybridge-tools-list");
+    if (!(list instanceof HTMLElement))
+      return;
+    let iconName = "wrench";
+    if (toolName.includes("read") || toolName.includes("\u67E5\u770B") || toolName.includes("\u8BFB\u53D6")) {
+      iconName = "file-text";
+    } else if (toolName.includes("write") || toolName.includes("\u7F16\u8F91") || toolName.includes("\u5199\u5165")) {
+      iconName = "pencil";
+    } else if (toolName.includes("search") || toolName.includes("\u641C\u7D22") || toolName.includes("\u67E5\u627E")) {
+      iconName = "search";
+    }
+    const row = list.createDiv({ cls: "buddybridge-tool-call" });
+    const icon = row.createSpan({ cls: "buddybridge-tool-call-icon" });
+    (0, import_obsidian.setIcon)(icon, iconName);
+    row.createSpan({
+      cls: "buddybridge-tool-call-text",
+      text: `${toolName} ${toolDetail}`.trim()
+    });
+  }
+  /**
+   * 错误卡「重试」（P0.3）：删除最近一对 user+assistant 消息（失败的那对），
+   * 将 user 消息放回输入框并自动重发。超时/致命错误均可触发。
+   */
+  retryLastExchange() {
+    const conv = this.manager.getActive();
+    if (!conv || conv.messages.length === 0)
+      return;
+    let lastUserIdx = -1;
+    for (let i = conv.messages.length - 1; i >= 0; i--) {
+      if (conv.messages[i].role === "user") {
+        lastUserIdx = i;
+        break;
+      }
+    }
+    if (lastUserIdx < 0)
+      return;
+    const userMsg = conv.messages[lastUserIdx];
+    const idsToRemove = conv.messages.slice(lastUserIdx).map((m) => m.id);
+    this.manager.removeMessages(conv.id, idsToRemove);
+    this.inputEl.value = userMsg.content;
+    this.adjustTextareaHeight();
+    void this.renderMessages();
+    void this.sendMessage();
+  }
+  renderErrorCard(bubble, content, onRetry) {
     const card = bubble.createDiv({ cls: "buddybridge-error-card" });
     const icon = card.createDiv({ cls: "buddybridge-error-card-icon" });
     (0, import_obsidian.setIcon)(icon, "alert-triangle");
@@ -863,6 +1209,19 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
     const hint = this.getErrorHint(errorMsg);
     if (hint) {
       card.createDiv({ cls: "buddybridge-error-card-hint", text: hint });
+    }
+    if (onRetry) {
+      const actions = card.createDiv({ cls: "buddybridge-error-card-actions" });
+      const retryBtn = actions.createEl("button", {
+        text: "\u91CD\u8BD5",
+        cls: "mod-cta buddybridge-error-retry-btn",
+        attr: { "aria-label": "\u91CD\u8BD5\u4E0A\u6B21\u53D1\u9001" }
+      });
+      retryBtn.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        onRetry();
+      };
     }
   }
   getErrorHint(errorMsg) {
@@ -1106,8 +1465,10 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
     let firstChunk = true;
     let thinkingContent = "";
     let textContent = "";
+    let parts = [];
+    let streamingError = null;
     try {
-      const contextText = text;
+      const contextText = text.startsWith("/") ? text : this.buildContextText(convId, text);
       const streamingBubble = this.messageContainer.querySelector(
         `.buddybridge-message-assistant:last-child .buddybridge-bubble`
       );
@@ -1116,7 +1477,8 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
       }
       for await (const chunk of this.api.sendMessage(conv.sessionId, contextText, this.vaultPath)) {
         const bubble = streamingBubble;
-        if (chunk.type === "text" && /(Working directory|file.operation|file rules|Standing by|Awaiting|Confirmed|Vault path|待命中|文件操作|已锁定|已确认|工作目录)/.test(chunk.content)) {
+        const hasRealContent = textContent.length > 0 || thinkingContent.length > 0 || parts.length > 0;
+        if (chunk.type === "text" && !hasRealContent && isStartupBanner(chunk.content)) {
           continue;
         }
         if (firstChunk) {
@@ -1130,87 +1492,40 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
         }
         if (chunk.type === "thinking") {
           thinkingContent += chunk.content;
-          let block = bubble.querySelector(".buddybridge-thinking-block");
-          if (!(block instanceof HTMLElement)) {
-            block = bubble.createDiv({ cls: "buddybridge-thinking-block" });
-            const header = block.createDiv({ cls: "buddybridge-thinking-header" });
-            const icon = header.createSpan({ cls: "buddybridge-thinking-header-icon" });
-            (0, import_obsidian.setIcon)(icon, "sparkles");
-            header.createSpan({ cls: "buddybridge-thinking-header-text", text: "\u601D\u8003\u4E2D..." });
-            const chevron = header.createSpan({ cls: "buddybridge-thinking-header-chevron", text: "\u25BE" });
-            const bodyDiv = block.createDiv({ cls: "buddybridge-thinking-body buddybridge-hidden" });
-            header.addEventListener("click", () => {
-              const hidden = bodyDiv.hasClass("buddybridge-hidden");
-              bodyDiv.toggleClass("buddybridge-hidden", !hidden);
-              chevron.textContent = hidden ? "\u25BE" : "\u25B8";
-            });
+          const lastPart = parts[parts.length - 1];
+          if (lastPart && lastPart.kind === "thinking") {
+            lastPart.content = thinkingContent;
+          } else {
+            parts.push({ kind: "thinking", content: thinkingContent });
           }
-          const body = block.querySelector(".buddybridge-thinking-body");
-          if (body instanceof HTMLElement) {
-            body.setText(thinkingContent);
-          }
+          this.manager.updateMessageParts(convId, aiMsg.id, parts, true);
+          this.renderThinkingBlock(bubble, thinkingContent, "\u601D\u8003\u4E2D...");
         } else if (chunk.type === "tool") {
-          let toolsBlock = bubble.querySelector(".buddybridge-tools-block");
-          if (!(toolsBlock instanceof HTMLElement)) {
-            toolsBlock = bubble.createDiv({ cls: "buddybridge-tools-block" });
-            const hdr = toolsBlock.createDiv({ cls: "buddybridge-tools-header" });
-            const icon = hdr.createSpan({ cls: "buddybridge-tools-header-icon" });
-            (0, import_obsidian.setIcon)(icon, "wrench");
-            hdr.createSpan({ cls: "buddybridge-tools-header-text", text: "\u5DE5\u5177\u8C03\u7528" });
-            const chevron = hdr.createSpan({ cls: "buddybridge-tools-header-chevron", text: "\u25BE" });
-            hdr.addEventListener("click", () => {
-              const list2 = toolsBlock.querySelector(".buddybridge-tools-list");
-              if (list2 instanceof HTMLElement) {
-                const hidden = list2.hasClass("buddybridge-hidden");
-                list2.toggleClass("buddybridge-hidden", !hidden);
-                chevron.textContent = hidden ? "\u25BE" : "\u25B8";
-              }
-            });
-            toolsBlock.createDiv({ cls: "buddybridge-tools-list buddybridge-hidden" });
-          }
-          const list = toolsBlock.querySelector(".buddybridge-tools-list");
-          if (list instanceof HTMLElement) {
-            const toolName = chunk.toolName || "";
-            const toolDetail = chunk.toolDetail || "";
-            let iconName = "wrench";
-            if (toolName.includes("read") || toolName.includes("\u67E5\u770B") || toolName.includes("\u8BFB\u53D6")) {
-              iconName = "file-text";
-            } else if (toolName.includes("write") || toolName.includes("\u7F16\u8F91") || toolName.includes("\u5199\u5165")) {
-              iconName = "pencil";
-            } else if (toolName.includes("search") || toolName.includes("\u641C\u7D22") || toolName.includes("\u67E5\u627E")) {
-              iconName = "search";
-            }
-            const row = list.createDiv({ cls: "buddybridge-tool-call" });
-            const icon = row.createSpan({ cls: "buddybridge-tool-call-icon" });
-            (0, import_obsidian.setIcon)(icon, iconName);
-            row.createSpan({
-              cls: "buddybridge-tool-call-text",
-              text: `${toolName} ${toolDetail}`.trim()
-            });
-          }
+          parts.push({ kind: "tool", name: chunk.toolName || "", detail: chunk.toolDetail || "" });
+          this.manager.updateMessageParts(convId, aiMsg.id, parts, true);
+          const toolsBlock = this.renderToolsBlock(bubble);
+          this.appendToolRow(toolsBlock, chunk.toolName || "", chunk.toolDetail || "");
         } else if (chunk.type === "text") {
           textContent += chunk.content;
           this.manager.updateMessage(convId, aiMsg.id, textContent, true);
           await this.renderMarkdownContent(bubble, textContent);
         } else if (chunk.type === "error") {
+          streamingError = chunk.content;
           this.manager.updateMessage(convId, aiMsg.id, `\u9519\u8BEF: ${chunk.content}`, true);
           new import_obsidian.Notice(`\u8BF7\u6C42\u5931\u8D25: ${chunk.content}`);
         }
       }
-      const finalContent = textContent || thinkingContent;
-      this.manager.updateMessage(convId, aiMsg.id, finalContent);
-      if (!finalContent) {
-        if (this.stopRequested) {
-          this.manager.updateMessage(convId, aiMsg.id, "\uFF08\u5DF2\u505C\u6B62\uFF09");
-        } else {
-          this.manager.updateMessage(convId, aiMsg.id, "\uFF08\u65E0\u54CD\u5E94\uFF0C\u8BF7\u91CD\u8BD5\uFF09");
+      if (streamingError) {
+        this.manager.updateMessage(convId, aiMsg.id, `\u9519\u8BEF: ${streamingError}`);
+        this.manager.updateMessageParts(convId, aiMsg.id, void 0, true);
+      } else {
+        this.manager.updateMessage(convId, aiMsg.id, textContent);
+        const hasContent = Boolean(textContent || thinkingContent || parts.length > 0);
+        if (!hasContent) {
+          this.manager.updateMessage(convId, aiMsg.id, this.stopRequested ? "\uFF08\u5DF2\u505C\u6B62\uFF09" : "\uFF08\u65E0\u54CD\u5E94\uFF0C\u8BF7\u91CD\u8BD5\uFF09");
+        } else if (this.stopRequested && textContent) {
+          this.manager.updateMessage(convId, aiMsg.id, textContent + "\n\n\uFF08\u5DF2\u505C\u6B62\uFF09");
         }
-      } else if (this.stopRequested) {
-        this.manager.updateMessage(convId, aiMsg.id, finalContent + "\n\n\uFF08\u5DF2\u505C\u6B62\uFF09");
-      }
-      const thinkingLabel = streamingBubble.querySelector(".buddybridge-thinking-header-text");
-      if (thinkingLabel instanceof HTMLElement) {
-        thinkingLabel.setText("\u5DF2\u601D\u8003");
       }
       await this.renderMessages();
       await this.manager.flush();
@@ -1240,8 +1555,36 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
 };
 
 // src/settings/tab.ts
+var import_obsidian3 = require("obsidian");
+
+// src/settings/confirm.ts
 var import_obsidian2 = require("obsidian");
-var BuddyBridgeSettingTab = class extends import_obsidian2.PluginSettingTab {
+var ConfirmModal = class extends import_obsidian2.Modal {
+  constructor(app, message, onConfirm) {
+    super(app);
+    this.message = message;
+    this.onConfirm = onConfirm;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl("p", { text: this.message, cls: "buddybridge-confirm-message" });
+    const actions = contentEl.createDiv({ cls: "buddybridge-confirm-actions" });
+    const cancelBtn = actions.createEl("button", { text: "\u53D6\u6D88", cls: "mod-cta" });
+    cancelBtn.onclick = () => this.close();
+    const okBtn = actions.createEl("button", { text: "\u786E\u8BA4", cls: "mod-warning" });
+    okBtn.onclick = async () => {
+      await this.onConfirm();
+      this.close();
+    };
+  }
+  onClose() {
+    this.contentEl.empty();
+  }
+};
+
+// src/settings/tab.ts
+var BuddyBridgeSettingTab = class extends import_obsidian3.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
@@ -1249,40 +1592,232 @@ var BuddyBridgeSettingTab = class extends import_obsidian2.PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    new import_obsidian2.Setting(containerEl).setName("Configuration").setHeading();
-    new import_obsidian2.Setting(containerEl).setName("CodeBuddy \u8DEF\u5F84").setDesc("codebuddy \u53EF\u6267\u884C\u6587\u4EF6\u8DEF\u5F84\u3002\u5982 WorkBuddy \u81EA\u5B9A\u4E49\u5B89\u88C5\uFF0C\u8DEF\u5F84\u901A\u5E38\u4E3A\uFF1A\u5B89\u88C5\u76EE\u5F55\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy\uFF08\u53F3\u952E WorkBuddy \u5FEB\u6377\u65B9\u5F0F \u2192 \u6253\u5F00\u6587\u4EF6\u4F4D\u7F6E \u53EF\u627E\u5230\u5B89\u88C5\u76EE\u5F55\uFF09").addText((text) => text.setPlaceholder("WorkBuddy\u5B89\u88C5\u76EE\u5F55\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy").setValue(this.plugin.settings.codebuddyPath).onChange(async (value) => {
-      this.plugin.settings.codebuddyPath = value;
-      this.plugin.api.setCodebuddyPath(value);
-      await this.plugin.saveSettings();
+    const plugin = this.plugin;
+    new import_obsidian3.Setting(containerEl).setName("\u8FDE\u63A5\u914D\u7F6E").setHeading();
+    new import_obsidian3.Setting(containerEl).setName("CodeBuddy \u8DEF\u5F84").setDesc("codebuddy \u53EF\u6267\u884C\u6587\u4EF6\u8DEF\u5F84\u3002\u5982 WorkBuddy \u81EA\u5B9A\u4E49\u5B89\u88C5\uFF0C\u8DEF\u5F84\u901A\u5E38\u4E3A\uFF1A\u5B89\u88C5\u76EE\u5F55\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy\uFF08\u53F3\u952E WorkBuddy \u5FEB\u6377\u65B9\u5F0F \u2192 \u6253\u5F00\u6587\u4EF6\u4F4D\u7F6E \u53EF\u627E\u5230\u5B89\u88C5\u76EE\u5F55\uFF09").addText((text) => text.setPlaceholder("WorkBuddy\u5B89\u88C5\u76EE\u5F55\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy").setValue(plugin.settings.codebuddyPath).onChange(async (value) => {
+      plugin.settings.codebuddyPath = value;
+      plugin.api.setCodebuddyPath(value);
+      await plugin.saveSettings();
     }));
-    new import_obsidian2.Setting(containerEl).setName("\u6700\u5927\u5BF9\u8BDD\u6570").setDesc("\u6700\u591A\u4FDD\u7559\u591A\u5C11\u4E2A\u5BF9\u8BDD\uFF08\u65E7\u5BF9\u8BDD\u5C06\u88AB\u81EA\u52A8\u5220\u9664\uFF09").addText((text) => text.setPlaceholder("20").setValue(String(this.plugin.settings.maxConversations)).onChange(async (value) => {
+    new import_obsidian3.Setting(containerEl).setName("Node \u8DEF\u5F84\uFF08\u53EF\u9009\uFF09").setDesc("\u7559\u7A7A\u81EA\u52A8\u68C0\u6D4B\u3002\u4EC5\u5F53\u4EE5\u7EAF\u811A\u672C\u65B9\u5F0F\u542F\u52A8 codebuddy\uFF08\u975E .exe/.cmd\uFF09\u65F6\u4F7F\u7528\u3002").addText((text) => text.setPlaceholder("\u81EA\u52A8\u68C0\u6D4B").setValue(plugin.settings.nodePath).onChange(async (value) => {
+      plugin.settings.nodePath = value;
+      plugin.api.setNodePath(value);
+      await plugin.saveSettings();
+    }));
+    new import_obsidian3.Setting(containerEl).setName("CLI \u8D85\u65F6\u65F6\u957F\uFF08\u79D2\uFF09").setDesc("\u8BF7\u6C42\u8D85\u8FC7\u8BE5\u65F6\u957F\u672A\u6536\u5230\u5B8C\u6574\u56DE\u590D\u65F6\u81EA\u52A8\u7EC8\u6B62\u5E76\u63D0\u793A\uFF08\u9ED8\u8BA4 300 \u79D2\uFF09").addText((text) => text.setPlaceholder("300").setValue(String(plugin.settings.timeoutSeconds)).onChange(async (value) => {
       const num = parseInt(value);
       if (!isNaN(num) && num > 0) {
-        this.plugin.settings.maxConversations = num;
-        await this.plugin.saveSettings();
+        plugin.settings.timeoutSeconds = num;
+        await plugin.saveSettings();
       }
     }));
-    new import_obsidian2.Setting(containerEl).setName("\u4E3B\u8272\u8C03").setDesc("\u804A\u5929\u9762\u677F\u7684\u4E3B\u9898\u8272\u3002\u7559\u7A7A\u4F7F\u7528 Obsidian \u9ED8\u8BA4\u5F3A\u8C03\u8272\u3002").addText((text) => {
+    new import_obsidian3.Setting(containerEl).setName("\u4E0A\u4E0B\u6587\u6CE8\u5165").setHeading();
+    new import_obsidian3.Setting(containerEl).setName("\u6CE8\u5165\u5F53\u524D\u7B14\u8BB0\u94FE\u63A5").setDesc("\u53D1\u9001\u6D88\u606F\u65F6\u81EA\u52A8\u5728\u6D88\u606F\u524D\u9644\u52A0 [\u5F53\u524D\u7B14\u8BB0: \u8DEF\u5F84]\uFF0C\u8BA9 AI \u77E5\u9053\u4F60\u5728\u770B\u54EA\u4E2A\u7B14\u8BB0\uFF08\u9ED8\u8BA4\u5F00\u542F\uFF09").addToggle((toggle) => toggle.setValue(plugin.settings.noteLinkInjection).onChange(async (value) => {
+      plugin.settings.noteLinkInjection = value;
+      await plugin.saveSettings();
+    }));
+    new import_obsidian3.Setting(containerEl).setName("\u6CE8\u5165 Vault \u4E0A\u4E0B\u6587").setDesc("\u989D\u5916\u9644\u52A0 [Vault: \u4ED3\u5E93\u6839\u8DEF\u5F84]\uFF0C\u5E2E\u52A9 AI \u7406\u89E3\u7B14\u8BB0\u6240\u5728\u7684\u4ED3\u5E93\uFF08\u9ED8\u8BA4\u5173\u95ED\uFF09").addToggle((toggle) => toggle.setValue(plugin.settings.vaultContextInjection).onChange(async (value) => {
+      plugin.settings.vaultContextInjection = value;
+      await plugin.saveSettings();
+    }));
+    new import_obsidian3.Setting(containerEl).setName("\u5916\u89C2").setHeading();
+    new import_obsidian3.Setting(containerEl).setName("\u4E3B\u8272\u8C03").setDesc("\u804A\u5929\u9762\u677F\u7684\u4E3B\u9898\u8272\u3002\u7559\u7A7A\u4F7F\u7528 Obsidian \u9ED8\u8BA4\u5F3A\u8C03\u8272\u3002").addText((text) => {
       text.inputEl.type = "color";
-      text.setValue(this.plugin.settings.primaryColor || "#8b5cf6");
+      text.setValue(plugin.settings.primaryColor || "#8b5cf6");
       text.onChange(async (value) => {
-        this.plugin.settings.primaryColor = value;
-        await this.plugin.saveSettings();
+        plugin.settings.primaryColor = value;
+        await plugin.saveSettings();
       });
     });
-    new import_obsidian2.Setting(containerEl).setName("\u91CD\u7F6E\u4E3A\u9ED8\u8BA4").setDesc("\u5C06\u6240\u6709\u8BBE\u7F6E\u6062\u590D\u4E3A\u9ED8\u8BA4\u503C").addButton((btn) => {
-      btn.setButtonText("\u91CD\u7F6E").onClick(async () => {
-        this.plugin.settings = { ...DEFAULT_SETTINGS };
-        this.plugin.api.setCodebuddyPath("");
-        await this.plugin.saveSettings();
-        this.display();
+    new import_obsidian3.Setting(containerEl).setName("\u7BA1\u7406").setHeading();
+    new import_obsidian3.Setting(containerEl).setName("\u6700\u5927\u5BF9\u8BDD\u6570").setDesc("\u6700\u591A\u4FDD\u7559\u591A\u5C11\u4E2A\u5BF9\u8BDD\uFF08\u8D85\u51FA\u90E8\u5206\u81EA\u52A8\u5220\u9664\uFF09").addText((text) => text.setPlaceholder("20").setValue(String(plugin.settings.maxConversations)).onChange(async (value) => {
+      const num = parseInt(value);
+      if (!isNaN(num) && num > 0) {
+        plugin.settings.maxConversations = num;
+        await plugin.saveSettings();
+      }
+    }));
+    new import_obsidian3.Setting(containerEl).setName("\u5BFC\u51FA\u8BBE\u7F6E\uFF08\u542B\u804A\u5929\u8BB0\u5F55\uFF09").setDesc("\u5C06\u5168\u90E8\u8BBE\u7F6E\u4E0E\u804A\u5929\u8BB0\u5F55\u5BFC\u51FA\u4E3A\u5E26\u7248\u672C\u53F7\u7684 JSON \u6587\u4EF6\uFF0C\u7528\u4E8E\u5907\u4EFD\u6216\u8FC1\u79FB").addButton((btn) => btn.setButtonText("\u5BFC\u51FA").onClick(async () => {
+      await plugin.exportData();
+    }));
+    new import_obsidian3.Setting(containerEl).setName("\u5BFC\u5165\u8BBE\u7F6E\uFF08\u542B\u804A\u5929\u8BB0\u5F55\uFF09").setDesc("\u4ECE JSON \u6587\u4EF6\u6062\u590D\u8BBE\u7F6E\u4E0E\u804A\u5929\u8BB0\u5F55\uFF08\u4F1A\u8986\u76D6\u5F53\u524D\u6570\u636E\uFF0C\u9700\u4E8C\u6B21\u786E\u8BA4\uFF09").addButton((btn) => {
+      btn.setButtonText("\u5BFC\u5165");
+      btn.buttonEl.addEventListener("click", (evt) => {
+        evt.preventDefault();
+        evt.stopPropagation();
+        void plugin.importDataFromFile();
       });
     });
+    new import_obsidian3.Setting(containerEl).setName("\u91CD\u7F6E\u4E3A\u9ED8\u8BA4").setDesc("\u5C06\u6240\u6709\u8BBE\u7F6E\u6062\u590D\u4E3A\u9ED8\u8BA4\u503C\uFF08\u4E0D\u4F1A\u5220\u9664\u804A\u5929\u8BB0\u5F55\uFF0C\u9700\u4E8C\u6B21\u786E\u8BA4\uFF09").addButton((btn) => btn.setButtonText("\u91CD\u7F6E").onClick(() => {
+      new ConfirmModal(
+        this.app,
+        "\u786E\u8BA4\u5C06\u6240\u6709\u8BBE\u7F6E\u6062\u590D\u4E3A\u9ED8\u8BA4\u503C\uFF1F\u804A\u5929\u8BB0\u5F55\u5C06\u4FDD\u7559\u3002",
+        async () => {
+          plugin.settings = { ...DEFAULT_SETTINGS };
+          plugin.api.setCodebuddyPath("");
+          plugin.api.setNodePath("");
+          await plugin.saveSettings();
+          new import_obsidian3.Notice("\u8BBE\u7F6E\u5DF2\u91CD\u7F6E\u4E3A\u9ED8\u8BA4");
+          this.display();
+        }
+      ).open();
+    }));
   }
 };
 
+// src/io.ts
+var EXPORT_FORMAT = "buddybridge-export";
+var EXPORT_VERSION = 1;
+function buildExportPayload(settings, conversations) {
+  return {
+    format: EXPORT_FORMAT,
+    exportVersion: EXPORT_VERSION,
+    dataVersion: DATA_VERSION,
+    exportedAt: Date.now(),
+    settings: migrateSettings(settings),
+    conversations: (conversations || []).map((c) => normalizeConversation(c)).filter((c) => c !== null)
+  };
+}
+function serializeExport(payload) {
+  return JSON.stringify(payload, null, 2);
+}
+function validateExport(raw) {
+  var _a;
+  if (!isObject(raw))
+    return null;
+  if (raw.format !== EXPORT_FORMAT)
+    return null;
+  if (getNumber(raw, "exportVersion") !== EXPORT_VERSION)
+    return null;
+  const dataVersion = getNumber(raw, "dataVersion");
+  if (typeof dataVersion !== "number" || dataVersion < 1)
+    return null;
+  const settings = isObject(raw.settings) ? migrateSettings(raw.settings) : migrateSettings(null);
+  const rawConvs = raw.conversations;
+  const conversations = Array.isArray(rawConvs) ? rawConvs.map((c) => normalizeConversation(c)).filter((c) => c !== null) : [];
+  return {
+    format: EXPORT_FORMAT,
+    exportVersion: EXPORT_VERSION,
+    dataVersion,
+    exportedAt: (_a = getNumber(raw, "exportedAt")) != null ? _a : Date.now(),
+    settings,
+    conversations
+  };
+}
+function parseExport(json) {
+  try {
+    return validateExport(JSON.parse(json));
+  } catch (e) {
+    return null;
+  }
+}
+function downloadJSONFile(filename, content) {
+  const blob = new Blob([content], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.style.display = "none";
+  document.body.appendChild(a);
+  a.click();
+  if (a.parentElement)
+    a.remove();
+  URL.revokeObjectURL(url);
+}
+function pickJSONViaElectron() {
+  return new Promise((resolve) => {
+    var _a;
+    try {
+      const w = window;
+      if (typeof w.require !== "function") {
+        resolve(null);
+        return;
+      }
+      const electron = w.require("electron");
+      const remote = electron == null ? void 0 : electron.remote;
+      const dialog = (_a = remote == null ? void 0 : remote.dialog) != null ? _a : electron == null ? void 0 : electron.dialog;
+      if (!dialog) {
+        resolve(null);
+        return;
+      }
+      const win = (remote == null ? void 0 : remote.getCurrentWindow) ? remote.getCurrentWindow() : null;
+      const opts = { properties: ["openFile"], filters: [{ name: "JSON", extensions: ["json"] }] };
+      const p = win ? dialog.showOpenDialog(win, opts) : dialog.showOpenDialog(opts);
+      if (!p || typeof p.then !== "function") {
+        resolve(null);
+        return;
+      }
+      p.then(async (result) => {
+        const r = result;
+        const filePath = Array.isArray(r == null ? void 0 : r.filePaths) && r.filePaths.length > 0 ? r.filePaths[0] : "";
+        if (!filePath) {
+          resolve("");
+          return;
+        }
+        try {
+          const fs2 = w.require("fs");
+          const content = await fs2.promises.readFile(filePath, "utf-8");
+          resolve(String(content));
+        } catch (e) {
+          resolve(null);
+        }
+      }).catch(() => resolve(null));
+    } catch (e) {
+      resolve(null);
+    }
+  });
+}
+function pickJSONViaDomInput() {
+  return new Promise((resolve, reject) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".json,application/json";
+    input.style.display = "none";
+    document.body.appendChild(input);
+    let safetyTimer = 0;
+    const cleanup = () => {
+      if (safetyTimer)
+        window.clearTimeout(safetyTimer);
+      if (input.parentElement)
+        input.remove();
+    };
+    const finish = (value) => {
+      cleanup();
+      resolve(value);
+    };
+    const fail = (err) => {
+      cleanup();
+      reject(err);
+    };
+    input.onchange = () => {
+      var _a;
+      const file = (_a = input.files) == null ? void 0 : _a[0];
+      if (!file) {
+        finish("");
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        var _a2;
+        return finish(String((_a2 = reader.result) != null ? _a2 : ""));
+      };
+      reader.onerror = () => fail(new Error("\u8BFB\u53D6\u6587\u4EF6\u5931\u8D25"));
+      reader.readAsText(file);
+    };
+    input.oncancel = () => finish("");
+    safetyTimer = window.setTimeout(() => finish(""), 6e4);
+    input.click();
+  });
+}
+async function pickAndReadJSONFile() {
+  const viaElectron = await pickJSONViaElectron();
+  if (viaElectron !== null)
+    return viaElectron;
+  return pickJSONViaDomInput();
+}
+
 // src/main.ts
-var BuddyBridgePlugin = class extends import_obsidian3.Plugin {
+var BuddyBridgePlugin = class extends import_obsidian4.Plugin {
   constructor() {
     super(...arguments);
     this.chatView = null;
@@ -1292,6 +1827,8 @@ var BuddyBridgePlugin = class extends import_obsidian3.Plugin {
       await this.loadSettings();
       this.api = new BuddyBridgeAPI();
       this.api.setCodebuddyPath(this.settings.codebuddyPath);
+      this.api.setNodePath(this.settings.nodePath);
+      this.api.setTimeoutMs(this.settings.timeoutSeconds * 1e3);
       this.registerView(
         VIEW_TYPE_CHAT,
         (leaf) => {
@@ -1322,7 +1859,7 @@ var BuddyBridgePlugin = class extends import_obsidian3.Plugin {
       this.applyPrimaryColor();
     } catch (e) {
       console.error("[BB] \u63D2\u4EF6\u52A0\u8F7D\u5931\u8D25:", e);
-      new import_obsidian3.Notice("BuddyBridge \u52A0\u8F7D\u5931\u8D25\uFF0C\u8BF7\u67E5\u770B Console");
+      new import_obsidian4.Notice("BuddyBridge \u52A0\u8F7D\u5931\u8D25\uFF0C\u8BF7\u67E5\u770B Console");
     }
   }
   onunload() {
@@ -1345,17 +1882,11 @@ var BuddyBridgePlugin = class extends import_obsidian3.Plugin {
         await workspace.revealLeaf(leaf);
         workspace.setActiveLeaf(leaf, { focus: true });
       } else {
-        new import_obsidian3.Notice("BuddyBridge\uFF1A\u65E0\u6CD5\u521B\u5EFA\u804A\u5929\u9762\u677F");
+        new import_obsidian4.Notice("BuddyBridge\uFF1A\u65E0\u6CD5\u521B\u5EFA\u804A\u5929\u9762\u677F");
       }
     } catch (e) {
       console.error("[BB] \u6253\u5F00\u804A\u5929\u9762\u677F\u5931\u8D25:", e);
-      new import_obsidian3.Notice("BuddyBridge\uFF1A\u6253\u5F00\u9762\u677F\u5931\u8D25\uFF0C\u8BF7\u67E5\u770B Console");
-    }
-  }
-  async loadPersistedConversations() {
-    const data = normalizePersistedData(await this.loadData());
-    if (this.chatView) {
-      await this.chatView.loadConversations(data.conversations || []);
+      new import_obsidian4.Notice("BuddyBridge\uFF1A\u6253\u5F00\u9762\u677F\u5931\u8D25\uFF0C\u8BF7\u67E5\u770B Console");
     }
   }
   async loadSettings() {
@@ -1367,7 +1898,67 @@ var BuddyBridgePlugin = class extends import_obsidian3.Plugin {
     const merged = { ...existingData, settings: this.settings };
     await this.saveData(merged);
     this.api.setCodebuddyPath(this.settings.codebuddyPath);
+    this.api.setNodePath(this.settings.nodePath);
+    this.api.setTimeoutMs(this.settings.timeoutSeconds * 1e3);
+    if (this.chatView) {
+      this.chatView.getManager().setMaxConversations(this.settings.maxConversations);
+    }
     this.applyPrimaryColor();
+  }
+  // ==================== 导出 / 导入（P2.6）====================
+  /** 导出设置 + 聊天记录为带版本号的 JSON 文件。 */
+  async exportData() {
+    var _a, _b;
+    try {
+      const data = normalizePersistedData(await this.loadData());
+      const payload = buildExportPayload((_a = data.settings) != null ? _a : {}, (_b = data.conversations) != null ? _b : []);
+      const json = serializeExport(payload);
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+      downloadJSONFile(`buddybridge-backup-${stamp}.json`, json);
+      new import_obsidian4.Notice("\u5DF2\u5BFC\u51FA\u8BBE\u7F6E\u4E0E\u804A\u5929\u8BB0\u5F55");
+    } catch (e) {
+      console.error("[BB] \u5BFC\u51FA\u5931\u8D25:", e);
+      new import_obsidian4.Notice(`\u5BFC\u51FA\u5931\u8D25\uFF1A${getErrorMessage(e)}`);
+    }
+  }
+  /** 弹出文件选择框 → 解析校验 → 二次确认后导入。 */
+  async importDataFromFile() {
+    try {
+      const json = await pickAndReadJSONFile();
+      if (!json)
+        return;
+      const payload = parseExport(json);
+      if (!payload) {
+        new import_obsidian4.Notice("\u5BFC\u5165\u5931\u8D25\uFF1A\u6587\u4EF6\u683C\u5F0F\u4E0D\u6B63\u786E\uFF0C\u6216\u5BFC\u51FA\u7248\u672C\u4E0E\u672C\u63D2\u4EF6\u4E0D\u517C\u5BB9");
+        return;
+      }
+      new ConfirmModal(
+        this.app,
+        `\u5BFC\u5165\u5C06\u8986\u76D6\u5F53\u524D\u8BBE\u7F6E\u4E0E ${payload.conversations.length} \u6761\u804A\u5929\u8BB0\u5F55\uFF0C\u662F\u5426\u7EE7\u7EED\uFF1F`,
+        async () => {
+          await this.importData(payload);
+          new import_obsidian4.Notice("\u5BFC\u5165\u6210\u529F");
+        }
+      ).open();
+    } catch (e) {
+      console.error("[BB] \u5BFC\u5165\u5931\u8D25:", e);
+      new import_obsidian4.Notice(`\u5BFC\u5165\u5931\u8D25\uFF1A${getErrorMessage(e)}`);
+    }
+  }
+  /** 应用已校验的导出数据：覆盖设置与聊天记录，并刷新 API 与聊天视图。 */
+  async importData(payload) {
+    const data = normalizePersistedData(await this.loadData());
+    data.settings = payload.settings;
+    data.conversations = payload.conversations;
+    await this.saveData(data);
+    this.settings = migrateSettings(payload.settings);
+    this.api.setCodebuddyPath(this.settings.codebuddyPath);
+    this.api.setNodePath(this.settings.nodePath);
+    this.api.setTimeoutMs(this.settings.timeoutSeconds * 1e3);
+    this.applyPrimaryColor();
+    if (this.chatView) {
+      await this.chatView.loadConversations(payload.conversations);
+    }
   }
   applyPrimaryColor() {
     try {

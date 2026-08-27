@@ -10,3 +10,10 @@ coverage/
 .codegraph/daemon.pid
 fix.mjs
 .claude/
+
+# 分析报告 / 取证材料（不入库）
+BuddyBridge-*.md
+ISSUE-*.md
+release-notes-*.md
+PATCH-*.md
+buddybridge-v2.0.2-*/

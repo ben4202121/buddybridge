@@ -1,13 +1,25 @@
-import type { Conversation, ChatMessage } from '../types';
+import type { Conversation, ChatMessage, MessagePart } from '../types';
 import { generateId, getErrorMessage } from '../types';
 
 export class ConversationManager {
     private conversations: Map<string, Conversation> = new Map();
     private activeId: string | null = null;
+    private maxConversations = 20;
     private persistCallback: ((convs: Conversation[]) => Promise<void>) | null = null;
 
     setPersistCallback(callback: (convs: Conversation[]) => Promise<void>) {
         this.persistCallback = callback;
+    }
+
+    /** 设置最大对话数；创建新对话后按 updatedAt 裁剪（P0.4）。 */
+    setMaxConversations(max: number): void {
+        if (typeof max === 'number' && max > 0) {
+            this.maxConversations = max;
+        }
+    }
+
+    getMaxConversations(): number {
+        return this.maxConversations;
     }
 
     private async persist() {
@@ -42,18 +54,56 @@ export class ConversationManager {
     /** 创建新对话 */
     createConversation(title?: string): Conversation {
         const id = generateId();
+        // 时间戳单调递增：避免毫秒级相同时间戳导致裁剪时"新会话"与"旧会话"排序不分先后
+        let updatedAt = Date.now();
+        for (const c of this.conversations.values()) {
+            if (c.updatedAt >= updatedAt) updatedAt = c.updatedAt + 1;
+        }
         const conv: Conversation = {
             id,
             title: title || '新对话',
             sessionId: '', // 首次发送消息时由 Gateway 分配
             messages: [],
             createdAt: Date.now(),
-            updatedAt: Date.now()
+            updatedAt
         };
         this.conversations.set(id, conv);
         this.activeId = id;
+        this.trimConversations();
         this.persist().catch((err) => this.handlePersistError(err));
         return conv;
+    }
+
+    /**
+     * P0.4：按 updatedAt 降序保留最近 maxConversations 个会话，删除更旧的。
+     * 若当前活跃会话被裁掉，回退到保留列表中最新的一条。
+     */
+    private trimConversations(): void {
+        if (this.maxConversations <= 0) return;
+        const all = this.getAll(); // 已按 updatedAt 降序
+        if (all.length <= this.maxConversations) return;
+
+        const keepIds = new Set(all.slice(0, this.maxConversations).map(c => c.id));
+        for (const conv of all.slice(this.maxConversations)) {
+            this.conversations.delete(conv.id);
+        }
+        if (this.activeId && !keepIds.has(this.activeId)) {
+            this.activeId = all[0]?.id ?? null;
+        }
+    }
+
+    /** 删除指定消息（用于错误卡重试时移除失败的 user+assistant 对）。返回实际删除条数。 */
+    removeMessages(convId: string, ids: string[]): number {
+        const conv = this.conversations.get(convId);
+        if (!conv || !ids || ids.length === 0) return 0;
+        const before = conv.messages.length;
+        conv.messages = conv.messages.filter(m => !ids.includes(m.id));
+        const removed = before - conv.messages.length;
+        if (removed > 0) {
+            conv.updatedAt = Date.now();
+            this.persist().catch((err) => this.handlePersistError(err));
+        }
+        return removed;
     }
 
     /** 删除对话 */
@@ -118,6 +168,20 @@ export class ConversationManager {
         const msg = conv.messages.find(m => m.id === msgId);
         if (!msg) return false;
         msg.content = content;
+        conv.updatedAt = Date.now();
+        if (!skipSave) {
+            this.persist().catch((err) => this.handlePersistError(err));
+        }
+        return true;
+    }
+
+    /** 更新指定消息的结构化 parts（思考 / 工具调用），供流式结束后重建展示块。 */
+    updateMessageParts(convId: string, msgId: string, parts: MessagePart[] | undefined, skipSave = false): boolean {
+        const conv = this.conversations.get(convId);
+        if (!conv) return false;
+        const msg = conv.messages.find(m => m.id === msgId);
+        if (!msg) return false;
+        msg.parts = parts ? [...parts] : undefined;
         conv.updatedAt = Date.now();
         if (!skipSave) {
             this.persist().catch((err) => this.handlePersistError(err));

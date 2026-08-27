@@ -1,8 +1,10 @@
 import { Notice, Plugin } from 'obsidian';
 import { BuddyBridgeAPI } from './api';
 import { BuddyBridgeChatView, VIEW_TYPE_CHAT } from './views/chat';
-import { migrateSettings, normalizePersistedData, type BuddyBridgeSettings, type PersistedData } from './types';
+import { migrateSettings, normalizePersistedData, getErrorMessage, type BuddyBridgeSettings, type PersistedData } from './types';
 import { BuddyBridgeSettingTab } from './settings/tab';
+import { buildExportPayload, serializeExport, parseExport, downloadJSONFile, pickAndReadJSONFile, type BuddyBridgeExport } from './io';
+import { ConfirmModal } from './settings/confirm';
 
 export default class BuddyBridgePlugin extends Plugin {
     settings: BuddyBridgeSettings;
@@ -15,6 +17,8 @@ export default class BuddyBridgePlugin extends Plugin {
 
             this.api = new BuddyBridgeAPI();
             this.api.setCodebuddyPath(this.settings.codebuddyPath);
+            this.api.setNodePath(this.settings.nodePath);
+            this.api.setTimeoutMs(this.settings.timeoutSeconds * 1000);
 
             // 注册聊天视图
             this.registerView(
@@ -94,13 +98,6 @@ export default class BuddyBridgePlugin extends Plugin {
         }
     }
 
-    async loadPersistedConversations() {
-        const data = normalizePersistedData(await this.loadData());
-        if (this.chatView) {
-            await this.chatView.loadConversations(data.conversations || []);
-        }
-    }
-
     async loadSettings() {
         const data = normalizePersistedData(await this.loadData());
         this.settings = migrateSettings(data.settings);
@@ -111,7 +108,72 @@ export default class BuddyBridgePlugin extends Plugin {
         const merged: PersistedData = { ...existingData, settings: this.settings };
         await this.saveData(merged);
         this.api.setCodebuddyPath(this.settings.codebuddyPath);
+        this.api.setNodePath(this.settings.nodePath);
+        this.api.setTimeoutMs(this.settings.timeoutSeconds * 1000);
+        // 同步已打开的聊天面板（如最大对话数等即时生效的设置）
+        if (this.chatView) {
+            this.chatView.getManager().setMaxConversations(this.settings.maxConversations);
+        }
         this.applyPrimaryColor();
+    }
+
+    // ==================== 导出 / 导入（P2.6）====================
+
+    /** 导出设置 + 聊天记录为带版本号的 JSON 文件。 */
+    async exportData(): Promise<void> {
+        try {
+            const data = normalizePersistedData(await this.loadData());
+            const payload = buildExportPayload(data.settings ?? {}, data.conversations ?? []);
+            const json = serializeExport(payload);
+            const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+            downloadJSONFile(`buddybridge-backup-${stamp}.json`, json);
+            new Notice('已导出设置与聊天记录');
+        } catch (e) {
+            console.error('[BB] 导出失败:', e);
+            new Notice(`导出失败：${getErrorMessage(e)}`);
+        }
+    }
+
+    /** 弹出文件选择框 → 解析校验 → 二次确认后导入。 */
+    async importDataFromFile(): Promise<void> {
+        try {
+            const json = await pickAndReadJSONFile();
+            if (!json) return;
+            const payload = parseExport(json);
+            if (!payload) {
+                new Notice('导入失败：文件格式不正确，或导出版本与本插件不兼容');
+                return;
+            }
+            new ConfirmModal(
+                this.app,
+                `导入将覆盖当前设置与 ${payload.conversations.length} 条聊天记录，是否继续？`,
+                async () => {
+                    await this.importData(payload);
+                    new Notice('导入成功');
+                }
+            ).open();
+        } catch (e) {
+            console.error('[BB] 导入失败:', e);
+            new Notice(`导入失败：${getErrorMessage(e)}`);
+        }
+    }
+
+    /** 应用已校验的导出数据：覆盖设置与聊天记录，并刷新 API 与聊天视图。 */
+    async importData(payload: BuddyBridgeExport): Promise<void> {
+        const data = normalizePersistedData(await this.loadData());
+        data.settings = payload.settings;
+        data.conversations = payload.conversations;
+        await this.saveData(data);
+
+        this.settings = migrateSettings(payload.settings);
+        this.api.setCodebuddyPath(this.settings.codebuddyPath);
+        this.api.setNodePath(this.settings.nodePath);
+        this.api.setTimeoutMs(this.settings.timeoutSeconds * 1000);
+        this.applyPrimaryColor();
+
+        if (this.chatView) {
+            await this.chatView.loadConversations(payload.conversations);
+        }
     }
 
     applyPrimaryColor() {

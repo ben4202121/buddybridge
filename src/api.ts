@@ -114,7 +114,9 @@ export function findNodeExecutable(): string | null {
 // ===== CodeBuddy CLI 路径查找 =====
 
 export function resolveCodebuddyPath(customPath: string): string {
-    if (customPath && fs.existsSync(customPath)) {
+    if (customPath) {
+        // 用户显式配置的路径优先；即使不存在也按原样返回，
+        // 让 spawn 产出明确的 ENOENT 错误卡（而不是静默回退自动检测）。
         return customPath;
     }
     if (process.env.CODEBUDDY_PATH && fs.existsSync(process.env.CODEBUDDY_PATH)) {
@@ -312,6 +314,14 @@ export function isWindowsWrapper(scriptPath: string): boolean {
     return scriptPath.endsWith('.cmd') || scriptPath.endsWith('.exe') || scriptPath.endsWith('.bat');
 }
 
+/**
+ * 判断文本块是否为 CLI 启动横幅行（用于真实回复出现前的启动噪音过滤）。
+ * 采用「整行开头匹配」，避免把正文里出现的关键词（如"工作目录""已确认"）误吞。
+ */
+export function isStartupBanner(text: string): boolean {
+    return /^(Working directory|file operation|file rules|Standing by|Awaiting|Confirmed|Vault path|待命中|文件操作|已锁定|已确认|工作目录)/i.test(text.trim());
+}
+
 export function isBareFallback(scriptPath: string): boolean {
     // 兜底值 'codebuddy' 不是真实文件路径，让 OS 在 PATH 里找
     return scriptPath === 'codebuddy' || !path.isAbsolute(scriptPath);
@@ -321,9 +331,27 @@ export function needsWindowsShell(scriptPath: string): boolean {
     return process.platform === 'win32' && (scriptPath.endsWith('.cmd') || scriptPath.endsWith('.bat'));
 }
 
+/**
+ * 对进入 cmd.exe 的单个命令行参数做转义（P0.2 shell 安全）。
+ * 仅在 .cmd/.bat 分支（shell:true）使用；.exe 分支 shell:false，零 shell 风险，不经过此函数。
+ *
+ * 策略：
+ * 1. 参数整体用双引号包裹，使空格、中文、换行成为单个参数；
+ * 2. 对 cmd.exe 会解释的特殊字符在前面加 `^` 转义，双引号内这些字符按字面处理。
+ *
+ * 特殊字符集合（与开发计划一致，另含 cmd 括号/百分号以稳妥）：
+ * `& | > < ^ " ( ) % !`
+ */
+export function escapeCmdArg(text: string): string {
+    if (text === '') return '""';
+    const escaped = text.replace(/([&|><^"()%!])/g, '^$1');
+    return `"${escaped}"`;
+}
+
 export class BuddyBridgeAPI {
     private timeout: number;
     private scriptPath: string;
+    private nodePath = '';
     private currentProc: ReturnType<typeof spawn> | null = null;
 
     constructor(timeout: number = TIMEOUT) {
@@ -333,6 +361,26 @@ export class BuddyBridgeAPI {
 
     setCodebuddyPath(p: string): void {
         this.scriptPath = resolveCodebuddyPath(p);
+    }
+
+    /** 手动指定 Node.js 路径（设置项 nodePath）；留空则自动检测。 */
+    setNodePath(p: string): void {
+        this.nodePath = p || '';
+    }
+
+    getNodePath(): string {
+        return this.nodePath;
+    }
+
+    /** 设置请求超时时长（毫秒）。由设置页 timeoutSeconds 驱动（默认 300s）。 */
+    setTimeoutMs(ms: number): void {
+        if (typeof ms === 'number' && ms > 0) {
+            this.timeout = ms;
+        }
+    }
+
+    getTimeoutMs(): number {
+        return this.timeout;
     }
 
     generateId(): string {
@@ -346,7 +394,7 @@ export class BuddyBridgeAPI {
     async *sendMessage(sessionId: string, text: string, vaultPath?: string): AsyncGenerator<StreamChunk> {
         const scriptPath = this.scriptPath;
         const procOptions: SpawnOptions = {
-            timeout: this.timeout,
+            // 不再使用 spawn 的 timeout（P0.3）：改为插件侧计时，超时产出明确错误卡
             stdio: ['ignore', 'pipe', 'pipe'],
         };
         if (vaultPath) {
@@ -354,25 +402,49 @@ export class BuddyBridgeAPI {
         }
 
         // --print --output-format stream-json: 结构化流式输出
-        const cliArgs = ['--print', '--output-format', 'stream-json', '--session-id', sessionId, text];
+        let cliArgs = ['--print', '--output-format', 'stream-json', '--session-id', sessionId, text];
 
         // Node 18+ Windows 下 spawn .cmd/.bat 需要 shell: true
         if (needsWindowsShell(scriptPath)) {
             procOptions.shell = true;
+            // P0.2 shell 安全：进入 cmd.exe 的用户输入必须转义，防止 & | > < ^ " 被解释为命令
+            // 其余参数（--print 等）为插件常量，无需转义
+            cliArgs = [...cliArgs.slice(0, -1), escapeCmdArg(text)];
         }
 
         // 根据实际路径类型选择启动方式：
         // - .cmd/.exe/.bat → 直接 spawn（Windows 可执行/包装脚本）
         // - 兜底 'codebuddy' → 直接 spawn（让 OS 在 PATH 中查找）
         // - 纯脚本文件（无扩展名或 .js）→ spawn via node
-        let proc;
+        let proc: ReturnType<typeof spawn>;
         if (isWindowsWrapper(scriptPath) || isBareFallback(scriptPath)) {
             proc = spawn(scriptPath, cliArgs, procOptions);
         } else {
-            const nodeBin = findNodeExecutable() || 'node';
+            // 裸脚本启动：手动指定 nodePath 优先，其次自动检测
+            const nodeBin = this.nodePath || findNodeExecutable() || 'node';
             proc = spawn(nodeBin, [scriptPath, ...cliArgs], procOptions);
         }
         this.currentProc = proc;
+
+        // P0.3 插件侧计时：超时主动产出明确错误卡（不再依赖 spawn 的静默 timeout kill）
+        let timedOut = false;
+        const timeoutSeconds = Math.max(1, Math.round(this.timeout / 1000));
+        const timer = setTimeout(() => {
+            if (closed) return;
+            timedOut = true;
+            try { proc.kill(); } catch { /* ignore */ }
+            const errChunk: StreamChunk = {
+                type: 'error',
+                content: `请求超时（已等待 ${timeoutSeconds} 秒），请检查 CodeBuddy CLI 是否正常运行或尝试重试`,
+            };
+            if (resolveQueue) {
+                resolveQueue({ value: errChunk, done: false });
+                resolveQueue = null;
+            } else {
+                chunkQueue.push(errChunk);
+            }
+        }, this.timeout);
+        timer.unref?.();
 
         let buffer = '';
         let errOut = '';
@@ -409,19 +481,31 @@ export class BuddyBridgeAPI {
         proc.on('close', (code, signal) => {
             console.log('[BB] exit:', code, signal ? 'signal:' + signal : '', '| err:', errOut.substring(0, 200));
             this.currentProc = null;
+            clearTimeout(timer);
             closed = true;
             if (resolveQueue) {
-                if (errOut && !hasOutput) {
-                    resolveQueue({ value: { type: 'error', content: errOut }, done: true });
+                // P0.5 退出码与错误分类（三档场景）：
+                // - 非零退出码 + stdout 有内容 → 正常收尾（stderr 仅记录日志）
+                // - 非零退出码 + stdout 为空 → 致命错误卡
+                // - 零退出码（可能仅有良性 stderr 警告）→ 正常结束
+                let result: IteratorResult<StreamChunk>;
+                if (hasOutput) {
+                    result = { value: { type: 'done', content: '' }, done: true };
+                } else if (code !== 0) {
+                    const detail = errOut.trim()
+                        || `进程异常退出（退出码 ${code}${signal ? `, 信号 ${signal}` : ''}），请检查 CodeBuddy CLI 是否正常运行`;
+                    result = { value: { type: 'error', content: detail }, done: true };
                 } else {
-                    resolveQueue({ value: { type: 'done', content: '' }, done: true });
+                    result = { value: { type: 'done', content: '' }, done: true };
                 }
+                resolveQueue(result);
                 resolveQueue = null;
             }
         });
 
         proc.on('error', (e) => {
             console.log('[BB] spawn err:', e.message, '| scriptPath:', scriptPath);
+            clearTimeout(timer);
             closed = true;
             if (resolveQueue) {
                 let hint = e.message;
@@ -446,6 +530,11 @@ export class BuddyBridgeAPI {
                     continue;
                 }
             }
+            // P0.3：超时错误卡已产出（或已入队），退出流式
+            if (timedOut) {
+                clearTimeout(timer);
+                break;
+            }
             if (closed) {
                 if (buffer.trim()) {
                     const chunk = parseStreamLine(buffer);
@@ -462,6 +551,7 @@ export class BuddyBridgeAPI {
             }
             yield next.value;
         }
+        clearTimeout(timer);
     }
 
     cancel(): void {
