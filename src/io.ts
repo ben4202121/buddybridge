@@ -100,7 +100,7 @@ export function downloadJSONFile(filename: string, content: string): void {
     a.href = url;
     a.download = filename;
     // 挂到文档再点击：Electron 下未挂载的锚点点击可能静默失败
-    a.style.display = 'none';
+    a.classList.add('buddybridge-helper-hidden');
     document.body.appendChild(a);
     a.click();
     if (a.parentElement) a.remove();
@@ -168,7 +168,7 @@ function pickJSONViaDomInput(): Promise<string> {
         const input = document.createElement('input');
         input.type = 'file';
         input.accept = '.json,application/json';
-        input.style.display = 'none';
+        input.classList.add('buddybridge-helper-hidden');
         document.body.appendChild(input);
 
         let safetyTimer = 0;

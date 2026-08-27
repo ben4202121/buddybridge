@@ -1717,7 +1717,7 @@ function downloadJSONFile(filename, content) {
   const a = document.createElement("a");
   a.href = url;
   a.download = filename;
-  a.style.display = "none";
+  a.classList.add("buddybridge-helper-hidden");
   document.body.appendChild(a);
   a.click();
   if (a.parentElement)
@@ -1772,7 +1772,7 @@ function pickJSONViaDomInput() {
     const input = document.createElement("input");
     input.type = "file";
     input.accept = ".json,application/json";
-    input.style.display = "none";
+    input.classList.add("buddybridge-helper-hidden");
     document.body.appendChild(input);
     let safetyTimer = 0;
     const cleanup = () => {

@@ -732,6 +732,8 @@
 
 /* ==================== 不可见辅助类 ==================== */
 .buddybridge-chat-container .buddybridge-hidden { display: none; }
+/* 桌面端辅助元素（下载锚点 / 文件选择 input）：需保留在 DOM 中可编程点击，仅不可见（无作用域，挂于 body） */
+.buddybridge-helper-hidden { display: none; }
 
 /* ==================== Reduced motion ==================== */
 @media (prefers-reduced-motion: reduce) {
