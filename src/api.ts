@@ -324,7 +324,9 @@ export function isStartupBanner(text: string): boolean {
 
 export function isBareFallback(scriptPath: string): boolean {
     // 兜底值 'codebuddy' 不是真实文件路径，让 OS 在 PATH 里找
-    return scriptPath === 'codebuddy' || !path.isAbsolute(scriptPath);
+    // 同时认 posix(/x/y) 与 win32(C:\x\y) 绝对路径：CLI 桥接目标是 Windows，
+    // 即使宿主在非 Windows 上也可能收到 C:\ 风格路径，应视为绝对路径而非裸命令。
+    return scriptPath === 'codebuddy' || !(path.posix.isAbsolute(scriptPath) || path.win32.isAbsolute(scriptPath));
 }
 
 export function needsWindowsShell(scriptPath: string): boolean {

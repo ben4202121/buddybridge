@@ -214,6 +214,7 @@ describe('path helpers', () => {
 describe('resolveCodebuddyPath', () => {
     const originalAppData = process.env.APPDATA;
     const originalLocalAppData = process.env.LOCALAPPDATA;
+    const originalPlatform = process.platform;
     let tempDir: string;
 
     beforeEach(() => {
@@ -224,9 +225,13 @@ describe('resolveCodebuddyPath', () => {
         process.env.APPDATA = tempDir;
         // 隔离真实安装：LOCALAPPDATA 指向不存在的目录，避免命中本机真实 WorkBuddy
         process.env.LOCALAPPDATA = path.join(tempDir, 'no-workbuddy');
+        // CI 跑在 Linux 上：固定走 win32 候选分支（APPDATA\npm\codebuddy.cmd），
+        // 与 needsWindowsShell 测试同样的 platform mock 模式。
+        Object.defineProperty(process, 'platform', { value: 'win32' });
     });
 
     afterEach(() => {
+        Object.defineProperty(process, 'platform', { value: originalPlatform });
         process.env.APPDATA = originalAppData;
         process.env.LOCALAPPDATA = originalLocalAppData;
         fs.rmSync(tempDir, { recursive: true, force: true });
