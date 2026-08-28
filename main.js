@@ -399,7 +399,7 @@ function isStartupBanner(text) {
   return /^(Working directory|file operation|file rules|Standing by|Awaiting|Confirmed|Vault path|待命中|文件操作|已锁定|已确认|工作目录)/i.test(text.trim());
 }
 function isBareFallback(scriptPath) {
-  return scriptPath === "codebuddy" || !path.isAbsolute(scriptPath);
+  return scriptPath === "codebuddy" || !(path.posix.isAbsolute(scriptPath) || path.win32.isAbsolute(scriptPath));
 }
 function needsWindowsShell(scriptPath) {
   return process.platform === "win32" && (scriptPath.endsWith(".cmd") || scriptPath.endsWith(".bat"));
