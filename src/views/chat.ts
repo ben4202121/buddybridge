@@ -54,6 +54,11 @@ export class BuddyBridgeChatView extends ItemView {
     private loadDataCallback: () => Promise<Conversation[]>;
     /** 会话内已注入的上下文签名（去重用，内存态；面板重开时重置为重新注入一次） */
     private contextStates = new Map<string, PromptContextState>();
+    /**
+     * 当前活动笔记路径（last active file）。由 active-leaf-change 事件维护；
+     * 不直接调 getActiveFile()——焦点在聊天面板（ItemView 无文件）时它返回不可靠。
+     */
+    private currentFilePath: string | null = null;
 
     private get vaultPath(): string | undefined {
         const adapter = this.app.vault.adapter as { basePath?: string };
@@ -79,7 +84,7 @@ export class BuddyBridgeChatView extends ItemView {
         const noteLink = settings?.noteLinkInjection !== false;
         const vaultCtx = !!settings?.vaultContextInjection;
         const current: PromptContextState = {
-            notePath: noteLink ? (this.app.workspace.getActiveFile()?.path ?? null) : null,
+            notePath: noteLink ? (this.currentFilePath ?? null) : null,
             vaultPath: vaultCtx ? (this.vaultPath ?? null) : null,
         };
         const prev = this.contextStates.get(convId) ?? null;
@@ -133,9 +138,11 @@ export class BuddyBridgeChatView extends ItemView {
 
         // 当前文件指示器
         this.currentFileBar = container.createDiv({ cls: 'buddybridge-current-file' });
+        this.currentFilePath = this.app.workspace.getActiveFile()?.path ?? null;
         this.updateCurrentFileBar();
         this.registerEvent(
             this.app.workspace.on('active-leaf-change', () => {
+                this.currentFilePath = this.app.workspace.getActiveFile()?.path ?? null;
                 this.updateCurrentFileBar();
             })
         );
@@ -161,8 +168,8 @@ export class BuddyBridgeChatView extends ItemView {
             attr: { 'aria-label': '发送' }
         });
         this.sendBtn.onclick = () => {
-            const conv = this.manager.getActive();
-            if (conv && this.streamingConversations.has(conv.id)) {
+            // 正在流式（不论哪个会话）→ 停止；否则发送
+            if (this.streamingMsgId !== null) {
                 this.stopStreaming();
             } else {
                 this.sendMessage();
@@ -707,7 +714,18 @@ export class BuddyBridgeChatView extends ItemView {
         if (text.startsWith('/')) {
             const cmd = text.split(' ')[0].toLowerCase();
             if (cmd === '/clear') {
-                this.createNewChat();
+                // /clear 语义：清除当前对话（保留对话本身，不新建标签）；
+                // 无活动对话时才按新建处理（带会话上限守卫）
+                const active = this.manager.getActive();
+                if (active) {
+                    this.manager.clearConversation(active.id);
+                    // 去重 state 也清掉：新 session 首条消息强制重新注入当前上下文
+                    this.contextStates.delete(active.id);
+                    this.renderTabs();
+                    await this.renderMessages();
+                } else {
+                    await this.createNewChat();
+                }
                 return;
             }
             // 其他命令透传给 CLI
@@ -763,6 +781,8 @@ export class BuddyBridgeChatView extends ItemView {
             }
 
             for await (const chunk of this.api.sendMessage(conv.sessionId, contextText, this.vaultPath)) {
+                // 停止即时生效：点停止后不再渲染后续缓冲 chunk
+                if (this.stopRequested) break;
                 const bubble = streamingBubble;
 
                 // 仅在尚未产出任何真实内容时，过滤 CLI 启动横幅；
@@ -842,9 +862,8 @@ export class BuddyBridgeChatView extends ItemView {
     }
 
     private updateCurrentFileBar() {
-        const file = this.app.workspace.getActiveFile();
-        if (file) {
-            this.currentFileBar.setText(`📄 ${file.path}`);
+        if (this.currentFilePath) {
+            this.currentFileBar.setText(`📄 ${this.currentFilePath}`);
         } else {
             this.currentFileBar.setText('');
         }

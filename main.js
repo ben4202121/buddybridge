@@ -412,6 +412,10 @@ function escapeCmdArg(text) {
 }
 var BuddyBridgeAPI = class {
   constructor(timeout = TIMEOUT) {
+    /** 当前流式请求是否被取消（停止按钮）；UI 层单流式，一次只跑一个请求 */
+    this.cancelled = false;
+    /** 生成器主循环挂起时的唤醒器（cancel() 通过它让流立即结束） */
+    this.pendingResolve = null;
     this.nodePath = "";
     this.currentProc = null;
     this.timeout = timeout;
@@ -445,6 +449,8 @@ var BuddyBridgeAPI = class {
   }
   async *sendMessage(sessionId, text, vaultPath) {
     var _a, _b;
+    this.cancelled = false;
+    this.pendingResolve = null;
     const scriptPath = this.scriptPath;
     const procOptions = {
       // 不再使用 spawn 的 timeout（P0.3）：改为插件侧计时，超时产出明确错误卡
@@ -480,9 +486,9 @@ var BuddyBridgeAPI = class {
         type: "error",
         content: `\u8BF7\u6C42\u8D85\u65F6\uFF08\u5DF2\u7B49\u5F85 ${timeoutSeconds} \u79D2\uFF09\uFF0C\u8BF7\u68C0\u67E5 CodeBuddy CLI \u662F\u5426\u6B63\u5E38\u8FD0\u884C\u6216\u5C1D\u8BD5\u91CD\u8BD5`
       };
-      if (resolveQueue) {
-        resolveQueue({ value: errChunk, done: false });
-        resolveQueue = null;
+      if (this.pendingResolve) {
+        this.pendingResolve({ value: errChunk, done: false });
+        this.pendingResolve = null;
       } else {
         chunkQueue.push(errChunk);
       }
@@ -492,7 +498,6 @@ var BuddyBridgeAPI = class {
     let errOut = "";
     let hasOutput = false;
     const chunkQueue = [];
-    let resolveQueue = null;
     let closed = false;
     proc.stdout.on("data", (d) => {
       buffer += d.toString();
@@ -504,9 +509,9 @@ var BuddyBridgeAPI = class {
           hasOutput = true;
           const preview = typeof chunk.content === "string" ? chunk.content.substring(0, 80) : JSON.stringify(chunk.content).substring(0, 80);
           console.log("[BB] chunk:", chunk.type, preview);
-          if (resolveQueue) {
-            resolveQueue({ value: chunk, done: false });
-            resolveQueue = null;
+          if (this.pendingResolve) {
+            this.pendingResolve({ value: chunk, done: false });
+            this.pendingResolve = null;
           } else {
             chunkQueue.push(chunk);
           }
@@ -522,7 +527,7 @@ var BuddyBridgeAPI = class {
       this.currentProc = null;
       clearTimeout(timer);
       closed = true;
-      if (resolveQueue) {
+      if (this.pendingResolve) {
         let result;
         if (hasOutput) {
           result = { value: { type: "done", content: "" }, done: true };
@@ -532,15 +537,15 @@ var BuddyBridgeAPI = class {
         } else {
           result = { value: { type: "done", content: "" }, done: true };
         }
-        resolveQueue(result);
-        resolveQueue = null;
+        this.pendingResolve(result);
+        this.pendingResolve = null;
       }
     });
     proc.on("error", (e) => {
       console.log("[BB] spawn err:", e.message, "| scriptPath:", scriptPath);
       clearTimeout(timer);
       closed = true;
-      if (resolveQueue) {
+      if (this.pendingResolve) {
         let hint = e.message;
         if (e.message.includes("ENOENT")) {
           if (scriptPath === "codebuddy") {
@@ -549,11 +554,13 @@ var BuddyBridgeAPI = class {
             hint = `\u627E\u4E0D\u5230 Node.js \u6765\u8FD0\u884C codebuddy (\u8DEF\u5F84: ${scriptPath})\u3002\u8BF7\u786E\u8BA4\u5DF2\u5B89\u88C5 Node.js\u3002`;
           }
         }
-        resolveQueue({ value: { type: "error", content: hint }, done: true });
-        resolveQueue = null;
+        this.pendingResolve({ value: { type: "error", content: hint }, done: true });
+        this.pendingResolve = null;
       }
     });
     while (true) {
+      if (this.cancelled)
+        break;
       if (chunkQueue.length > 0) {
         const nextChunk = chunkQueue.shift();
         if (nextChunk) {
@@ -574,7 +581,7 @@ var BuddyBridgeAPI = class {
         break;
       }
       const next = await new Promise((r) => {
-        resolveQueue = r;
+        this.pendingResolve = r;
       });
       if (next.done) {
         if (((_b = next.value) == null ? void 0 : _b.type) === "error")
@@ -586,9 +593,18 @@ var BuddyBridgeAPI = class {
     clearTimeout(timer);
   }
   cancel() {
+    this.cancelled = true;
+    if (this.pendingResolve) {
+      this.pendingResolve({ value: { type: "done", content: "" }, done: true });
+      this.pendingResolve = null;
+    }
     if (this.currentProc) {
       try {
-        this.currentProc.kill();
+        if (process.platform === "win32" && this.currentProc.pid) {
+          (0, import_child_process.spawn)("taskkill", ["/pid", String(this.currentProc.pid), "/T", "/F"]);
+        } else {
+          this.currentProc.kill();
+        }
         console.log("[BB] \u5DF2\u7EC8\u6B62 CLI \u8FDB\u7A0B");
       } catch (e) {
         console.error("[BB] \u7EC8\u6B62\u8FDB\u7A0B\u5931\u8D25:", e);
@@ -683,6 +699,19 @@ var ConversationManager = class {
       this.persist().catch((err) => this.handlePersistError(err));
     }
     return removed;
+  }
+  /** 清除指定对话的所有消息并重置标题（/clear 语义：清当前对话，不新建）。
+   * 同时重置 sessionId —— CLI 侧会话历史彻底作废，下一条消息换新 session 全新开始。 */
+  clearConversation(convId) {
+    const conv = this.conversations.get(convId);
+    if (!conv)
+      return false;
+    conv.messages = [];
+    conv.title = "\u65B0\u5BF9\u8BDD";
+    conv.sessionId = "";
+    conv.updatedAt = Date.now();
+    this.persist().catch((err) => this.handlePersistError(err));
+    return true;
   }
   /** 删除对话 */
   deleteConversation(id) {
@@ -846,6 +875,11 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
     this.fileIndexBuiltAt = 0;
     /** 会话内已注入的上下文签名（去重用，内存态；面板重开时重置为重新注入一次） */
     this.contextStates = /* @__PURE__ */ new Map();
+    /**
+     * 当前活动笔记路径（last active file）。由 active-leaf-change 事件维护；
+     * 不直接调 getActiveFile()——焦点在聊天面板（ItemView 无文件）时它返回不可靠。
+     */
+    this.currentFilePath = null;
     this.api = api;
     this.loadDataCallback = loadDataCallback;
     this.manager = new ConversationManager();
@@ -871,15 +905,15 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
    * 避免 CLI 历史里堆叠 N 行 `[系统注入·当前笔记: ...]` 导致 agent 误判。
    */
   buildContextText(convId, text) {
-    var _a, _b, _c, _d;
+    var _a, _b, _c;
     const settings = this.pluginSettings;
     const noteLink = (settings == null ? void 0 : settings.noteLinkInjection) !== false;
     const vaultCtx = !!(settings == null ? void 0 : settings.vaultContextInjection);
     const current = {
-      notePath: noteLink ? (_b = (_a = this.app.workspace.getActiveFile()) == null ? void 0 : _a.path) != null ? _b : null : null,
-      vaultPath: vaultCtx ? (_c = this.vaultPath) != null ? _c : null : null
+      notePath: noteLink ? (_a = this.currentFilePath) != null ? _a : null : null,
+      vaultPath: vaultCtx ? (_b = this.vaultPath) != null ? _b : null : null
     };
-    const prev = (_d = this.contextStates.get(convId)) != null ? _d : null;
+    const prev = (_c = this.contextStates.get(convId)) != null ? _c : null;
     const { text: out, state } = buildDedupedPrompt(prev, current, text, {
       noteLinkInjection: noteLink,
       vaultContextInjection: vaultCtx
@@ -900,7 +934,7 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
     return this.manager;
   }
   async onOpen() {
-    var _a, _b, _c, _d, _e;
+    var _a, _b, _c, _d, _e, _f, _g;
     const container = this.contentEl;
     container.empty();
     container.addClass("buddybridge-chat-container");
@@ -921,9 +955,12 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
     (0, import_obsidian.setIcon)(newBtn, "plus");
     newBtn.onclick = () => this.createNewChat();
     this.currentFileBar = container.createDiv({ cls: "buddybridge-current-file" });
+    this.currentFilePath = (_d = (_c = this.app.workspace.getActiveFile()) == null ? void 0 : _c.path) != null ? _d : null;
     this.updateCurrentFileBar();
     this.registerEvent(
       this.app.workspace.on("active-leaf-change", () => {
+        var _a2, _b2;
+        this.currentFilePath = (_b2 = (_a2 = this.app.workspace.getActiveFile()) == null ? void 0 : _a2.path) != null ? _b2 : null;
         this.updateCurrentFileBar();
       })
     );
@@ -944,16 +981,15 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
       attr: { "aria-label": "\u53D1\u9001" }
     });
     this.sendBtn.onclick = () => {
-      const conv = this.manager.getActive();
-      if (conv && this.streamingConversations.has(conv.id)) {
+      if (this.streamingMsgId !== null) {
         this.stopStreaming();
       } else {
         this.sendMessage();
       }
     };
     try {
-      const plugin = (_d = (_c = this.app.plugins) == null ? void 0 : _c.plugins) == null ? void 0 : _d["buddybridge"];
-      if ((_e = plugin == null ? void 0 : plugin.settings) == null ? void 0 : _e.maxConversations) {
+      const plugin = (_f = (_e = this.app.plugins) == null ? void 0 : _e.plugins) == null ? void 0 : _f["buddybridge"];
+      if ((_g = plugin == null ? void 0 : plugin.settings) == null ? void 0 : _g.maxConversations) {
         this.manager.setMaxConversations(plugin.settings.maxConversations);
       }
     } catch (e) {
@@ -1433,7 +1469,15 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
     if (text.startsWith("/")) {
       const cmd = text.split(" ")[0].toLowerCase();
       if (cmd === "/clear") {
-        this.createNewChat();
+        const active = this.manager.getActive();
+        if (active) {
+          this.manager.clearConversation(active.id);
+          this.contextStates.delete(active.id);
+          this.renderTabs();
+          await this.renderMessages();
+        } else {
+          await this.createNewChat();
+        }
         return;
       }
     }
@@ -1473,6 +1517,8 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
         throw new Error("\u627E\u4E0D\u5230 Assistant \u6D88\u606F\u6C14\u6CE1");
       }
       for await (const chunk of this.api.sendMessage(conv.sessionId, contextText, this.vaultPath)) {
+        if (this.stopRequested)
+          break;
         const bubble = streamingBubble;
         const hasRealContent = textContent.length > 0 || thinkingContent.length > 0 || parts.length > 0;
         if (chunk.type === "text" && !hasRealContent && isStartupBanner(chunk.content)) {
@@ -1539,9 +1585,8 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
     }
   }
   updateCurrentFileBar() {
-    const file = this.app.workspace.getActiveFile();
-    if (file) {
-      this.currentFileBar.setText(`\u{1F4C4} ${file.path}`);
+    if (this.currentFilePath) {
+      this.currentFileBar.setText(`\u{1F4C4} ${this.currentFilePath}`);
     } else {
       this.currentFileBar.setText("");
     }

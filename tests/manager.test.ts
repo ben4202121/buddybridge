@@ -85,6 +85,19 @@ describe('ConversationManager', () => {
         expect(manager.updateMessageParts(conv.id, 'missing', parts)).toBe(false);
     });
 
+    it('clears a conversation messages, resets title and sessionId (/clear)', async () => {
+        const conv = manager.createConversation('旧标题');
+        manager.addMessage(conv.id, 'user', 'hello');
+        manager.addMessage(conv.id, 'assistant', 'hi');
+        manager.setSessionId(conv.id, 'session-old');
+        expect(manager.clearConversation(conv.id)).toBe(true);
+        const c = manager.getActive();
+        expect(c?.messages).toHaveLength(0);
+        expect(c?.title).toBe('新对话');
+        expect(c?.sessionId).toBe(''); // CLI 侧历史作废，下条消息换新 session
+        expect(manager.clearConversation('missing')).toBe(false);
+    });
+
     it('deletes a conversation and activates another', () => {
         const a = manager.createConversation('A');
         const b = manager.createConversation('B');

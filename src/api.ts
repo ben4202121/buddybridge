@@ -350,6 +350,10 @@ export function escapeCmdArg(text: string): string {
 
 export class BuddyBridgeAPI {
     private timeout: number;
+    /** 当前流式请求是否被取消（停止按钮）；UI 层单流式，一次只跑一个请求 */
+    private cancelled = false;
+    /** 生成器主循环挂起时的唤醒器（cancel() 通过它让流立即结束） */
+    private pendingResolve: ((r: IteratorResult<StreamChunk>) => void) | null = null;
     private scriptPath: string;
     private nodePath = '';
     private currentProc: ReturnType<typeof spawn> | null = null;
@@ -392,6 +396,8 @@ export class BuddyBridgeAPI {
     }
 
     async *sendMessage(sessionId: string, text: string, vaultPath?: string): AsyncGenerator<StreamChunk> {
+        this.cancelled = false;
+        this.pendingResolve = null;
         const scriptPath = this.scriptPath;
         const procOptions: SpawnOptions = {
             // 不再使用 spawn 的 timeout（P0.3）：改为插件侧计时，超时产出明确错误卡
@@ -437,9 +443,9 @@ export class BuddyBridgeAPI {
                 type: 'error',
                 content: `请求超时（已等待 ${timeoutSeconds} 秒），请检查 CodeBuddy CLI 是否正常运行或尝试重试`,
             };
-            if (resolveQueue) {
-                resolveQueue({ value: errChunk, done: false });
-                resolveQueue = null;
+            if (this.pendingResolve) {
+                this.pendingResolve({ value: errChunk, done: false });
+                this.pendingResolve = null;
             } else {
                 chunkQueue.push(errChunk);
             }
@@ -450,7 +456,6 @@ export class BuddyBridgeAPI {
         let errOut = '';
         let hasOutput = false;
         const chunkQueue: StreamChunk[] = [];
-        let resolveQueue: ((r: IteratorResult<StreamChunk>) => void) | null = null;
         let closed = false;
 
         proc.stdout.on('data', (d: Buffer) => {
@@ -463,9 +468,9 @@ export class BuddyBridgeAPI {
                     hasOutput = true;
                     const preview = typeof chunk.content === 'string' ? chunk.content.substring(0, 80) : JSON.stringify(chunk.content).substring(0, 80);
                     console.log('[BB] chunk:', chunk.type, preview);
-                    if (resolveQueue) {
-                        resolveQueue({ value: chunk, done: false });
-                        resolveQueue = null;
+                    if (this.pendingResolve) {
+                        this.pendingResolve({ value: chunk, done: false });
+                        this.pendingResolve = null;
                     } else {
                         chunkQueue.push(chunk);
                     }
@@ -483,7 +488,7 @@ export class BuddyBridgeAPI {
             this.currentProc = null;
             clearTimeout(timer);
             closed = true;
-            if (resolveQueue) {
+            if (this.pendingResolve) {
                 // P0.5 退出码与错误分类（三档场景）：
                 // - 非零退出码 + stdout 有内容 → 正常收尾（stderr 仅记录日志）
                 // - 非零退出码 + stdout 为空 → 致命错误卡
@@ -498,8 +503,8 @@ export class BuddyBridgeAPI {
                 } else {
                     result = { value: { type: 'done', content: '' }, done: true };
                 }
-                resolveQueue(result);
-                resolveQueue = null;
+                this.pendingResolve(result);
+                this.pendingResolve = null;
             }
         });
 
@@ -507,7 +512,7 @@ export class BuddyBridgeAPI {
             console.log('[BB] spawn err:', e.message, '| scriptPath:', scriptPath);
             clearTimeout(timer);
             closed = true;
-            if (resolveQueue) {
+            if (this.pendingResolve) {
                 let hint = e.message;
                 if (e.message.includes('ENOENT')) {
                     if (scriptPath === 'codebuddy') {
@@ -516,13 +521,15 @@ export class BuddyBridgeAPI {
                         hint = `找不到 Node.js 来运行 codebuddy (路径: ${scriptPath})。请确认已安装 Node.js。`;
                     }
                 }
-                resolveQueue({ value: { type: 'error', content: hint }, done: true });
-                resolveQueue = null;
+                this.pendingResolve({ value: { type: 'error', content: hint }, done: true });
+                this.pendingResolve = null;
             }
         });
 
         // 主循环
         while (true) {
+            // 停止即时生效：cancel() 唤醒等待后这里立刻退出（不等进程真正结束）
+            if (this.cancelled) break;
             if (chunkQueue.length > 0) {
                 const nextChunk = chunkQueue.shift();
                 if (nextChunk) {
@@ -543,7 +550,7 @@ export class BuddyBridgeAPI {
                 break;
             }
             const next = await new Promise<IteratorResult<StreamChunk>>((r) => {
-                resolveQueue = r;
+                this.pendingResolve = r;
             });
             if (next.done) {
                 if (next.value?.type === 'error') throw new Error(next.value.content);
@@ -555,9 +562,20 @@ export class BuddyBridgeAPI {
     }
 
     cancel(): void {
+        this.cancelled = true;
+        // 唤醒挂起的主循环等待，让生成器立即结束（不等进程真正退出）
+        if (this.pendingResolve) {
+            this.pendingResolve({ value: { type: 'done', content: '' }, done: true });
+            this.pendingResolve = null;
+        }
         if (this.currentProc) {
             try {
-                this.currentProc.kill();
+                if (process.platform === 'win32' && this.currentProc.pid) {
+                    // Windows 上 kill() 对 .cmd/.exe wrapper 常杀不干净（子树仍持有 stdout 管道）
+                    spawn('taskkill', ['/pid', String(this.currentProc.pid), '/T', '/F']);
+                } else {
+                    this.currentProc.kill();
+                }
                 console.log('[BB] 已终止 CLI 进程');
             } catch (e) {
                 console.error('[BB] 终止进程失败:', e);

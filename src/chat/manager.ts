@@ -92,6 +92,19 @@ export class ConversationManager {
         return removed;
     }
 
+    /** 清除指定对话的所有消息并重置标题（/clear 语义：清当前对话，不新建）。
+     * 同时重置 sessionId —— CLI 侧会话历史彻底作废，下一条消息换新 session 全新开始。 */
+    clearConversation(convId: string): boolean {
+        const conv = this.conversations.get(convId);
+        if (!conv) return false;
+        conv.messages = [];
+        conv.title = '新对话';
+        conv.sessionId = '';
+        conv.updatedAt = Date.now();
+        this.persist().catch((err) => this.handlePersistError(err));
+        return true;
+    }
+
     /** 删除对话 */
     deleteConversation(id: string): boolean {
         if (!this.conversations.has(id)) return false;
