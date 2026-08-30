@@ -19,6 +19,41 @@ describe('ConversationManager', () => {
         expect(manager.getActive()?.id).toBe(conv.id);
     });
 
+    it('getConversation returns by id, null when missing', () => {
+        const conv = manager.createConversation();
+        expect(manager.getConversation(conv.id)?.id).toBe(conv.id);
+        expect(manager.getConversation('nope')).toBeNull();
+    });
+
+    it('replaceMessages replaces history and deep-copies parts', () => {
+        const conv = manager.createConversation();
+        const msgs = [
+            { id: 'u1', role: 'user' as const, content: 'hi', timestamp: 1 },
+            { id: 'a1', role: 'assistant' as const, content: '', timestamp: 2, parts: [{ kind: 'thinking' as const, content: 'x' }] }
+        ];
+        expect(manager.replaceMessages(conv.id, msgs)).toBe(true);
+        const stored = manager.getConversation(conv.id);
+        expect(stored?.messages).toHaveLength(2);
+        // 深拷贝 parts：修改新数组不影响原数据
+        stored!.messages[1].parts![0].content = 'changed';
+        expect(msgs[1].parts![0].content).toBe('x');
+        // 不存在的会话返回 false
+        expect(manager.replaceMessages('nope', msgs)).toBe(false);
+    });
+
+    it('replaceMessages does not lower updatedAt (fork stays on top)', () => {
+        const a = manager.createConversation('A');
+        const b = manager.createConversation('B'); // 单调递增：b.updatedAt = a.updatedAt + 1
+        const before = manager.getConversation(b.id)!.updatedAt;
+        manager.replaceMessages(b.id, [
+            { id: 'u1', role: 'user', content: 'hi', timestamp: 1 }
+        ]);
+        const after = manager.getConversation(b.id)!.updatedAt;
+        // 旧代码回退到 Date.now() 会小于单调时间戳 → 分叉排序落到 A 后面
+        expect(after).toBeGreaterThanOrEqual(before);
+        expect(manager.getAll()[0].id).toBe(b.id);
+    });
+
     it('creates a conversation with a custom title', () => {
         const conv = manager.createConversation('custom title');
         expect(conv.title).toBe('custom title');

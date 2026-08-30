@@ -45,12 +45,15 @@ var path = __toESM(require("path"));
 var fs = __toESM(require("fs"));
 
 // src/types.ts
-var CURRENT_SETTINGS_VERSION = 7;
+var CURRENT_SETTINGS_VERSION = 8;
+var FONT_SIZE_MIN = 12;
+var FONT_SIZE_MAX = 18;
 var DATA_VERSION = 1;
 var DEFAULT_SETTINGS = {
   codebuddyPath: "",
   maxConversations: 20,
   primaryColor: "",
+  fontSize: 14,
   timeoutSeconds: 300,
   nodePath: "",
   noteLinkInjection: true,
@@ -84,6 +87,7 @@ function migrateSettings(stored) {
   }
   const maxConversations = getNumber(stored, "maxConversations");
   const primaryColor = getString(stored, "primaryColor");
+  const fontSize = getNumber(stored, "fontSize");
   const timeoutSeconds = getNumber(stored, "timeoutSeconds");
   const nodePath = getString(stored, "nodePath");
   const noteLinkInjection = typeof stored.noteLinkInjection === "boolean" ? stored.noteLinkInjection : DEFAULT_SETTINGS.noteLinkInjection;
@@ -92,6 +96,7 @@ function migrateSettings(stored) {
     codebuddyPath: (_a = getString(stored, "codebuddyPath")) != null ? _a : DEFAULT_SETTINGS.codebuddyPath,
     maxConversations: typeof maxConversations === "number" && maxConversations > 0 ? maxConversations : DEFAULT_SETTINGS.maxConversations,
     primaryColor: primaryColor != null ? primaryColor : DEFAULT_SETTINGS.primaryColor,
+    fontSize: typeof fontSize === "number" && fontSize >= FONT_SIZE_MIN && fontSize <= FONT_SIZE_MAX ? fontSize : DEFAULT_SETTINGS.fontSize,
     timeoutSeconds: typeof timeoutSeconds === "number" && timeoutSeconds > 0 ? timeoutSeconds : DEFAULT_SETTINGS.timeoutSeconds,
     nodePath: nodePath != null ? nodePath : DEFAULT_SETTINGS.nodePath,
     noteLinkInjection,
@@ -412,12 +417,13 @@ function escapeCmdArg(text) {
 }
 var BuddyBridgeAPI = class {
   constructor(timeout = TIMEOUT) {
-    /** 当前流式请求是否被取消（停止按钮）；UI 层单流式，一次只跑一个请求 */
-    this.cancelled = false;
-    /** 生成器主循环挂起时的唤醒器（cancel() 通过它让流立即结束） */
-    this.pendingResolve = null;
     this.nodePath = "";
-    this.currentProc = null;
+    /**
+     * 在途流式请求的取消句柄表：sessionId → cancel 回调。
+     * 传输层按会话并发：每个会话的流式各占一个独立进程（每条消息一个 spawn），
+     * 取消按会话定向（cancel(sessionId)），不互相踩踏。
+     */
+    this.activeStreams = /* @__PURE__ */ new Map();
     this.timeout = timeout;
     this.scriptPath = resolveCodebuddyPath("");
   }
@@ -449,8 +455,9 @@ var BuddyBridgeAPI = class {
   }
   async *sendMessage(sessionId, text, vaultPath) {
     var _a, _b;
-    this.cancelled = false;
-    this.pendingResolve = null;
+    let cancelled = false;
+    let pendingResolve = null;
+    let currentProc = null;
     const scriptPath = this.scriptPath;
     const procOptions = {
       // 不再使用 spawn 的 timeout（P0.3）：改为插件侧计时，超时产出明确错误卡
@@ -471,146 +478,164 @@ var BuddyBridgeAPI = class {
       const nodeBin = this.nodePath || findNodeExecutable() || "node";
       proc = (0, import_child_process.spawn)(nodeBin, [scriptPath, ...cliArgs], procOptions);
     }
-    this.currentProc = proc;
-    let timedOut = false;
-    const timeoutSeconds = Math.max(1, Math.round(this.timeout / 1e3));
-    const timer = setTimeout(() => {
-      if (closed)
-        return;
-      timedOut = true;
-      try {
-        proc.kill();
-      } catch (e) {
+    currentProc = proc;
+    const cancelHandler = () => {
+      cancelled = true;
+      if (pendingResolve) {
+        pendingResolve({ value: { type: "done", content: "" }, done: true });
+        pendingResolve = null;
       }
-      const errChunk = {
-        type: "error",
-        content: `\u8BF7\u6C42\u8D85\u65F6\uFF08\u5DF2\u7B49\u5F85 ${timeoutSeconds} \u79D2\uFF09\uFF0C\u8BF7\u68C0\u67E5 CodeBuddy CLI \u662F\u5426\u6B63\u5E38\u8FD0\u884C\u6216\u5C1D\u8BD5\u91CD\u8BD5`
-      };
-      if (this.pendingResolve) {
-        this.pendingResolve({ value: errChunk, done: false });
-        this.pendingResolve = null;
-      } else {
-        chunkQueue.push(errChunk);
-      }
-    }, this.timeout);
-    (_a = timer.unref) == null ? void 0 : _a.call(timer);
-    let buffer = "";
-    let errOut = "";
-    let hasOutput = false;
-    const chunkQueue = [];
-    let closed = false;
-    proc.stdout.on("data", (d) => {
-      buffer += d.toString();
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
-      for (const line of lines) {
-        const chunk = parseStreamLine(line);
-        if (chunk) {
-          hasOutput = true;
-          const preview = typeof chunk.content === "string" ? chunk.content.substring(0, 80) : JSON.stringify(chunk.content).substring(0, 80);
-          console.log("[BB] chunk:", chunk.type, preview);
-          if (this.pendingResolve) {
-            this.pendingResolve({ value: chunk, done: false });
-            this.pendingResolve = null;
+      if (currentProc) {
+        try {
+          if (process.platform === "win32" && currentProc.pid) {
+            (0, import_child_process.spawn)("taskkill", ["/pid", String(currentProc.pid), "/T", "/F"]);
           } else {
-            chunkQueue.push(chunk);
+            currentProc.kill();
           }
+          console.log("[BB] \u5DF2\u7EC8\u6B62 CLI \u8FDB\u7A0B");
+        } catch (e) {
+          console.error("[BB] \u7EC8\u6B62\u8FDB\u7A0B\u5931\u8D25:", e);
         }
+        currentProc = null;
       }
-    });
-    proc.stderr.on("data", (d) => {
-      errOut += d.toString();
-      console.log("[BB] stderr:", errOut);
-    });
-    proc.on("close", (code, signal) => {
-      console.log("[BB] exit:", code, signal ? "signal:" + signal : "", "| err:", errOut.substring(0, 200));
-      this.currentProc = null;
-      clearTimeout(timer);
-      closed = true;
-      if (this.pendingResolve) {
-        let result;
-        if (hasOutput) {
-          result = { value: { type: "done", content: "" }, done: true };
-        } else if (code !== 0) {
-          const detail = errOut.trim() || `\u8FDB\u7A0B\u5F02\u5E38\u9000\u51FA\uFF08\u9000\u51FA\u7801 ${code}${signal ? `, \u4FE1\u53F7 ${signal}` : ""}\uFF09\uFF0C\u8BF7\u68C0\u67E5 CodeBuddy CLI \u662F\u5426\u6B63\u5E38\u8FD0\u884C`;
-          result = { value: { type: "error", content: detail }, done: true };
+    };
+    this.activeStreams.set(sessionId, cancelHandler);
+    try {
+      let timedOut = false;
+      const timeoutSeconds = Math.max(1, Math.round(this.timeout / 1e3));
+      const timer = setTimeout(() => {
+        if (closed)
+          return;
+        timedOut = true;
+        try {
+          proc.kill();
+        } catch (e) {
+        }
+        const errChunk = {
+          type: "error",
+          content: `\u8BF7\u6C42\u8D85\u65F6\uFF08\u5DF2\u7B49\u5F85 ${timeoutSeconds} \u79D2\uFF09\uFF0C\u8BF7\u68C0\u67E5 CodeBuddy CLI \u662F\u5426\u6B63\u5E38\u8FD0\u884C\u6216\u5C1D\u8BD5\u91CD\u8BD5`
+        };
+        if (pendingResolve) {
+          pendingResolve({ value: errChunk, done: false });
+          pendingResolve = null;
         } else {
-          result = { value: { type: "done", content: "" }, done: true };
+          chunkQueue.push(errChunk);
         }
-        this.pendingResolve(result);
-        this.pendingResolve = null;
-      }
-    });
-    proc.on("error", (e) => {
-      console.log("[BB] spawn err:", e.message, "| scriptPath:", scriptPath);
-      clearTimeout(timer);
-      closed = true;
-      if (this.pendingResolve) {
-        let hint = e.message;
-        if (e.message.includes("ENOENT")) {
-          if (scriptPath === "codebuddy") {
-            hint = "\u627E\u4E0D\u5230 codebuddy CLI\u3002\u8BF7\u786E\u8BA4\u5DF2\u5B89\u88C5 WorkBuddy \u684C\u9762\u7248\uFF0C\u6216\u5728\u63D2\u4EF6\u8BBE\u7F6E\u4E2D\u6307\u5B9A codebuddy \u8DEF\u5F84\u3002";
-          } else if (!isWindowsWrapper(scriptPath) && !isBareFallback(scriptPath)) {
-            hint = `\u627E\u4E0D\u5230 Node.js \u6765\u8FD0\u884C codebuddy (\u8DEF\u5F84: ${scriptPath})\u3002\u8BF7\u786E\u8BA4\u5DF2\u5B89\u88C5 Node.js\u3002`;
+      }, this.timeout);
+      (_a = timer.unref) == null ? void 0 : _a.call(timer);
+      let buffer = "";
+      let errOut = "";
+      let hasOutput = false;
+      const chunkQueue = [];
+      let closed = false;
+      proc.stdout.on("data", (d) => {
+        buffer += d.toString();
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) {
+          const chunk = parseStreamLine(line);
+          if (chunk) {
+            hasOutput = true;
+            const preview = typeof chunk.content === "string" ? chunk.content.substring(0, 80) : JSON.stringify(chunk.content).substring(0, 80);
+            console.log("[BB] chunk:", chunk.type, preview);
+            if (pendingResolve) {
+              pendingResolve({ value: chunk, done: false });
+              pendingResolve = null;
+            } else {
+              chunkQueue.push(chunk);
+            }
           }
         }
-        this.pendingResolve({ value: { type: "error", content: hint }, done: true });
-        this.pendingResolve = null;
-      }
-    });
-    while (true) {
-      if (this.cancelled)
-        break;
-      if (chunkQueue.length > 0) {
-        const nextChunk = chunkQueue.shift();
-        if (nextChunk) {
-          yield nextChunk;
-          continue;
-        }
-      }
-      if (timedOut) {
-        clearTimeout(timer);
-        break;
-      }
-      if (closed) {
-        if (buffer.trim()) {
-          const chunk = parseStreamLine(buffer);
-          if (chunk)
-            yield chunk;
-        }
-        break;
-      }
-      const next = await new Promise((r) => {
-        this.pendingResolve = r;
       });
-      if (next.done) {
-        if (((_b = next.value) == null ? void 0 : _b.type) === "error")
-          throw new Error(next.value.content);
-        break;
-      }
-      yield next.value;
-    }
-    clearTimeout(timer);
-  }
-  cancel() {
-    this.cancelled = true;
-    if (this.pendingResolve) {
-      this.pendingResolve({ value: { type: "done", content: "" }, done: true });
-      this.pendingResolve = null;
-    }
-    if (this.currentProc) {
-      try {
-        if (process.platform === "win32" && this.currentProc.pid) {
-          (0, import_child_process.spawn)("taskkill", ["/pid", String(this.currentProc.pid), "/T", "/F"]);
-        } else {
-          this.currentProc.kill();
+      proc.stderr.on("data", (d) => {
+        errOut += d.toString();
+        console.log("[BB] stderr:", errOut);
+      });
+      proc.on("close", (code, signal) => {
+        console.log("[BB] exit:", code, signal ? "signal:" + signal : "", "| err:", errOut.substring(0, 200));
+        currentProc = null;
+        clearTimeout(timer);
+        closed = true;
+        if (pendingResolve) {
+          let result;
+          if (hasOutput) {
+            result = { value: { type: "done", content: "" }, done: true };
+          } else if (code !== 0) {
+            const detail = errOut.trim() || `\u8FDB\u7A0B\u5F02\u5E38\u9000\u51FA\uFF08\u9000\u51FA\u7801 ${code}${signal ? `, \u4FE1\u53F7 ${signal}` : ""}\uFF09\uFF0C\u8BF7\u68C0\u67E5 CodeBuddy CLI \u662F\u5426\u6B63\u5E38\u8FD0\u884C`;
+            result = { value: { type: "error", content: detail }, done: true };
+          } else {
+            result = { value: { type: "done", content: "" }, done: true };
+          }
+          pendingResolve(result);
+          pendingResolve = null;
         }
-        console.log("[BB] \u5DF2\u7EC8\u6B62 CLI \u8FDB\u7A0B");
-      } catch (e) {
-        console.error("[BB] \u7EC8\u6B62\u8FDB\u7A0B\u5931\u8D25:", e);
+      });
+      proc.on("error", (e) => {
+        console.log("[BB] spawn err:", e.message, "| scriptPath:", scriptPath);
+        clearTimeout(timer);
+        closed = true;
+        if (pendingResolve) {
+          let hint = e.message;
+          if (e.message.includes("ENOENT")) {
+            if (scriptPath === "codebuddy") {
+              hint = "\u627E\u4E0D\u5230 codebuddy CLI\u3002\u8BF7\u786E\u8BA4\u5DF2\u5B89\u88C5 WorkBuddy \u684C\u9762\u7248\uFF0C\u6216\u5728\u63D2\u4EF6\u8BBE\u7F6E\u4E2D\u6307\u5B9A codebuddy \u8DEF\u5F84\u3002";
+            } else if (!isWindowsWrapper(scriptPath) && !isBareFallback(scriptPath)) {
+              hint = `\u627E\u4E0D\u5230 Node.js \u6765\u8FD0\u884C codebuddy (\u8DEF\u5F84: ${scriptPath})\u3002\u8BF7\u786E\u8BA4\u5DF2\u5B89\u88C5 Node.js\u3002`;
+            }
+          }
+          pendingResolve({ value: { type: "error", content: hint }, done: true });
+          pendingResolve = null;
+        }
+      });
+      while (true) {
+        if (cancelled)
+          break;
+        if (chunkQueue.length > 0) {
+          const nextChunk = chunkQueue.shift();
+          if (nextChunk) {
+            yield nextChunk;
+            continue;
+          }
+        }
+        if (timedOut) {
+          clearTimeout(timer);
+          break;
+        }
+        if (closed) {
+          if (buffer.trim()) {
+            const chunk = parseStreamLine(buffer);
+            if (chunk)
+              yield chunk;
+          }
+          break;
+        }
+        const next = await new Promise((r) => {
+          pendingResolve = r;
+        });
+        if (next.done) {
+          if (((_b = next.value) == null ? void 0 : _b.type) === "error")
+            throw new Error(next.value.content);
+          break;
+        }
+        yield next.value;
       }
-      this.currentProc = null;
+      clearTimeout(timer);
+    } finally {
+      this.activeStreams.delete(sessionId);
     }
+  }
+  /** 取消流式请求：传入 sessionId 只取消该会话的流；不传则取消全部在途流（兼容旧调用）。 */
+  cancel(sessionId) {
+    if (sessionId) {
+      const handler = this.activeStreams.get(sessionId);
+      if (handler)
+        handler();
+      return;
+    }
+    for (const handler of [...this.activeStreams.values()]) {
+      handler();
+    }
+    this.activeStreams.clear();
   }
 };
 
@@ -739,6 +764,24 @@ var ConversationManager = class {
       return null;
     return this.conversations.get(this.activeId) || null;
   }
+  /** 按 id 获取对话（用于队列项按会话定位；不存在返回 null）。 */
+  getConversation(id) {
+    var _a;
+    return (_a = this.conversations.get(id)) != null ? _a : null;
+  }
+  /** 批量替换指定会话的消息列表（用于分支复制历史），持久化一次。 */
+  replaceMessages(convId, messages) {
+    const conv = this.conversations.get(convId);
+    if (!conv)
+      return false;
+    conv.messages = messages.map((m) => ({
+      ...m,
+      parts: m.parts ? m.parts.map((p) => ({ ...p })) : void 0
+    }));
+    conv.updatedAt = Math.max(conv.updatedAt, Date.now());
+    this.persist().catch((err) => this.handlePersistError(err));
+    return true;
+  }
   /** 获取所有对话（按更新时间倒序） */
   getAll() {
     return Array.from(this.conversations.values()).sort((a, b) => b.updatedAt - a.updatedAt);
@@ -834,6 +877,93 @@ ${text}`;
   }
   return { text, state: current };
 }
+function encodeLineSeparators(text) {
+  return text.replace(/\r\n|\r|\n/g, "\u2028");
+}
+
+// src/chat/queue.ts
+var SendQueue = class {
+  constructor() {
+    /** convId → 该会话的 FIFO 队列 */
+    this.queues = /* @__PURE__ */ new Map();
+  }
+  /** 入队（该会话队尾）。返回带 id 的完整项。 */
+  enqueue(convId, text, notePath) {
+    const item = { id: generateId(), convId, text, notePath };
+    const list = this.queues.get(convId);
+    if (list) {
+      list.push(item);
+    } else {
+      this.queues.set(convId, [item]);
+    }
+    return item;
+  }
+  /** 查看指定会话的队头（不弹出）。该会话无排队项返回 null。 */
+  peekFor(convId) {
+    const list = this.queues.get(convId);
+    return list && list.length > 0 ? list[0] : null;
+  }
+  /** 弹出指定会话的队头。空返回 null。 */
+  dequeue(convId) {
+    const list = this.queues.get(convId);
+    if (!list || list.length === 0)
+      return null;
+    const item = list.shift();
+    if (list.length === 0)
+      this.queues.delete(convId);
+    return item;
+  }
+  /** 按 id 删除任意会话中的项。返回是否删除成功。 */
+  remove(id) {
+    for (const [convId, list] of this.queues.entries()) {
+      const idx = list.findIndex((i) => i.id === id);
+      if (idx >= 0) {
+        list.splice(idx, 1);
+        if (list.length === 0)
+          this.queues.delete(convId);
+        return true;
+      }
+    }
+    return false;
+  }
+  /** 按 id 编辑（保持原位置不变）。返回是否成功。 */
+  update(id, text) {
+    for (const list of this.queues.values()) {
+      const item = list.find((i) => i.id === id);
+      if (item) {
+        item.text = text;
+        return true;
+      }
+    }
+    return false;
+  }
+  /** 返回指定会话的排队项副本（不改动内部状态）。 */
+  listFor(convId) {
+    const list = this.queues.get(convId);
+    return list ? [...list] : [];
+  }
+  /** 全部会话排队项总数。 */
+  size() {
+    let n = 0;
+    for (const list of this.queues.values())
+      n += list.length;
+    return n;
+  }
+  /** 是否所有会话都没有排队项。 */
+  isEmpty() {
+    return this.queues.size === 0;
+  }
+};
+
+// src/chat/failure.ts
+function isGatewayEmptyStream(text, thinkingLen = 0, partsLen = 0) {
+  if (thinkingLen > 0 || partsLen > 0)
+    return false;
+  const t = text.trim();
+  if (!t)
+    return false;
+  return /^empty\s*stream\b|^placeholder\s*chunks\b|upstream\s*gateway\s*sent\s*only/i.test(t);
+}
 
 // src/views/chat.ts
 var VIEW_TYPE_CHAT = "buddybridge-panel";
@@ -868,9 +998,16 @@ var COMMANDS = {
 var BuddyBridgeChatView = class extends import_obsidian.ItemView {
   constructor(leaf, api, loadDataCallback) {
     super(leaf);
-    this.streamingConversations = /* @__PURE__ */ new Set();
-    this.streamingMsgId = null;
-    this.stopRequested = false;
+    /** 各会话当前流式中的 assistant 消息 id（convId → msgId）；多会话各自一条流，互不串窗。 */
+    this.streamingMsgIds = /* @__PURE__ */ new Map();
+    /** 各会话的停止请求（convId）：只影响该会话当前这条流，队列保留继续。 */
+    this.stopRequests = /* @__PURE__ */ new Set();
+    /** 发送队列：流式期间可继续输入，FIFO 串行发送（纯视图层，不持久化）。 */
+    this.sendQueue = new SendQueue();
+    /** 正在被队列泵 drain 的会话集合（convId）；各会话可并发 drain（独立进程流）。 */
+    this.draining = /* @__PURE__ */ new Set();
+    /** 分支注入转写：fork 会话 id → 截至分叉点的对话转写，首条发送时一次性注入新 session（内存态）。 */
+    this.forkTranscripts = /* @__PURE__ */ new Map();
     this.fileIndex = null;
     this.fileIndexBuiltAt = 0;
     /** 会话内已注入的上下文签名（去重用，内存态；面板重开时重置为重新注入一次） */
@@ -885,6 +1022,22 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
     this.manager = new ConversationManager();
     this.markdownComponent = new import_obsidian.Component();
     this.markdownComponent.load();
+  }
+  /**
+   * 解析「当前文章」路径，三级兜底：
+   * 1. 实时活跃文件（getActiveFile）；
+   * 2. 粘性值 currentFilePath（焦点在聊天面板时保留最后查看的笔记）；
+   * 3. 最近打开的文件（getLastOpenFiles 首项）——面板刚打开、用户尚未点击任何文件时，
+   *    也能拿到打开面板前在看的那篇笔记（否则分支/新增会话首条消息丢失「当前文章」）。
+   */
+  getCurrentFilePath() {
+    const active = this.app.workspace.getActiveFile();
+    if (active)
+      return active.path;
+    if (this.currentFilePath)
+      return this.currentFilePath;
+    const last = this.app.workspace.getLastOpenFiles();
+    return last.length > 0 ? last[0] : null;
   }
   get vaultPath() {
     const adapter = this.app.vault.adapter;
@@ -903,17 +1056,20 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
    * 构建发送给 CLI 的上下文文本：会话内去重。
    * 笔记 / Vault 上下文「没变化」就不再重复注入，只在变化时注入，
    * 避免 CLI 历史里堆叠 N 行 `[系统注入·当前笔记: ...]` 导致 agent 误判。
+   * @param notePath 入队时的笔记快照（可选）；未提供时回退当前文件。
    */
-  buildContextText(convId, text) {
-    var _a, _b, _c;
+  buildContextText(convId, text, notePath) {
+    var _a, _b;
     const settings = this.pluginSettings;
     const noteLink = (settings == null ? void 0 : settings.noteLinkInjection) !== false;
     const vaultCtx = !!(settings == null ? void 0 : settings.vaultContextInjection);
     const current = {
-      notePath: noteLink ? (_a = this.currentFilePath) != null ? _a : null : null,
-      vaultPath: vaultCtx ? (_b = this.vaultPath) != null ? _b : null : null
+      // 快照优先：非空快照在排队期间切笔记 / 焦点变化时保持不变；
+      // 空快照（入队时无当前文章）回退到解析时的实时当前文章，尽力注入而非直接丢弃
+      notePath: noteLink ? notePath != null ? notePath : this.getCurrentFilePath() : null,
+      vaultPath: vaultCtx ? (_a = this.vaultPath) != null ? _a : null : null
     };
-    const prev = (_c = this.contextStates.get(convId)) != null ? _c : null;
+    const prev = (_b = this.contextStates.get(convId)) != null ? _b : null;
     const { text: out, state } = buildDedupedPrompt(prev, current, text, {
       noteLinkInjection: noteLink,
       vaultContextInjection: vaultCtx
@@ -934,7 +1090,14 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
     return this.manager;
   }
   async onOpen() {
-    var _a, _b, _c, _d, _e, _f, _g;
+    var _a, _b, _c, _d, _e;
+    this.api.cancel();
+    const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_CHAT);
+    for (const leaf of leaves) {
+      if (leaf !== this.leaf) {
+        await leaf.detach();
+      }
+    }
     const container = this.contentEl;
     container.empty();
     container.addClass("buddybridge-chat-container");
@@ -943,8 +1106,11 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
       if (plugin == null ? void 0 : plugin.applyPrimaryColor) {
         plugin.applyPrimaryColor();
       }
+      if (plugin == null ? void 0 : plugin.applyFontSize) {
+        plugin.applyFontSize();
+      }
     } catch (e) {
-      console.error("[BB] \u5E94\u7528\u4E3B\u8272\u8C03\u5931\u8D25:", e);
+      console.error("[BB] \u5E94\u7528\u5916\u89C2\u8BBE\u7F6E\u5931\u8D25:", e);
     }
     this.tabBar = container.createDiv({ cls: "buddybridge-tab-bar" });
     const newBtn = this.tabBar.createEl("button", {
@@ -955,16 +1121,19 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
     (0, import_obsidian.setIcon)(newBtn, "plus");
     newBtn.onclick = () => this.createNewChat();
     this.currentFileBar = container.createDiv({ cls: "buddybridge-current-file" });
-    this.currentFilePath = (_d = (_c = this.app.workspace.getActiveFile()) == null ? void 0 : _c.path) != null ? _d : null;
+    this.currentFilePath = this.getCurrentFilePath();
     this.updateCurrentFileBar();
     this.registerEvent(
       this.app.workspace.on("active-leaf-change", () => {
-        var _a2, _b2;
-        this.currentFilePath = (_b2 = (_a2 = this.app.workspace.getActiveFile()) == null ? void 0 : _a2.path) != null ? _b2 : null;
+        const file = this.app.workspace.getActiveFile();
+        if (file) {
+          this.currentFilePath = file.path;
+        }
         this.updateCurrentFileBar();
       })
     );
     this.messageContainer = container.createDiv({ cls: "buddybridge-messages" });
+    this.queueBar = container.createDiv({ cls: "buddybridge-queue-bar buddybridge-hidden" });
     const inputArea = container.createDiv({ cls: "buddybridge-input-area" });
     this.inputEl = inputArea.createEl("textarea", {
       cls: "buddybridge-input",
@@ -981,15 +1150,17 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
       attr: { "aria-label": "\u53D1\u9001" }
     });
     this.sendBtn.onclick = () => {
-      if (this.streamingMsgId !== null) {
+      var _a2, _b2;
+      const activeId = (_b2 = (_a2 = this.manager.getActive()) == null ? void 0 : _a2.id) != null ? _b2 : null;
+      if (activeId !== null && this.draining.has(activeId)) {
         this.stopStreaming();
       } else {
-        this.sendMessage();
+        void this.sendMessage();
       }
     };
     try {
-      const plugin = (_f = (_e = this.app.plugins) == null ? void 0 : _e.plugins) == null ? void 0 : _f["buddybridge"];
-      if ((_g = plugin == null ? void 0 : plugin.settings) == null ? void 0 : _g.maxConversations) {
+      const plugin = (_d = (_c = this.app.plugins) == null ? void 0 : _c.plugins) == null ? void 0 : _d["buddybridge"];
+      if ((_e = plugin == null ? void 0 : plugin.settings) == null ? void 0 : _e.maxConversations) {
         this.manager.setMaxConversations(plugin.settings.maxConversations);
       }
     } catch (e) {
@@ -1025,20 +1196,29 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
     this.manager.createConversation();
     this.renderTabs();
     await this.renderMessages();
-    this.setInputEnabled(true);
+    this.updateSendButton();
   }
   async switchToChat(id) {
     this.manager.switchTo(id);
     this.renderTabs();
     await this.renderMessages();
-    const isSending = this.streamingConversations.has(id);
-    this.setInputEnabled(!isSending);
+    this.updateSendButton();
+    this.renderQueueBar();
+    void this.pumpQueue();
   }
   async deleteChat(id, e) {
     e.stopPropagation();
     this.manager.deleteConversation(id);
+    this.clearQueuedFor(id);
     this.renderTabs();
     await this.renderMessages();
+  }
+  /** 清空指定会话的全部排队项（删除会话时调用）。 */
+  clearQueuedFor(convId) {
+    for (const item of this.sendQueue.listFor(convId)) {
+      this.sendQueue.remove(item.id);
+    }
+    this.renderQueueBar();
   }
   /** 渲染标签栏 */
   renderTabs() {
@@ -1095,16 +1275,32 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
       return;
     }
     for (const msg of conv.messages) {
-      await this.renderMessage(msg, () => this.retryLastExchange());
+      await this.renderMessage(conv.id, msg, () => this.retryLastExchange());
     }
     this.scrollToBottom();
   }
-  async renderMessage(msg, onRetry) {
+  async renderMessage(convId, msg, onRetry) {
     const row = this.messageContainer.createDiv({
       cls: `buddybridge-message-row buddybridge-message-${msg.role}`
     });
+    const forkBtn = row.createDiv({
+      cls: "buddybridge-fork-btn",
+      attr: { title: "\u4ECE\u8FD9\u91CC\u7EE7\u7EED\u65B0\u5BF9\u8BDD", "aria-label": "\u4ECE\u8FD9\u91CC\u7EE7\u7EED\u65B0\u5BF9\u8BDD", role: "button", tabindex: "0" }
+    });
+    (0, import_obsidian.setIcon)(forkBtn, "git-branch");
+    forkBtn.onclick = (e) => {
+      e.stopPropagation();
+      this.forkFrom(msg);
+    };
+    forkBtn.onkeydown = (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        e.stopPropagation();
+        this.forkFrom(msg);
+      }
+    };
     const bubble = row.createDiv({ cls: "buddybridge-bubble" });
-    const isWaiting = msg.role === "assistant" && msg.content === "" && msg.id === this.streamingMsgId;
+    const isWaiting = msg.role === "assistant" && msg.content === "" && msg.id === this.streamingMsgIds.get(convId);
     if (isWaiting) {
       this.renderThinkingIndicator(bubble);
     } else if (msg.role === "assistant") {
@@ -1411,15 +1607,21 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
   adjustTextareaHeight() {
     this.inputEl.style.setProperty("--buddybridge-input-height", `${this.inputEl.scrollHeight}px`);
   }
-  setInputEnabled(enabled) {
-    this.inputEl.disabled = !enabled;
-    this.sendBtn.disabled = false;
-    this.sendBtn.setText(enabled ? "\u53D1\u9001" : "\u505C\u6B62");
-    this.sendBtn.toggleClass("buddybridge-send-btn-stop", !enabled);
+  /** 更新发送按钮状态：当前活动会话流式中显示「停止」（只中断该会话的流，队列保留），否则「发送」。 */
+  updateSendButton() {
+    var _a, _b;
+    this.inputEl.disabled = false;
+    const activeId = (_b = (_a = this.manager.getActive()) == null ? void 0 : _a.id) != null ? _b : null;
+    const busy = activeId !== null && this.draining.has(activeId);
+    this.sendBtn.setText(busy ? "\u505C\u6B62" : "\u53D1\u9001");
+    this.sendBtn.toggleClass("buddybridge-send-btn-stop", busy);
   }
   stopStreaming() {
-    this.stopRequested = true;
-    this.api.cancel();
+    const conv = this.manager.getActive();
+    if (!conv)
+      return;
+    this.stopRequests.add(conv.id);
+    this.api.cancel(conv.sessionId);
   }
   updateCommandDropdown() {
     const val = this.inputEl.value;
@@ -1459,10 +1661,11 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
       this.removeCommandDropdown();
     }
   }
+  /**
+   * 发送：统一入队（回复流式期间也可继续输入），由队列泵 FIFO 串行发出。
+   * 会话上限守卫不变 —— 无活动会话且达上限时提示中止，队列原有项不受影响（不丢消息）。
+   */
   async sendMessage() {
-    const activeConv = this.manager.getActive();
-    if (activeConv && this.streamingConversations.has(activeConv.id))
-      return;
     const text = this.inputEl.value.trim();
     if (!text)
       return;
@@ -1488,49 +1691,108 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
       conv = this.manager.createConversation();
       this.renderTabs();
     }
+    this.sendQueue.enqueue(conv.id, text, this.getCurrentFilePath());
+    this.inputEl.value = "";
+    this.adjustTextareaHeight();
+    this.renderQueueBar();
+    void this.pumpQueue();
+  }
+  /**
+   * 队列泵：并发 drain 所有有排队项的会话（各会话一条独立流，互不阻塞——
+   * 会话 A 流式期间，在会话 B 发送的问题立即并行回答）。
+   */
+  async pumpQueue() {
+    for (const conv of this.manager.getAll()) {
+      if (this.sendQueue.peekFor(conv.id)) {
+        void this.drainConversation(conv.id);
+      }
+    }
+  }
+  /**
+   * 单会话 drain：FIFO 串行处理该会话的排队项（先出队再处理，正在发送的不显示在队列条）。
+   * draining 集合防重入；停止请求只影响当前条（processItem 内部检查并清除），队列保留继续。
+   */
+  async drainConversation(convId) {
+    if (this.draining.has(convId))
+      return;
+    this.draining.add(convId);
+    this.updateSendButton();
+    try {
+      while (true) {
+        const item = this.sendQueue.peekFor(convId);
+        if (!item)
+          break;
+        this.sendQueue.dequeue(convId);
+        this.renderQueueBar();
+        await this.processItem(item);
+      }
+    } finally {
+      this.draining.delete(convId);
+      this.updateSendButton();
+      this.renderQueueBar();
+    }
+  }
+  /**
+   * 处理一条队列项：真正发送时写入历史并流式。
+   * 会话已被删除 → 丢弃该项（不产生消息）。
+   * 仅当该项属于当前活动会话时内联渲染流式；否则静默累积（切回该会话时可见完整回复）。
+   */
+  async processItem(item) {
+    var _a;
+    const convId = item.convId;
+    const conv = this.manager.getConversation(convId);
+    if (!conv)
+      return;
     if (!conv.sessionId) {
       conv.sessionId = this.api.generateId();
     }
-    const convId = conv.id;
-    this.manager.addMessage(convId, "user", text);
-    this.inputEl.value = "";
-    this.adjustTextareaHeight();
-    await this.renderMessages();
+    this.manager.addMessage(convId, "user", item.text);
     const aiMsg = this.manager.addMessage(convId, "assistant", "");
     if (!aiMsg)
       return;
-    this.streamingMsgId = aiMsg.id;
-    this.streamingConversations.add(convId);
-    this.setInputEnabled(false);
-    await this.renderMessages();
+    this.streamingMsgIds.set(convId, aiMsg.id);
+    const isActive = ((_a = this.manager.getActive()) == null ? void 0 : _a.id) === convId;
+    let bubble = null;
     let firstChunk = true;
     let thinkingContent = "";
     let textContent = "";
     let parts = [];
     let streamingError = null;
     try {
-      const contextText = text.startsWith("/") ? text : this.buildContextText(convId, text);
-      const streamingBubble = this.messageContainer.querySelector(
-        `.buddybridge-message-assistant:last-child .buddybridge-bubble`
-      );
-      if (!(streamingBubble instanceof HTMLElement)) {
-        throw new Error("\u627E\u4E0D\u5230 Assistant \u6D88\u606F\u6C14\u6CE1");
+      if (isActive) {
+        await this.renderMessages();
+        const streamingBubble = this.messageContainer.querySelector(
+          `.buddybridge-message-assistant:last-child .buddybridge-bubble`
+        );
+        if (!(streamingBubble instanceof HTMLElement)) {
+          throw new Error("\u627E\u4E0D\u5230 Assistant \u6D88\u606F\u6C14\u6CE1");
+        }
+        bubble = streamingBubble;
       }
+      const base = item.text.startsWith("/") ? item.text : this.buildContextText(convId, item.text, item.notePath);
+      const transcript = this.forkTranscripts.get(convId);
+      if (transcript) {
+        this.forkTranscripts.delete(convId);
+      }
+      const contextText = encodeLineSeparators(transcript ? `${transcript}
+
+${base}` : base);
       for await (const chunk of this.api.sendMessage(conv.sessionId, contextText, this.vaultPath)) {
-        if (this.stopRequested)
+        if (this.stopRequests.has(convId))
           break;
-        const bubble = streamingBubble;
         const hasRealContent = textContent.length > 0 || thinkingContent.length > 0 || parts.length > 0;
         if (chunk.type === "text" && !hasRealContent && isStartupBanner(chunk.content)) {
           continue;
         }
         if (firstChunk) {
           firstChunk = false;
-          const thinking = bubble.querySelector(".buddybridge-thinking");
-          if (thinking instanceof HTMLElement) {
-            thinking.addClass("buddybridge-thinking-fadeout");
-            await new Promise((r) => window.setTimeout(r, 200));
-            thinking.remove();
+          if (isActive && bubble) {
+            const thinking = bubble.querySelector(".buddybridge-thinking");
+            if (thinking instanceof HTMLElement) {
+              thinking.addClass("buddybridge-thinking-fadeout");
+              await new Promise((r) => window.setTimeout(r, 200));
+              thinking.remove();
+            }
           }
         }
         if (chunk.type === "thinking") {
@@ -1542,16 +1804,22 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
             parts.push({ kind: "thinking", content: thinkingContent });
           }
           this.manager.updateMessageParts(convId, aiMsg.id, parts, true);
-          this.renderThinkingBlock(bubble, thinkingContent, "\u601D\u8003\u4E2D...");
+          if (isActive && bubble) {
+            this.renderThinkingBlock(bubble, thinkingContent, "\u601D\u8003\u4E2D...");
+          }
         } else if (chunk.type === "tool") {
           parts.push({ kind: "tool", name: chunk.toolName || "", detail: chunk.toolDetail || "" });
           this.manager.updateMessageParts(convId, aiMsg.id, parts, true);
-          const toolsBlock = this.renderToolsBlock(bubble);
-          this.appendToolRow(toolsBlock, chunk.toolName || "", chunk.toolDetail || "");
+          if (isActive && bubble) {
+            const toolsBlock = this.renderToolsBlock(bubble);
+            this.appendToolRow(toolsBlock, chunk.toolName || "", chunk.toolDetail || "");
+          }
         } else if (chunk.type === "text") {
           textContent += chunk.content;
           this.manager.updateMessage(convId, aiMsg.id, textContent, true);
-          await this.renderMarkdownContent(bubble, textContent);
+          if (isActive && bubble) {
+            await this.renderMarkdownContent(bubble, textContent);
+          }
         } else if (chunk.type === "error") {
           streamingError = chunk.content;
           this.manager.updateMessage(convId, aiMsg.id, `\u9519\u8BEF: ${chunk.content}`, true);
@@ -1562,27 +1830,168 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
         this.manager.updateMessage(convId, aiMsg.id, `\u9519\u8BEF: ${streamingError}`);
         this.manager.updateMessageParts(convId, aiMsg.id, void 0, true);
       } else {
-        this.manager.updateMessage(convId, aiMsg.id, textContent);
         const hasContent = Boolean(textContent || thinkingContent || parts.length > 0);
+        const stopped = this.stopRequests.has(convId);
         if (!hasContent) {
-          this.manager.updateMessage(convId, aiMsg.id, this.stopRequested ? "\uFF08\u5DF2\u505C\u6B62\uFF09" : "\uFF08\u65E0\u54CD\u5E94\uFF0C\u8BF7\u91CD\u8BD5\uFF09");
-        } else if (this.stopRequested && textContent) {
+          this.manager.updateMessage(convId, aiMsg.id, stopped ? "\uFF08\u5DF2\u505C\u6B62\uFF09" : "\uFF08\u65E0\u54CD\u5E94\uFF0C\u8BF7\u91CD\u8BD5\uFF09");
+        } else if (stopped && textContent) {
           this.manager.updateMessage(convId, aiMsg.id, textContent + "\n\n\uFF08\u5DF2\u505C\u6B62\uFF09");
+        } else if (isGatewayEmptyStream(textContent, thinkingContent.length, parts.length)) {
+          this.manager.updateMessage(convId, aiMsg.id, `\u9519\u8BEF: ${textContent}`);
+          this.manager.updateMessageParts(convId, aiMsg.id, void 0, true);
+          this.manager.setSessionId(convId, this.api.generateId());
+          this.preserveRecentContext(convId);
+          new import_obsidian.Notice("\u4E0A\u6E38\u7F51\u5173\u65E0\u8F93\u51FA\uFF08Empty stream\uFF09\uFF0C\u5DF2\u91CD\u7F6E\u4F1A\u8BDD\uFF0C\u8BF7\u91CD\u8BD5");
+        } else {
+          this.manager.updateMessage(convId, aiMsg.id, textContent);
         }
       }
-      await this.renderMessages();
+      if (isActive) {
+        await this.renderMessages();
+      }
       await this.manager.flush();
     } catch (error) {
       const message = getErrorMessage(error);
       this.manager.updateMessage(convId, aiMsg.id, `\u9519\u8BEF: ${message}`);
       new import_obsidian.Notice(`\u8BF7\u6C42\u5931\u8D25: ${message}`);
-      await this.renderMessages();
+      if (isActive) {
+        await this.renderMessages();
+      }
     } finally {
-      this.streamingConversations.delete(convId);
-      this.streamingMsgId = null;
-      this.stopRequested = false;
-      this.setInputEnabled(true);
+      this.streamingMsgIds.delete(convId);
+      this.stopRequests.delete(convId);
     }
+  }
+  /** 渲染队列条：只显示「当前活跃会话」真正等待中的排队项（chip 可 ✕ 删除 / 点击内联编辑）。
+   * 正在发送的项已先出队，不在此显示；其他会话的排队项也不在此展示（各会话队列独立）。 */
+  renderQueueBar() {
+    var _a, _b;
+    if (!this.queueBar)
+      return;
+    const activeId = (_b = (_a = this.manager.getActive()) == null ? void 0 : _a.id) != null ? _b : null;
+    const items = activeId ? this.sendQueue.listFor(activeId) : [];
+    if (items.length === 0) {
+      this.queueBar.empty();
+      this.queueBar.addClass("buddybridge-hidden");
+      return;
+    }
+    this.queueBar.empty();
+    this.queueBar.removeClass("buddybridge-hidden");
+    for (const item of items) {
+      const chip = this.queueBar.createDiv({ cls: "buddybridge-queue-chip" });
+      const body = chip.createSpan({ cls: "buddybridge-queue-chip-text", text: item.text });
+      body.onclick = () => this.editQueueItem(item.id, chip, body);
+      const del = chip.createSpan({
+        cls: "buddybridge-queue-chip-del",
+        attr: { title: "\u5220\u9664\u8BE5\u6761", "aria-label": "\u5220\u9664\u8BE5\u6761", role: "button", tabindex: "0" }
+      });
+      (0, import_obsidian.setIcon)(del, "x");
+      del.onclick = (e) => {
+        e.stopPropagation();
+        this.removeQueueItem(item.id);
+      };
+      del.onkeydown = (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          e.stopPropagation();
+          this.removeQueueItem(item.id);
+        }
+      };
+    }
+  }
+  removeQueueItem(id) {
+    this.sendQueue.remove(id);
+    this.renderQueueBar();
+  }
+  /** 内联编辑：点击 chip 文本 → 变为输入框；Enter 保存 / Esc 取消 / 失焦保存。 */
+  editQueueItem(id, chip, body) {
+    var _a;
+    let cancelled = false;
+    const edit = document.createElement("input");
+    edit.addClass("buddybridge-queue-chip-input");
+    edit.type = "text";
+    edit.value = (_a = body.textContent) != null ? _a : "";
+    edit.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+      if (e.key === "Enter") {
+        e.preventDefault();
+        this.commitQueueEdit(id, edit.value);
+      } else if (e.key === "Escape") {
+        cancelled = true;
+        this.renderQueueBar();
+      }
+    });
+    edit.addEventListener("blur", () => {
+      if (!cancelled)
+        this.commitQueueEdit(id, edit.value);
+    });
+    chip.replaceChild(edit, body);
+    edit.focus();
+    edit.select();
+  }
+  /** 提交队列项编辑：空内容视为删除该条。 */
+  commitQueueEdit(id, text) {
+    const trimmed = text.trim();
+    if (!trimmed) {
+      this.sendQueue.remove(id);
+    } else {
+      this.sendQueue.update(id, trimmed);
+    }
+    this.renderQueueBar();
+  }
+  /**
+   * 分支 Phase 1：从指定消息「从这里继续新对话」。
+   * 新会话复制截至该消息的历史（可见上下文）+ 新 sessionId，受会话上限守卫（决策 5）。
+   * 分叉后首条发送时注入对话转写，供新 session 了解此前对话。
+   */
+  forkFrom(msg) {
+    const conv = this.manager.getActive();
+    if (!conv)
+      return;
+    const idx = conv.messages.findIndex((m) => m.id === msg.id);
+    if (idx < 0)
+      return;
+    if (this.atConversationLimit())
+      return;
+    const history = conv.messages.slice(0, idx + 1);
+    const newConv = this.manager.createConversation(`${conv.title}\uFF08\u5206\u652F\uFF09`);
+    this.manager.replaceMessages(newConv.id, history);
+    this.forkTranscripts.set(newConv.id, this.buildForkTranscript(history));
+    this.renderTabs();
+    void this.renderMessages();
+    this.updateSendButton();
+  }
+  /** 构建分支注入转写：截至分叉点的对话（角色标注），供新 session 作为背景参考。 */
+  buildForkTranscript(messages, label = "[\u7CFB\u7EDF\u6CE8\u5165\xB7\u5206\u652F\u4E0A\u4E0B\u6587] \u4EE5\u4E0B\u662F\u4F60\u4E0E\u6B64\u7528\u6237\u6B64\u524D\u7684\u5BF9\u8BDD\uFF08\u622A\u81F3\u5206\u652F\u70B9\uFF09\uFF0C\u4EC5\u4F5C\u80CC\u666F\u53C2\u8003\uFF1A") {
+    const lines = [label];
+    for (const m of messages) {
+      const content = m.content.trim();
+      if (!content)
+        continue;
+      lines.push(`${m.role === "user" ? "\u7528\u6237" : "\u52A9\u624B"}: ${content}`);
+    }
+    return lines.join("\n");
+  }
+  /**
+   * 会话滚动后保留近期上下文：把最近若干条用户/助手消息（排除错误卡）作为背景转写注入
+   * 新会话首条发送（复用 forkTranscripts 机制，一次性消费，上限 12 条避免再度撑爆上下文）。
+   */
+  preserveRecentContext(convId) {
+    const conv = this.manager.getConversation(convId);
+    if (!conv)
+      return;
+    const history = conv.messages.filter(
+      (m) => m.role === "user" || m.role === "assistant" && !m.content.startsWith("\u9519\u8BEF:")
+    );
+    if (history.length === 0)
+      return;
+    this.forkTranscripts.set(
+      convId,
+      this.buildForkTranscript(
+        history.slice(-12),
+        "[\u7CFB\u7EDF\u6CE8\u5165\xB7\u4F1A\u8BDD\u91CD\u7F6E] \u4EE5\u4E0B\u662F\u4F60\u4E0E\u6B64\u7528\u6237\u6B64\u524D\u7684\u5BF9\u8BDD\uFF08\u4F1A\u8BDD\u5DF2\u56E0\u7F51\u5173\u6545\u969C\u91CD\u7F6E\uFF09\uFF0C\u4EC5\u4F5C\u80CC\u666F\u53C2\u8003\uFF1A"
+      )
+    );
   }
   updateCurrentFileBar() {
     if (this.currentFilePath) {
@@ -1671,6 +2080,10 @@ var BuddyBridgeSettingTab = class extends import_obsidian3.PluginSettingTab {
         await plugin.saveSettings();
       });
     });
+    new import_obsidian3.Setting(containerEl).setName("\u5B57\u4F53\u5927\u5C0F").setDesc("\u804A\u5929\u9762\u677F\uFF08\u6D88\u606F\u6C14\u6CE1\u3001Markdown \u5185\u5BB9\u4E0E\u8F93\u5165\u6846\uFF09\u7684\u6587\u5B57\u5927\u5C0F").addSlider((slider) => slider.setLimits(FONT_SIZE_MIN, FONT_SIZE_MAX, 1).setValue(plugin.settings.fontSize).setDynamicTooltip().onChange(async (value) => {
+      plugin.settings.fontSize = value;
+      await plugin.saveSettings();
+    }));
     new import_obsidian3.Setting(containerEl).setName("\u7BA1\u7406").setHeading();
     new import_obsidian3.Setting(containerEl).setName("\u6700\u5927\u5BF9\u8BDD\u6570").setDesc("\u6700\u591A\u4FDD\u7559\u591A\u5C11\u4E2A\u5BF9\u8BDD\uFF08\u8D85\u51FA\u90E8\u5206\u81EA\u52A8\u5220\u9664\uFF09").addText((text) => text.setPlaceholder("20").setValue(String(plugin.settings.maxConversations)).onChange(async (value) => {
       const num = parseInt(value);
@@ -1899,6 +2312,7 @@ var BuddyBridgePlugin = class extends import_obsidian4.Plugin {
       });
       this.addSettingTab(new BuddyBridgeSettingTab(this.app, this));
       this.applyPrimaryColor();
+      this.applyFontSize();
     } catch (e) {
       console.error("[BB] \u63D2\u4EF6\u52A0\u8F7D\u5931\u8D25:", e);
       new import_obsidian4.Notice("BuddyBridge \u52A0\u8F7D\u5931\u8D25\uFF0C\u8BF7\u67E5\u770B Console");
@@ -1946,6 +2360,7 @@ var BuddyBridgePlugin = class extends import_obsidian4.Plugin {
       this.chatView.getManager().setMaxConversations(this.settings.maxConversations);
     }
     this.applyPrimaryColor();
+    this.applyFontSize();
   }
   // ==================== 导出 / 导入（P2.6）====================
   /** 导出设置 + 聊天记录为带版本号的 JSON 文件。 */
@@ -1998,6 +2413,7 @@ var BuddyBridgePlugin = class extends import_obsidian4.Plugin {
     this.api.setNodePath(this.settings.nodePath);
     this.api.setTimeoutMs(this.settings.timeoutSeconds * 1e3);
     this.applyPrimaryColor();
+    this.applyFontSize();
     if (this.chatView) {
       await this.chatView.loadConversations(payload.conversations);
     }
@@ -2013,6 +2429,20 @@ var BuddyBridgePlugin = class extends import_obsidian4.Plugin {
       });
     } catch (e) {
       console.error("[BB] \u5E94\u7528\u4E3B\u8272\u8C03\u5931\u8D25:", e);
+    }
+  }
+  /** 应用聊天区字体大小（气泡 + Markdown 内容 + 输入框，经 --buddybridge-font-size 变量）。 */
+  applyFontSize() {
+    try {
+      const value = `${this.settings.fontSize}px`;
+      const containers = document.querySelectorAll(".buddybridge-chat-container");
+      containers.forEach((container) => {
+        if (container instanceof HTMLElement) {
+          container.setCssProps({ "--buddybridge-font-size": value });
+        }
+      });
+    } catch (e) {
+      console.error("[BB] \u5E94\u7528\u5B57\u4F53\u5927\u5C0F\u5931\u8D25:", e);
     }
   }
 };

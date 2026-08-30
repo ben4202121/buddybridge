@@ -1,4 +1,6 @@
-import { buildPromptWithCurrentFile, buildPromptContext, buildDedupedPrompt, type PromptContextState } from '../src/context';
+import { buildPromptWithCurrentFile, buildPromptContext, buildDedupedPrompt, encodeLineSeparators, type PromptContextState } from '../src/context';
+
+const LS = '\u2028';
 
 describe('buildPromptWithCurrentFile (当前文档感知)', () => {
     it('injects current note path above the user text', () => {
@@ -98,5 +100,38 @@ describe('buildDedupedPrompt (会话内上下文去重)', () => {
     it('does not add marker when note closes but toggle is off', () => {
         const r = buildDedupedPrompt({ notePath: 'a.md', vaultPath: null }, { notePath: null, vaultPath: null }, 'hi', allOff);
         expect(r.text).toBe('hi');
+    });
+});
+
+describe('encodeLineSeparators (Windows cmd 换行编码, 传输截断修复)', () => {
+    it('replaces LF with U+2028 line separator', () => {
+        expect(encodeLineSeparators('第一行\n第二行')).toBe(`第一行${LS}第二行`);
+    });
+
+    it('replaces CRLF with a single U+2028', () => {
+        expect(encodeLineSeparators('第一行\r\n第二行')).toBe(`第一行${LS}第二行`);
+    });
+
+    it('replaces CR with U+2028', () => {
+        expect(encodeLineSeparators('第一行\r第二行')).toBe(`第一行${LS}第二行`);
+    });
+
+    it('leaves single-line text unchanged', () => {
+        expect(encodeLineSeparators('帮我总结')).toBe('帮我总结');
+    });
+
+    it('leaves empty string unchanged', () => {
+        expect(encodeLineSeparators('')).toBe('');
+    });
+
+    it('removes every real newline (transport-invariant: cmd truncates on LF)', () => {
+        const out = encodeLineSeparators('[系统注入·当前笔记: a.md]\n\n问题\n多行');
+        expect(out).not.toContain('\n');
+        expect(out).not.toContain('\r');
+        expect(out).toBe(`[系统注入·当前笔记: a.md]${LS}${LS}问题${LS}多行`);
+    });
+
+    it('preserves multi-line structure (N lines → N-1 separators)', () => {
+        expect(encodeLineSeparators('a\nb\nc\nd').split(LS).length).toBe(4);
     });
 });

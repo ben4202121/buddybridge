@@ -34,6 +34,8 @@ export interface BuddyBridgeSettings {
     codebuddyPath: string;
     maxConversations: number;
     primaryColor: string;
+    /** 聊天区字体大小（px），默认 14 */
+    fontSize: number;
     /** CLI 请求超时（秒），默认 300 */
     timeoutSeconds: number;
     /** Node.js 可执行文件路径（留空自动检测，仅裸脚本启动时使用） */
@@ -55,8 +57,13 @@ export interface BuddyBridgeSettings {
  * - v5：v2.0 新增 timeoutSeconds（CLI 超时时长）
  * - v6：v2.0.2 新增 nodePath / noteLinkInjection / vaultContextInjection
  * - v7：v2.0.2 注入开关字段命名定稿（noteLinkInjection / vaultContextInjection）
+ * - v8：v2.2.0 新增 fontSize（聊天区字体大小，px）
  */
-const CURRENT_SETTINGS_VERSION = 7;
+const CURRENT_SETTINGS_VERSION = 8;
+
+/** 聊天区字体大小范围（px），与设置页滑块联动 */
+export const FONT_SIZE_MIN = 12;
+export const FONT_SIZE_MAX = 18;
 
 /**
  * 持久化数据 blob 的格式版本号。
@@ -69,6 +76,7 @@ export const DEFAULT_SETTINGS: BuddyBridgeSettings = {
     codebuddyPath: '',
     maxConversations: 20,
     primaryColor: '',
+    fontSize: 14,
     timeoutSeconds: 300,
     nodePath: '',
     noteLinkInjection: true,
@@ -118,6 +126,7 @@ export function migrateSettings(stored: unknown): BuddyBridgeSettings {
 
     const maxConversations = getNumber(stored, 'maxConversations');
     const primaryColor = getString(stored, 'primaryColor');
+    const fontSize = getNumber(stored, 'fontSize');
     const timeoutSeconds = getNumber(stored, 'timeoutSeconds');
     const nodePath = getString(stored, 'nodePath');
 
@@ -135,6 +144,9 @@ export function migrateSettings(stored: unknown): BuddyBridgeSettings {
             ? maxConversations
             : DEFAULT_SETTINGS.maxConversations,
         primaryColor: primaryColor ?? DEFAULT_SETTINGS.primaryColor,
+        fontSize: typeof fontSize === 'number' && fontSize >= FONT_SIZE_MIN && fontSize <= FONT_SIZE_MAX
+            ? fontSize
+            : DEFAULT_SETTINGS.fontSize,
         timeoutSeconds: typeof timeoutSeconds === 'number' && timeoutSeconds > 0
             ? timeoutSeconds
             : DEFAULT_SETTINGS.timeoutSeconds,

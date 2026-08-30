@@ -95,3 +95,21 @@ export function buildDedupedPrompt(
 
     return { text, state: current };
 }
+
+/**
+ * 传输层换行编码（Windows cmd 截断修复）：
+ *
+ * 解析出的 codebuddy 路径为 .cmd/.bat 时（本机为 `%APPDATA%\npm\codebuddy.cmd`），
+ * api.ts 用 `shell: true` 进入 cmd.exe。cmd 的命令行解析在第一个真实换行（\n）处
+ * 结束整条命令，导致多行注入文本（分支转写、当前笔记、问题正文）在第一个换行处被
+ * 截断，模型只收到第一行（实测截成只剩标签，如 `[系统注入·分支上下文] ...`）。
+ *
+ * 方案：发送前把换行替换为 U+2028（LINE SEPARATOR）——
+ * - cmd 不把 U+2028 当行结束符，命令行参数完整传输（实测通过）；
+ * - 模型按行分隔语义理解 U+2028（实测 hy4-preview 能正确读取多行结构与内容）。
+ *
+ * 编码只作用于发送给 CLI 的 contextText（不入插件聊天历史，UI 仍显示用户原文）。
+ */
+export function encodeLineSeparators(text: string): string {
+    return text.replace(/\r\n|\r|\n/g, '\u2028');
+}

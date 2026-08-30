@@ -3,7 +3,9 @@ import type { WorkspaceLeaf } from 'obsidian';
 import { ConversationManager } from '../chat/manager';
 import { BuddyBridgeAPI, isStartupBanner } from '../api';
 import { getErrorMessage, type Conversation, ChatMessage, MessagePart, BuddyBridgeSettings } from '../types';
-import { buildPromptContext, buildDedupedPrompt, type PromptContextState } from '../context';
+import { buildPromptContext, buildDedupedPrompt, encodeLineSeparators, type PromptContextState } from '../context';
+import { SendQueue, type QueueItem } from '../chat/queue';
+import { isGatewayEmptyStream } from '../chat/failure';
 
 export const VIEW_TYPE_CHAT = "buddybridge-panel";
 
@@ -45,9 +47,17 @@ export class BuddyBridgeChatView extends ItemView {
     private tabBar!: HTMLElement;
     private currentFileBar!: HTMLElement;
     private commandDropdown!: HTMLElement | null;
-    private streamingConversations: Set<string> = new Set();
-    private streamingMsgId: string | null = null;
-    private stopRequested: boolean = false;
+    /** 各会话当前流式中的 assistant 消息 id（convId → msgId）；多会话各自一条流，互不串窗。 */
+    private streamingMsgIds = new Map<string, string>();
+    /** 各会话的停止请求（convId）：只影响该会话当前这条流，队列保留继续。 */
+    private stopRequests = new Set<string>();
+    /** 发送队列：流式期间可继续输入，FIFO 串行发送（纯视图层，不持久化）。 */
+    private sendQueue: SendQueue = new SendQueue();
+    /** 正在被队列泵 drain 的会话集合（convId）；各会话可并发 drain（独立进程流）。 */
+    private draining = new Set<string>();
+    private queueBar!: HTMLElement;
+    /** 分支注入转写：fork 会话 id → 截至分叉点的对话转写，首条发送时一次性注入新 session（内存态）。 */
+    private forkTranscripts = new Map<string, string>();
     private markdownComponent: Component;
     private fileIndex: { paths: Map<string, string>; basenames: Map<string, string[]> } | null = null;
     private fileIndexBuiltAt = 0;
@@ -59,6 +69,21 @@ export class BuddyBridgeChatView extends ItemView {
      * 不直接调 getActiveFile()——焦点在聊天面板（ItemView 无文件）时它返回不可靠。
      */
     private currentFilePath: string | null = null;
+
+    /**
+     * 解析「当前文章」路径，三级兜底：
+     * 1. 实时活跃文件（getActiveFile）；
+     * 2. 粘性值 currentFilePath（焦点在聊天面板时保留最后查看的笔记）；
+     * 3. 最近打开的文件（getLastOpenFiles 首项）——面板刚打开、用户尚未点击任何文件时，
+     *    也能拿到打开面板前在看的那篇笔记（否则分支/新增会话首条消息丢失「当前文章」）。
+     */
+    private getCurrentFilePath(): string | null {
+        const active = this.app.workspace.getActiveFile();
+        if (active) return active.path;
+        if (this.currentFilePath) return this.currentFilePath;
+        const last = this.app.workspace.getLastOpenFiles();
+        return last.length > 0 ? last[0] : null;
+    }
 
     private get vaultPath(): string | undefined {
         const adapter = this.app.vault.adapter as { basePath?: string };
@@ -78,13 +103,16 @@ export class BuddyBridgeChatView extends ItemView {
      * 构建发送给 CLI 的上下文文本：会话内去重。
      * 笔记 / Vault 上下文「没变化」就不再重复注入，只在变化时注入，
      * 避免 CLI 历史里堆叠 N 行 `[系统注入·当前笔记: ...]` 导致 agent 误判。
+     * @param notePath 入队时的笔记快照（可选）；未提供时回退当前文件。
      */
-    private buildContextText(convId: string, text: string): string {
+    private buildContextText(convId: string, text: string, notePath?: string | null): string {
         const settings = this.pluginSettings;
         const noteLink = settings?.noteLinkInjection !== false;
         const vaultCtx = !!settings?.vaultContextInjection;
         const current: PromptContextState = {
-            notePath: noteLink ? (this.currentFilePath ?? null) : null,
+            // 快照优先：非空快照在排队期间切笔记 / 焦点变化时保持不变；
+            // 空快照（入队时无当前文章）回退到解析时的实时当前文章，尽力注入而非直接丢弃
+            notePath: noteLink ? (notePath ?? this.getCurrentFilePath()) : null,
             vaultPath: vaultCtx ? (this.vaultPath ?? null) : null,
         };
         const prev = this.contextStates.get(convId) ?? null;
@@ -112,18 +140,33 @@ export class BuddyBridgeChatView extends ItemView {
     getManager(): ConversationManager { return this.manager; }
 
     async onOpen() {
+        // 单实例守卫：BuddyBridge 传输层是单流（所有视图共享同一个 api 单例），
+        // 同时打开多个聊天窗口会互相踩掉流式状态（pendingResolve / currentProc / chunkQueue）
+        // 导致输出串窗、队列永久卡死（"消息出现在所有窗口 / AI 无法响应"）。
+        // 新窗口打开时：取消在途流 + 关闭其他聊天 leaf，只保留当前这一个。
+        this.api.cancel();
+        const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_CHAT);
+        for (const leaf of leaves) {
+            if (leaf !== this.leaf) {
+                await leaf.detach();
+            }
+        }
+
         const container = this.contentEl;
         container.empty();
         container.addClass('buddybridge-chat-container');
 
-        // 应用自定义主色调（安全访问，失败不影响面板）
+        // 应用自定义主色调 / 字体大小（安全访问，失败不影响面板）
         try {
             const plugin = (this.app as any).plugins?.plugins?.['buddybridge'];
             if (plugin?.applyPrimaryColor) {
                 plugin.applyPrimaryColor();
             }
+            if (plugin?.applyFontSize) {
+                plugin.applyFontSize();
+            }
         } catch (e) {
-            console.error('[BB] 应用主色调失败:', e);
+            console.error('[BB] 应用外观设置失败:', e);
         }
 
         // 顶部标签栏
@@ -138,17 +181,27 @@ export class BuddyBridgeChatView extends ItemView {
 
         // 当前文件指示器
         this.currentFileBar = container.createDiv({ cls: 'buddybridge-current-file' });
-        this.currentFilePath = this.app.workspace.getActiveFile()?.path ?? null;
+        // 用三级兜底解析：面板打开时活跃视图已是聊天 leaf（getActiveFile() 为 null），
+        // 直接赋值会把它清空导致「当前文章」丢失——改用 getCurrentFilePath() 保留最近笔记
+        this.currentFilePath = this.getCurrentFilePath();
         this.updateCurrentFileBar();
         this.registerEvent(
             this.app.workspace.on('active-leaf-change', () => {
-                this.currentFilePath = this.app.workspace.getActiveFile()?.path ?? null;
+                const file = this.app.workspace.getActiveFile();
+                // 焦点移到非文件视图（聊天面板等）时保留最后查看的笔记，不置空——
+                // 否则点一下聊天面板，当前文章感知就丢了（buildContextText 也读这里）
+                if (file) {
+                    this.currentFilePath = file.path;
+                }
                 this.updateCurrentFileBar();
             })
         );
 
         // 消息区域
         this.messageContainer = container.createDiv({ cls: 'buddybridge-messages' });
+
+        // 发送队列条（排队中消息，可删除/内联编辑）
+        this.queueBar = container.createDiv({ cls: 'buddybridge-queue-bar buddybridge-hidden' });
 
         // 底部输入区
         const inputArea = container.createDiv({ cls: 'buddybridge-input-area' });
@@ -168,11 +221,12 @@ export class BuddyBridgeChatView extends ItemView {
             attr: { 'aria-label': '发送' }
         });
         this.sendBtn.onclick = () => {
-            // 正在流式（不论哪个会话）→ 停止；否则发送
-            if (this.streamingMsgId !== null) {
+            // 当前活动会话正在流式 → 停止该会话的流（队列保留继续）；否则发送
+            const activeId = this.manager.getActive()?.id ?? null;
+            if (activeId !== null && this.draining.has(activeId)) {
                 this.stopStreaming();
             } else {
-                this.sendMessage();
+                void this.sendMessage();
             }
         };
 
@@ -220,23 +274,36 @@ export class BuddyBridgeChatView extends ItemView {
         this.manager.createConversation();
         this.renderTabs();
         await this.renderMessages();
-        this.setInputEnabled(true);
+        this.updateSendButton();
     }
 
     private async switchToChat(id: string) {
         this.manager.switchTo(id);
         this.renderTabs();
         await this.renderMessages();
-        // 切换到该对话时，根据其发送状态更新输入框
-        const isSending = this.streamingConversations.has(id);
-        this.setInputEnabled(!isSending);
+        // 输入框始终可用（队列模型：流式期间也可继续输入），仅更新按钮状态
+        this.updateSendButton();
+        // 立即按新会话重渲染队列条（各会话队列独立，只显示当前会话的等待项）
+        this.renderQueueBar();
+        // 切回有排队项的会话时立即恢复处理
+        void this.pumpQueue();
     }
 
     private async deleteChat(id: string, e: UIEvent) {
         e.stopPropagation();
         this.manager.deleteConversation(id);
+        // 清理该会话残留的排队项（孤儿项不会发送，留在内存里浪费）
+        this.clearQueuedFor(id);
         this.renderTabs();
         await this.renderMessages();
+    }
+
+    /** 清空指定会话的全部排队项（删除会话时调用）。 */
+    private clearQueuedFor(convId: string): void {
+        for (const item of this.sendQueue.listFor(convId)) {
+            this.sendQueue.remove(item.id);
+        }
+        this.renderQueueBar();
     }
 
     /** 渲染标签栏 */
@@ -303,20 +370,37 @@ export class BuddyBridgeChatView extends ItemView {
         }
 
         for (const msg of conv.messages) {
-            await this.renderMessage(msg, () => this.retryLastExchange());
+            await this.renderMessage(conv.id, msg, () => this.retryLastExchange());
         }
 
         this.scrollToBottom();
     }
 
-    private async renderMessage(msg: ChatMessage, onRetry?: () => void) {
+    private async renderMessage(convId: string, msg: ChatMessage, onRetry?: () => void) {
         const row = this.messageContainer.createDiv({
             cls: `buddybridge-message-row buddybridge-message-${msg.role}`
         });
+        // 分支入口（Phase 1）：悬浮按钮 → 从这里继续新对话
+        const forkBtn = row.createDiv({
+            cls: 'buddybridge-fork-btn',
+            attr: { title: '从这里继续新对话', 'aria-label': '从这里继续新对话', role: 'button', tabindex: '0' }
+        });
+        setIcon(forkBtn, 'git-branch');
+        forkBtn.onclick = (e: MouseEvent) => {
+            e.stopPropagation();
+            this.forkFrom(msg);
+        };
+        forkBtn.onkeydown = (e: KeyboardEvent) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                e.stopPropagation();
+                this.forkFrom(msg);
+            }
+        };
         const bubble = row.createDiv({ cls: 'buddybridge-bubble' });
 
-        // 仅当前正在等待回复的消息显示思考指示器
-        const isWaiting = msg.role === 'assistant' && msg.content === '' && msg.id === this.streamingMsgId;
+        // 仅当前会话正在等待回复的消息显示思考指示器（按会话判定，多会话并发不串窗）
+        const isWaiting = msg.role === 'assistant' && msg.content === '' && msg.id === this.streamingMsgIds.get(convId);
         if (isWaiting) {
             this.renderThinkingIndicator(bubble);
         } else if (msg.role === 'assistant') {
@@ -650,16 +734,21 @@ export class BuddyBridgeChatView extends ItemView {
         this.inputEl.style.setProperty('--buddybridge-input-height', `${this.inputEl.scrollHeight}px`);
     }
 
-    private setInputEnabled(enabled: boolean) {
-        this.inputEl.disabled = !enabled;
-        this.sendBtn.disabled = false;
-        this.sendBtn.setText(enabled ? '发送' : '停止');
-        this.sendBtn.toggleClass('buddybridge-send-btn-stop', !enabled);
+    /** 更新发送按钮状态：当前活动会话流式中显示「停止」（只中断该会话的流，队列保留），否则「发送」。 */
+    private updateSendButton() {
+        this.inputEl.disabled = false; // 流式期间输入框保持可用（排队核心）
+        const activeId = this.manager.getActive()?.id ?? null;
+        const busy = activeId !== null && this.draining.has(activeId);
+        this.sendBtn.setText(busy ? '停止' : '发送');
+        this.sendBtn.toggleClass('buddybridge-send-btn-stop', busy);
     }
 
     private stopStreaming() {
-        this.stopRequested = true;
-        this.api.cancel();
+        const conv = this.manager.getActive();
+        if (!conv) return;
+        // 只停止当前活动会话的流（按 sessionId 定向取消），其他会话的并发流不受影响
+        this.stopRequests.add(conv.id);
+        this.api.cancel(conv.sessionId);
     }
 
     private updateCommandDropdown() {
@@ -702,11 +791,11 @@ export class BuddyBridgeChatView extends ItemView {
         }
     }
 
+    /**
+     * 发送：统一入队（回复流式期间也可继续输入），由队列泵 FIFO 串行发出。
+     * 会话上限守卫不变 —— 无活动会话且达上限时提示中止，队列原有项不受影响（不丢消息）。
+     */
     private async sendMessage() {
-        // 该对话正在流式响应时阻止重复发送
-        const activeConv = this.manager.getActive();
-        if (activeConv && this.streamingConversations.has(activeConv.id)) return;
-
         const text = this.inputEl.value.trim();
         if (!text) return;
 
@@ -739,26 +828,76 @@ export class BuddyBridgeChatView extends ItemView {
             this.renderTabs();
         }
 
+        // 入队并清空输入；记录入队时的笔记快照（三级兜底解析「当前文章」）——排队期间切换笔记 /
+        // 焦点变化不影响本条消息实际携带的「当前文章」上下文
+        this.sendQueue.enqueue(conv.id, text, this.getCurrentFilePath());
+        this.inputEl.value = '';
+        this.adjustTextareaHeight();
+        this.renderQueueBar();
+        void this.pumpQueue();
+    }
+
+    /**
+     * 队列泵：并发 drain 所有有排队项的会话（各会话一条独立流，互不阻塞——
+     * 会话 A 流式期间，在会话 B 发送的问题立即并行回答）。
+     */
+    private async pumpQueue(): Promise<void> {
+        for (const conv of this.manager.getAll()) {
+            if (this.sendQueue.peekFor(conv.id)) {
+                void this.drainConversation(conv.id);
+            }
+        }
+    }
+
+    /**
+     * 单会话 drain：FIFO 串行处理该会话的排队项（先出队再处理，正在发送的不显示在队列条）。
+     * draining 集合防重入；停止请求只影响当前条（processItem 内部检查并清除），队列保留继续。
+     */
+    private async drainConversation(convId: string): Promise<void> {
+        if (this.draining.has(convId)) return;
+        this.draining.add(convId);
+        this.updateSendButton();
+        try {
+            while (true) {
+                const item = this.sendQueue.peekFor(convId);
+                if (!item) break;
+                this.sendQueue.dequeue(convId);
+                this.renderQueueBar();
+                await this.processItem(item);
+            }
+        } finally {
+            this.draining.delete(convId);
+            this.updateSendButton();
+            this.renderQueueBar();
+        }
+    }
+
+    /**
+     * 处理一条队列项：真正发送时写入历史并流式。
+     * 会话已被删除 → 丢弃该项（不产生消息）。
+     * 仅当该项属于当前活动会话时内联渲染流式；否则静默累积（切回该会话时可见完整回复）。
+     */
+    private async processItem(item: QueueItem): Promise<void> {
+        const convId = item.convId;
+        const conv = this.manager.getConversation(convId);
+        if (!conv) return;
+
         // 首次对话自动生成 sessionId，后续多轮对话保持上下文连贯
         if (!conv.sessionId) {
             conv.sessionId = this.api.generateId();
         }
 
-        // 添加用户消息
-        const convId = conv.id;
-        this.manager.addMessage(convId, 'user', text);
-        this.inputEl.value = '';
-        this.adjustTextareaHeight();
-        await this.renderMessages();
+        // 真正发送时添加用户消息（进入历史 / 自动生成标题）
+        this.manager.addMessage(convId, 'user', item.text);
 
         // 创建 AI 消息占位，标记为等待回复中
         const aiMsg = this.manager.addMessage(convId, 'assistant', '');
         if (!aiMsg) return;
 
-        this.streamingMsgId = aiMsg.id;
-        this.streamingConversations.add(convId);
-        this.setInputEnabled(false);
-        await this.renderMessages();
+        this.streamingMsgIds.set(convId, aiMsg.id);
+
+        const isActive = this.manager.getActive()?.id === convId;
+        let bubble: HTMLElement | null = null;
 
         // 流式发送
         let firstChunk = true;
@@ -767,23 +906,36 @@ export class BuddyBridgeChatView extends ItemView {
         let parts: MessagePart[] = [];
         let streamingError: string | null = null;
         try {
-            // 当前文档感知（ROADMAP 1.1）+ 注入开关（P2.6）+ 会话内去重：普通消息只在上下文变化时注入；
-            // 斜杠命令原样透传，不注入上下文。注入文本不进对话历史，聊天仍显示原文。
-            const contextText = text.startsWith('/')
-                ? text
-                : this.buildContextText(convId, text);
-
-            const streamingBubble = this.messageContainer.querySelector(
-                `.buddybridge-message-assistant:last-child .buddybridge-bubble`
-            );
-            if (!(streamingBubble instanceof HTMLElement)) {
-                throw new Error('找不到 Assistant 消息气泡');
+            // 仅当该项属于当前活动会话时内联渲染（气泡查找在 try 内：失败按错误消息处理，队列继续）
+            if (isActive) {
+                await this.renderMessages();
+                const streamingBubble = this.messageContainer.querySelector(
+                    `.buddybridge-message-assistant:last-child .buddybridge-bubble`
+                );
+                if (!(streamingBubble instanceof HTMLElement)) {
+                    throw new Error('找不到 Assistant 消息气泡');
+                }
+                bubble = streamingBubble;
             }
 
+            // 上下文在入队时已随项快照（当时的笔记 + 会话内去重）；斜杠命令原样透传，
+            // 不注入上下文。注入文本不进对话历史，聊天仍显示原文。
+            const base = item.text.startsWith('/')
+                ? item.text
+                : this.buildContextText(convId, item.text, item.notePath);
+            // 分支会话：首条发送时前置注入截至分叉点的对话转写（一次性），让新 session 了解此前对话
+            const transcript = this.forkTranscripts.get(convId);
+            if (transcript) {
+                this.forkTranscripts.delete(convId);
+            }
+            // Windows cmd 传输层在第一个换行处截断命令行参数：多行注入文本（分支转写 /
+            // 当前笔记 / 问题正文）发送前须把换行编码为 U+2028 行分隔符（见
+            // context.ts encodeLineSeparators），否则 CLI 只收到第一行，内容确实传不过去。
+            const contextText = encodeLineSeparators(transcript ? `${transcript}\n\n${base}` : base);
+
             for await (const chunk of this.api.sendMessage(conv.sessionId, contextText, this.vaultPath)) {
-                // 停止即时生效：点停止后不再渲染后续缓冲 chunk
-                if (this.stopRequested) break;
-                const bubble = streamingBubble;
+                // 停止即时生效：点停止后不再渲染后续缓冲 chunk（仅当前会话，队列保留，下一条继续）
+                if (this.stopRequests.has(convId)) break;
 
                 // 仅在尚未产出任何真实内容时，过滤 CLI 启动横幅；
                 // 整行开头匹配 + 已产出正文后不再过滤，避免误吞回复正文中的关键词
@@ -794,12 +946,14 @@ export class BuddyBridgeChatView extends ItemView {
 
                 if (firstChunk) {
                     firstChunk = false;
-                    // 移除思考指示器
-                    const thinking = bubble.querySelector('.buddybridge-thinking');
-                    if (thinking instanceof HTMLElement) {
-                        thinking.addClass('buddybridge-thinking-fadeout');
-                        await new Promise(r => window.setTimeout(r, 200));
-                        thinking.remove();
+                    // 移除思考指示器（仅内联渲染时）
+                    if (isActive && bubble) {
+                        const thinking = bubble.querySelector('.buddybridge-thinking');
+                        if (thinking instanceof HTMLElement) {
+                            thinking.addClass('buddybridge-thinking-fadeout');
+                            await new Promise(r => window.setTimeout(r, 200));
+                            thinking.remove();
+                        }
                     }
                 }
 
@@ -813,16 +967,22 @@ export class BuddyBridgeChatView extends ItemView {
                         parts.push({ kind: 'thinking', content: thinkingContent });
                     }
                     this.manager.updateMessageParts(convId, aiMsg.id, parts, true);
-                    this.renderThinkingBlock(bubble, thinkingContent, '思考中...');
+                    if (isActive && bubble) {
+                        this.renderThinkingBlock(bubble, thinkingContent, '思考中...');
+                    }
                 } else if (chunk.type === 'tool') {
                     parts.push({ kind: 'tool', name: chunk.toolName || '', detail: chunk.toolDetail || '' });
                     this.manager.updateMessageParts(convId, aiMsg.id, parts, true);
-                    const toolsBlock = this.renderToolsBlock(bubble);
-                    this.appendToolRow(toolsBlock, chunk.toolName || '', chunk.toolDetail || '');
+                    if (isActive && bubble) {
+                        const toolsBlock = this.renderToolsBlock(bubble);
+                        this.appendToolRow(toolsBlock, chunk.toolName || '', chunk.toolDetail || '');
+                    }
                 } else if (chunk.type === 'text') {
                     textContent += chunk.content;
                     this.manager.updateMessage(convId, aiMsg.id, textContent, true);
-                    await this.renderMarkdownContent(bubble, textContent);
+                    if (isActive && bubble) {
+                        await this.renderMarkdownContent(bubble, textContent);
+                    }
                 } else if (chunk.type === 'error') {
                     streamingError = chunk.content;
                     this.manager.updateMessage(convId, aiMsg.id, `错误: ${chunk.content}`, true);
@@ -835,30 +995,176 @@ export class BuddyBridgeChatView extends ItemView {
                 this.manager.updateMessage(convId, aiMsg.id, `错误: ${streamingError}`);
                 this.manager.updateMessageParts(convId, aiMsg.id, undefined, true);
             } else {
-                // 正文只存文本；思考/工具调用已通过 parts 持久化（流式结束后由 parts 重建可折叠块）
-                this.manager.updateMessage(convId, aiMsg.id, textContent);
                 const hasContent = Boolean(textContent || thinkingContent || parts.length > 0);
+                const stopped = this.stopRequests.has(convId);
                 if (!hasContent) {
-                    this.manager.updateMessage(convId, aiMsg.id, this.stopRequested ? '（已停止）' : '（无响应，请重试）');
-                } else if (this.stopRequested && textContent) {
+                    // 正文只存文本；思考/工具调用已通过 parts 持久化（流式结束后由 parts 重建可折叠块）
+                    this.manager.updateMessage(convId, aiMsg.id, stopped ? '（已停止）' : '（无响应，请重试）');
+                } else if (stopped && textContent) {
                     this.manager.updateMessage(convId, aiMsg.id, textContent + '\n\n（已停止）');
+                } else if (isGatewayEmptyStream(textContent, thinkingContent.length, parts.length)) {
+                    // 上游网关只回占位 chunk（Empty stream）：整条回复是网关失败而非模型输出，
+                    // 该 session 已无法正常产出（反复失败 = 会话在 CLI 侧卡死）。
+                    // 显示错误卡 + 滚动会话自愈：下一条（含错误卡「重试」）用新 sessionId 重开，
+                    // 并把近期对话作为背景转写注入新会话，避免丢失多轮上下文。
+                    this.manager.updateMessage(convId, aiMsg.id, `错误: ${textContent}`);
+                    this.manager.updateMessageParts(convId, aiMsg.id, undefined, true);
+                    this.manager.setSessionId(convId, this.api.generateId());
+                    this.preserveRecentContext(convId);
+                    new Notice('上游网关无输出（Empty stream），已重置会话，请重试');
+                } else {
+                    this.manager.updateMessage(convId, aiMsg.id, textContent);
                 }
             }
 
             // 流式结束后从 parts 重建（思考块标签变「已思考」、工具卡保留可折叠）
-            await this.renderMessages();
+            if (isActive) {
+                await this.renderMessages();
+            }
             await this.manager.flush();
         } catch (error: unknown) {
             const message = getErrorMessage(error);
             this.manager.updateMessage(convId, aiMsg.id, `错误: ${message}`);
             new Notice(`请求失败: ${message}`);
-            await this.renderMessages();
+            if (isActive) {
+                await this.renderMessages();
+            }
         } finally {
-            this.streamingConversations.delete(convId);
-            this.streamingMsgId = null;
-            this.stopRequested = false;
-            this.setInputEnabled(true);
+            this.streamingMsgIds.delete(convId);
+            this.stopRequests.delete(convId);
         }
+    }
+
+    /** 渲染队列条：只显示「当前活跃会话」真正等待中的排队项（chip 可 ✕ 删除 / 点击内联编辑）。
+     * 正在发送的项已先出队，不在此显示；其他会话的排队项也不在此展示（各会话队列独立）。 */
+    private renderQueueBar(): void {
+        if (!this.queueBar) return;
+        const activeId = this.manager.getActive()?.id ?? null;
+        const items = activeId ? this.sendQueue.listFor(activeId) : [];
+        if (items.length === 0) {
+            this.queueBar.empty();
+            this.queueBar.addClass('buddybridge-hidden');
+            return;
+        }
+        this.queueBar.empty();
+        this.queueBar.removeClass('buddybridge-hidden');
+        for (const item of items) {
+            const chip = this.queueBar.createDiv({ cls: 'buddybridge-queue-chip' });
+            const body = chip.createSpan({ cls: 'buddybridge-queue-chip-text', text: item.text });
+            body.onclick = () => this.editQueueItem(item.id, chip, body);
+
+            const del = chip.createSpan({
+                cls: 'buddybridge-queue-chip-del',
+                attr: { title: '删除该条', 'aria-label': '删除该条', role: 'button', tabindex: '0' }
+            });
+            setIcon(del, 'x');
+            del.onclick = (e: MouseEvent) => {
+                e.stopPropagation();
+                this.removeQueueItem(item.id);
+            };
+            del.onkeydown = (e: KeyboardEvent) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    this.removeQueueItem(item.id);
+                }
+            };
+        }
+    }
+
+    private removeQueueItem(id: string): void {
+        this.sendQueue.remove(id);
+        this.renderQueueBar();
+    }
+
+    /** 内联编辑：点击 chip 文本 → 变为输入框；Enter 保存 / Esc 取消 / 失焦保存。 */
+    private editQueueItem(id: string, chip: HTMLElement, body: HTMLElement): void {
+        let cancelled = false;
+        const edit = document.createElement('input');
+        edit.addClass('buddybridge-queue-chip-input');
+        edit.type = 'text';
+        edit.value = body.textContent ?? '';
+        edit.addEventListener('keydown', (e: KeyboardEvent) => {
+            e.stopPropagation();
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                this.commitQueueEdit(id, edit.value);
+            } else if (e.key === 'Escape') {
+                cancelled = true;
+                this.renderQueueBar();
+            }
+        });
+        edit.addEventListener('blur', () => {
+            if (!cancelled) this.commitQueueEdit(id, edit.value);
+        });
+        chip.replaceChild(edit, body);
+        edit.focus();
+        edit.select();
+    }
+
+    /** 提交队列项编辑：空内容视为删除该条。 */
+    private commitQueueEdit(id: string, text: string): void {
+        const trimmed = text.trim();
+        if (!trimmed) {
+            this.sendQueue.remove(id);
+        } else {
+            this.sendQueue.update(id, trimmed);
+        }
+        this.renderQueueBar();
+    }
+
+    /**
+     * 分支 Phase 1：从指定消息「从这里继续新对话」。
+     * 新会话复制截至该消息的历史（可见上下文）+ 新 sessionId，受会话上限守卫（决策 5）。
+     * 分叉后首条发送时注入对话转写，供新 session 了解此前对话。
+     */
+    private forkFrom(msg: ChatMessage): void {
+        const conv = this.manager.getActive();
+        if (!conv) return;
+        const idx = conv.messages.findIndex(m => m.id === msg.id);
+        if (idx < 0) return;
+        // 分叉即新建窗口：达上限时被拦截并提示（守卫内部提示「对话已满」）
+        if (this.atConversationLimit()) return;
+
+        const history = conv.messages.slice(0, idx + 1);
+        const newConv = this.manager.createConversation(`${conv.title}（分支）`);
+        this.manager.replaceMessages(newConv.id, history);
+        this.forkTranscripts.set(newConv.id, this.buildForkTranscript(history));
+
+        this.renderTabs();
+        void this.renderMessages();
+        this.updateSendButton();
+    }
+
+    /** 构建分支注入转写：截至分叉点的对话（角色标注），供新 session 作为背景参考。 */
+    private buildForkTranscript(messages: ChatMessage[], label = '[系统注入·分支上下文] 以下是你与此用户此前的对话（截至分支点），仅作背景参考：'): string {
+        const lines: string[] = [label];
+        for (const m of messages) {
+            const content = m.content.trim();
+            if (!content) continue;
+            lines.push(`${m.role === 'user' ? '用户' : '助手'}: ${content}`);
+        }
+        return lines.join('\n');
+    }
+
+    /**
+     * 会话滚动后保留近期上下文：把最近若干条用户/助手消息（排除错误卡）作为背景转写注入
+     * 新会话首条发送（复用 forkTranscripts 机制，一次性消费，上限 12 条避免再度撑爆上下文）。
+     */
+    private preserveRecentContext(convId: string): void {
+        const conv = this.manager.getConversation(convId);
+        if (!conv) return;
+        const history = conv.messages.filter(m =>
+            m.role === 'user' || (m.role === 'assistant' && !m.content.startsWith('错误:'))
+        );
+        if (history.length === 0) return;
+        this.forkTranscripts.set(
+            convId,
+            this.buildForkTranscript(
+                history.slice(-12),
+                '[系统注入·会话重置] 以下是你与此用户此前的对话（会话已因网关故障重置），仅作背景参考：'
+            )
+        );
     }
 
     private updateCurrentFileBar() {

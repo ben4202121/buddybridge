@@ -352,13 +352,14 @@ export function escapeCmdArg(text: string): string {
 
 export class BuddyBridgeAPI {
     private timeout: number;
-    /** 当前流式请求是否被取消（停止按钮）；UI 层单流式，一次只跑一个请求 */
-    private cancelled = false;
-    /** 生成器主循环挂起时的唤醒器（cancel() 通过它让流立即结束） */
-    private pendingResolve: ((r: IteratorResult<StreamChunk>) => void) | null = null;
     private scriptPath: string;
     private nodePath = '';
-    private currentProc: ReturnType<typeof spawn> | null = null;
+    /**
+     * 在途流式请求的取消句柄表：sessionId → cancel 回调。
+     * 传输层按会话并发：每个会话的流式各占一个独立进程（每条消息一个 spawn），
+     * 取消按会话定向（cancel(sessionId)），不互相踩踏。
+     */
+    private activeStreams = new Map<string, () => void>();
 
     constructor(timeout: number = TIMEOUT) {
         this.timeout = timeout;
@@ -398,8 +399,11 @@ export class BuddyBridgeAPI {
     }
 
     async *sendMessage(sessionId: string, text: string, vaultPath?: string): AsyncGenerator<StreamChunk> {
-        this.cancelled = false;
-        this.pendingResolve = null;
+        // 并发支持：取消标志 / 唤醒器 / 进程句柄改为每次调用的局部变量（不再共享实例字段），
+        // 每个会话的流式各占一个独立进程，互不踩踏；取消经 activeStreams 按 sessionId 定向。
+        let cancelled = false;
+        let pendingResolve: ((r: IteratorResult<StreamChunk>) => void) | null = null;
+        let currentProc: ReturnType<typeof spawn> | null = null;
         const scriptPath = this.scriptPath;
         const procOptions: SpawnOptions = {
             // 不再使用 spawn 的 timeout（P0.3）：改为插件侧计时，超时产出明确错误卡
@@ -432,157 +436,176 @@ export class BuddyBridgeAPI {
             const nodeBin = this.nodePath || findNodeExecutable() || 'node';
             proc = spawn(nodeBin, [scriptPath, ...cliArgs], procOptions);
         }
-        this.currentProc = proc;
+        currentProc = proc;
 
-        // P0.3 插件侧计时：超时主动产出明确错误卡（不再依赖 spawn 的静默 timeout kill）
-        let timedOut = false;
-        const timeoutSeconds = Math.max(1, Math.round(this.timeout / 1000));
-        const timer = setTimeout(() => {
-            if (closed) return;
-            timedOut = true;
-            try { proc.kill(); } catch { /* ignore */ }
-            const errChunk: StreamChunk = {
-                type: 'error',
-                content: `请求超时（已等待 ${timeoutSeconds} 秒），请检查 CodeBuddy CLI 是否正常运行或尝试重试`,
-            };
-            if (this.pendingResolve) {
-                this.pendingResolve({ value: errChunk, done: false });
-                this.pendingResolve = null;
-            } else {
-                chunkQueue.push(errChunk);
+        // 注册取消句柄：cancel(sessionId) 按会话定向终止本流；生成器结束（finally）即注销。
+        const cancelHandler = () => {
+            cancelled = true;
+            // 唤醒挂起的主循环等待，让生成器立即结束（不等进程真正退出）
+            if (pendingResolve) {
+                pendingResolve({ value: { type: 'done', content: '' }, done: true });
+                pendingResolve = null;
             }
-        }, this.timeout);
-        timer.unref?.();
-
-        let buffer = '';
-        let errOut = '';
-        let hasOutput = false;
-        const chunkQueue: StreamChunk[] = [];
-        let closed = false;
-
-        proc.stdout.on('data', (d: Buffer) => {
-            buffer += d.toString();
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-            for (const line of lines) {
-                const chunk = parseStreamLine(line);
-                if (chunk) {
-                    hasOutput = true;
-                    const preview = typeof chunk.content === 'string' ? chunk.content.substring(0, 80) : JSON.stringify(chunk.content).substring(0, 80);
-                    console.log('[BB] chunk:', chunk.type, preview);
-                    if (this.pendingResolve) {
-                        this.pendingResolve({ value: chunk, done: false });
-                        this.pendingResolve = null;
+            if (currentProc) {
+                try {
+                    if (process.platform === 'win32' && currentProc.pid) {
+                        // Windows 上 kill() 对 .cmd/.exe wrapper 常杀不干净（子树仍持有 stdout 管道）
+                        spawn('taskkill', ['/pid', String(currentProc.pid), '/T', '/F']);
                     } else {
-                        chunkQueue.push(chunk);
+                        currentProc.kill();
                     }
+                    console.log('[BB] 已终止 CLI 进程');
+                } catch (e) {
+                    console.error('[BB] 终止进程失败:', e);
                 }
+                currentProc = null;
             }
-        });
+        };
+        this.activeStreams.set(sessionId, cancelHandler);
 
-        proc.stderr.on('data', (d: Buffer) => {
-            errOut += d.toString();
-            console.log('[BB] stderr:', errOut);
-        });
-
-        proc.on('close', (code, signal) => {
-            console.log('[BB] exit:', code, signal ? 'signal:' + signal : '', '| err:', errOut.substring(0, 200));
-            this.currentProc = null;
-            clearTimeout(timer);
-            closed = true;
-            if (this.pendingResolve) {
-                // P0.5 退出码与错误分类（三档场景）：
-                // - 非零退出码 + stdout 有内容 → 正常收尾（stderr 仅记录日志）
-                // - 非零退出码 + stdout 为空 → 致命错误卡
-                // - 零退出码（可能仅有良性 stderr 警告）→ 正常结束
-                let result: IteratorResult<StreamChunk>;
-                if (hasOutput) {
-                    result = { value: { type: 'done', content: '' }, done: true };
-                } else if (code !== 0) {
-                    const detail = errOut.trim()
-                        || `进程异常退出（退出码 ${code}${signal ? `, 信号 ${signal}` : ''}），请检查 CodeBuddy CLI 是否正常运行`;
-                    result = { value: { type: 'error', content: detail }, done: true };
+        try {
+            // P0.3 插件侧计时：超时主动产出明确错误卡（不再依赖 spawn 的静默 timeout kill）
+            let timedOut = false;
+            const timeoutSeconds = Math.max(1, Math.round(this.timeout / 1000));
+            const timer = setTimeout(() => {
+                if (closed) return;
+                timedOut = true;
+                try { proc.kill(); } catch { /* ignore */ }
+                const errChunk: StreamChunk = {
+                    type: 'error',
+                    content: `请求超时（已等待 ${timeoutSeconds} 秒），请检查 CodeBuddy CLI 是否正常运行或尝试重试`,
+                };
+                if (pendingResolve) {
+                    pendingResolve({ value: errChunk, done: false });
+                    pendingResolve = null;
                 } else {
-                    result = { value: { type: 'done', content: '' }, done: true };
+                    chunkQueue.push(errChunk);
                 }
-                this.pendingResolve(result);
-                this.pendingResolve = null;
-            }
-        });
+            }, this.timeout);
+            timer.unref?.();
 
-        proc.on('error', (e) => {
-            console.log('[BB] spawn err:', e.message, '| scriptPath:', scriptPath);
-            clearTimeout(timer);
-            closed = true;
-            if (this.pendingResolve) {
-                let hint = e.message;
-                if (e.message.includes('ENOENT')) {
-                    if (scriptPath === 'codebuddy') {
-                        hint = '找不到 codebuddy CLI。请确认已安装 WorkBuddy 桌面版，或在插件设置中指定 codebuddy 路径。';
-                    } else if (!isWindowsWrapper(scriptPath) && !isBareFallback(scriptPath)) {
-                        hint = `找不到 Node.js 来运行 codebuddy (路径: ${scriptPath})。请确认已安装 Node.js。`;
+            let buffer = '';
+            let errOut = '';
+            let hasOutput = false;
+            const chunkQueue: StreamChunk[] = [];
+            let closed = false;
+
+            proc.stdout.on('data', (d: Buffer) => {
+                buffer += d.toString();
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || '';
+                for (const line of lines) {
+                    const chunk = parseStreamLine(line);
+                    if (chunk) {
+                        hasOutput = true;
+                        const preview = typeof chunk.content === 'string' ? chunk.content.substring(0, 80) : JSON.stringify(chunk.content).substring(0, 80);
+                        console.log('[BB] chunk:', chunk.type, preview);
+                        if (pendingResolve) {
+                            pendingResolve({ value: chunk, done: false });
+                            pendingResolve = null;
+                        } else {
+                            chunkQueue.push(chunk);
+                        }
                     }
                 }
-                this.pendingResolve({ value: { type: 'error', content: hint }, done: true });
-                this.pendingResolve = null;
-            }
-        });
-
-        // 主循环
-        while (true) {
-            // 停止即时生效：cancel() 唤醒等待后这里立刻退出（不等进程真正结束）
-            if (this.cancelled) break;
-            if (chunkQueue.length > 0) {
-                const nextChunk = chunkQueue.shift();
-                if (nextChunk) {
-                    yield nextChunk;
-                    continue;
-                }
-            }
-            // P0.3：超时错误卡已产出（或已入队），退出流式
-            if (timedOut) {
-                clearTimeout(timer);
-                break;
-            }
-            if (closed) {
-                if (buffer.trim()) {
-                    const chunk = parseStreamLine(buffer);
-                    if (chunk) yield chunk;
-                }
-                break;
-            }
-            const next = await new Promise<IteratorResult<StreamChunk>>((r) => {
-                this.pendingResolve = r;
             });
-            if (next.done) {
-                if (next.value?.type === 'error') throw new Error(next.value.content);
-                break;
+
+            proc.stderr.on('data', (d: Buffer) => {
+                errOut += d.toString();
+                console.log('[BB] stderr:', errOut);
+            });
+
+            proc.on('close', (code, signal) => {
+                console.log('[BB] exit:', code, signal ? 'signal:' + signal : '', '| err:', errOut.substring(0, 200));
+                currentProc = null;
+                clearTimeout(timer);
+                closed = true;
+                if (pendingResolve) {
+                    // P0.5 退出码与错误分类（三档场景）：
+                    // - 非零退出码 + stdout 有内容 → 正常收尾（stderr 仅记录日志）
+                    // - 非零退出码 + stdout 为空 → 致命错误卡
+                    // - 零退出码（可能仅有良性 stderr 警告）→ 正常结束
+                    let result: IteratorResult<StreamChunk>;
+                    if (hasOutput) {
+                        result = { value: { type: 'done', content: '' }, done: true };
+                    } else if (code !== 0) {
+                        const detail = errOut.trim()
+                            || `进程异常退出（退出码 ${code}${signal ? `, 信号 ${signal}` : ''}），请检查 CodeBuddy CLI 是否正常运行`;
+                        result = { value: { type: 'error', content: detail }, done: true };
+                    } else {
+                        result = { value: { type: 'done', content: '' }, done: true };
+                    }
+                    pendingResolve(result);
+                    pendingResolve = null;
+                }
+            });
+
+            proc.on('error', (e) => {
+                console.log('[BB] spawn err:', e.message, '| scriptPath:', scriptPath);
+                clearTimeout(timer);
+                closed = true;
+                if (pendingResolve) {
+                    let hint = e.message;
+                    if (e.message.includes('ENOENT')) {
+                        if (scriptPath === 'codebuddy') {
+                            hint = '找不到 codebuddy CLI。请确认已安装 WorkBuddy 桌面版，或在插件设置中指定 codebuddy 路径。';
+                        } else if (!isWindowsWrapper(scriptPath) && !isBareFallback(scriptPath)) {
+                            hint = `找不到 Node.js 来运行 codebuddy (路径: ${scriptPath})。请确认已安装 Node.js。`;
+                        }
+                    }
+                    pendingResolve({ value: { type: 'error', content: hint }, done: true });
+                    pendingResolve = null;
+                }
+            });
+
+            // 主循环
+            while (true) {
+                // 停止即时生效：cancel() 唤醒等待后这里立刻退出（不等进程真正结束）
+                if (cancelled) break;
+                if (chunkQueue.length > 0) {
+                    const nextChunk = chunkQueue.shift();
+                    if (nextChunk) {
+                        yield nextChunk;
+                        continue;
+                    }
+                }
+                // P0.3：超时错误卡已产出（或已入队），退出流式
+                if (timedOut) {
+                    clearTimeout(timer);
+                    break;
+                }
+                if (closed) {
+                    if (buffer.trim()) {
+                        const chunk = parseStreamLine(buffer);
+                        if (chunk) yield chunk;
+                    }
+                    break;
+                }
+                const next = await new Promise<IteratorResult<StreamChunk>>((r) => {
+                    pendingResolve = r;
+                });
+                if (next.done) {
+                    if (next.value?.type === 'error') throw new Error(next.value.content);
+                    break;
+                }
+                yield next.value;
             }
-            yield next.value;
+            clearTimeout(timer);
+        } finally {
+            this.activeStreams.delete(sessionId);
         }
-        clearTimeout(timer);
     }
 
-    cancel(): void {
-        this.cancelled = true;
-        // 唤醒挂起的主循环等待，让生成器立即结束（不等进程真正退出）
-        if (this.pendingResolve) {
-            this.pendingResolve({ value: { type: 'done', content: '' }, done: true });
-            this.pendingResolve = null;
+    /** 取消流式请求：传入 sessionId 只取消该会话的流；不传则取消全部在途流（兼容旧调用）。 */
+    cancel(sessionId?: string): void {
+        if (sessionId) {
+            const handler = this.activeStreams.get(sessionId);
+            if (handler) handler();
+            return;
         }
-        if (this.currentProc) {
-            try {
-                if (process.platform === 'win32' && this.currentProc.pid) {
-                    // Windows 上 kill() 对 .cmd/.exe wrapper 常杀不干净（子树仍持有 stdout 管道）
-                    spawn('taskkill', ['/pid', String(this.currentProc.pid), '/T', '/F']);
-                } else {
-                    this.currentProc.kill();
-                }
-                console.log('[BB] 已终止 CLI 进程');
-            } catch (e) {
-                console.error('[BB] 终止进程失败:', e);
-            }
-            this.currentProc = null;
+        for (const handler of [...this.activeStreams.values()]) {
+            handler();
         }
+        this.activeStreams.clear();
     }
 }

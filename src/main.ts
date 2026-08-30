@@ -57,6 +57,7 @@ export default class BuddyBridgePlugin extends Plugin {
 
             this.addSettingTab(new BuddyBridgeSettingTab(this.app, this));
             this.applyPrimaryColor();
+            this.applyFontSize();
         } catch (e) {
             console.error('[BB] 插件加载失败:', e);
             new Notice('BuddyBridge 加载失败，请查看 Console');
@@ -115,6 +116,7 @@ export default class BuddyBridgePlugin extends Plugin {
             this.chatView.getManager().setMaxConversations(this.settings.maxConversations);
         }
         this.applyPrimaryColor();
+        this.applyFontSize();
     }
 
     // ==================== 导出 / 导入（P2.6）====================
@@ -170,6 +172,7 @@ export default class BuddyBridgePlugin extends Plugin {
         this.api.setNodePath(this.settings.nodePath);
         this.api.setTimeoutMs(this.settings.timeoutSeconds * 1000);
         this.applyPrimaryColor();
+        this.applyFontSize();
 
         if (this.chatView) {
             await this.chatView.loadConversations(payload.conversations);
@@ -188,6 +191,21 @@ export default class BuddyBridgePlugin extends Plugin {
             });
         } catch (e) {
             console.error('[BB] 应用主色调失败:', e);
+        }
+    }
+
+    /** 应用聊天区字体大小（气泡 + Markdown 内容 + 输入框，经 --buddybridge-font-size 变量）。 */
+    applyFontSize() {
+        try {
+            const value = `${this.settings.fontSize}px`;
+            const containers = document.querySelectorAll('.buddybridge-chat-container');
+            containers.forEach((container) => {
+                if (container instanceof HTMLElement) {
+                    container.setCssProps({ '--buddybridge-font-size': value });
+                }
+            });
+        } catch (e) {
+            console.error('[BB] 应用字体大小失败:', e);
         }
     }
 }

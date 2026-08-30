@@ -84,6 +84,158 @@ describe('BuddyBridgeAPI', () => {
             emit('', 'close', 1, null);
             await expect(firstPromise).rejects.toThrow('command not found');
         });
+
+        it('runs two concurrent streams independently (per-session state)', async () => {
+            const { proc: procA, emit: emitA } = createFakeProc();
+            const { proc: procB, emit: emitB } = createFakeProc();
+            const spawnCalls: unknown[][] = [];
+            mockedSpawn.mockImplementation((...args: any[]) => {
+                spawnCalls.push(args);
+                return (spawnCalls.length === 1 ? procA : procB) as any;
+            });
+
+            const api = new BuddyBridgeAPI();
+            api.setCodebuddyPath('C:\\fake\\codebuddy.exe');
+
+            const genA = api.sendMessage('session-A', 'hello A');
+            const genB = api.sendMessage('session-B', 'hello B');
+
+            const pA = genA.next();
+            const pB = genB.next();
+
+            emitA('stdout', 'data', Buffer.from(JSON.stringify({ type: 'text', text: 'A1' }) + '\n'));
+            emitB('stdout', 'data', Buffer.from(JSON.stringify({ type: 'text', text: 'B1' }) + '\n'));
+
+            const [rA, rB] = await Promise.all([pA, pB]);
+            expect(rA.done).toBe(false);
+            expect(rA.value).toEqual({ type: 'text', content: 'A1' });
+            expect(rB.done).toBe(false);
+            expect(rB.value).toEqual({ type: 'text', content: 'B1' });
+            // 两个会话各自 spawn 了一次独立进程
+            expect(spawnCalls).toHaveLength(2);
+
+            // 正常收尾两个会话
+            emitA('', 'close', 0, null);
+            emitB('', 'close', 0, null);
+            const [fA, fB] = await Promise.all([genA.next(), genB.next()]);
+            expect(fA.done).toBe(true);
+            expect(fB.done).toBe(true);
+        });
+
+        it('cancel(sessionId) only cancels that session; the other stream continues', async () => {
+            const { proc: procA, emit: emitA } = createFakeProc();
+            const { proc: procB, emit: emitB } = createFakeProc();
+            const spawnCalls: unknown[][] = [];
+            mockedSpawn.mockImplementation((...args: any[]) => {
+                spawnCalls.push(args);
+                return (spawnCalls.length === 1 ? procA : procB) as any;
+            });
+
+            const api = new BuddyBridgeAPI();
+            api.setCodebuddyPath('C:\\fake\\codebuddy.exe');
+
+            const genA = api.sendMessage('session-A', 'hello A');
+            const genB = api.sendMessage('session-B', 'hello B');
+
+            const pA = genA.next();
+            const pB = genB.next();
+
+            // 定向取消会话 A：A 立即结束，B 不受影响
+            api.cancel('session-A');
+            const rA = await pA;
+            expect(rA.done).toBe(true);
+
+            emitB('stdout', 'data', Buffer.from(JSON.stringify({ type: 'text', text: 'B1' }) + '\n'));
+            const rB = await pB;
+            expect(rB.done).toBe(false);
+            expect(rB.value).toEqual({ type: 'text', content: 'B1' });
+
+            // 收尾 B；取消一个不存在的会话不抛错（注销后表已清空）
+            emitB('', 'close', 0, null);
+            await genB.next();
+            expect(() => api.cancel('nope')).not.toThrow();
+        });
+
+        it('cancel() with no args cancels all in-flight streams', async () => {
+            const { proc: procA } = createFakeProc();
+            const { proc: procB } = createFakeProc();
+            const spawnCalls: unknown[][] = [];
+            mockedSpawn.mockImplementation((...args: any[]) => {
+                spawnCalls.push(args);
+                return (spawnCalls.length === 1 ? procA : procB) as any;
+            });
+
+            const api = new BuddyBridgeAPI();
+            api.setCodebuddyPath('C:\\fake\\codebuddy.exe');
+
+            const genA = api.sendMessage('session-A', 'hello A');
+            const genB = api.sendMessage('session-B', 'hello B');
+
+            const pA = genA.next();
+            const pB = genB.next();
+
+            api.cancel();
+
+            const [rA, rB] = await Promise.all([pA, pB]);
+            expect(rA.done).toBe(true);
+            expect(rB.done).toBe(true);
+        });
+
+        it('runs three concurrent streams; cancelling one leaves the other two intact', async () => {
+            const { proc: procA, emit: emitA } = createFakeProc();
+            const { proc: procB, emit: emitB } = createFakeProc();
+            const { proc: procC, emit: emitC } = createFakeProc();
+            const spawnCalls: unknown[][] = [];
+            mockedSpawn.mockImplementation((...args: any[]) => {
+                spawnCalls.push(args);
+                return [procA, procB, procC][spawnCalls.length - 1] as any;
+            });
+
+            const api = new BuddyBridgeAPI();
+            api.setCodebuddyPath('C:\\fake\\codebuddy.exe');
+
+            const genA = api.sendMessage('session-A', 'hello A');
+            const genB = api.sendMessage('session-B', 'hello B');
+            const genC = api.sendMessage('session-C', 'hello C');
+
+            const pA = genA.next();
+            const pB = genB.next();
+            const pC = genC.next();
+
+            // 三条流同时产出各自首个 chunk
+            emitA('stdout', 'data', Buffer.from(JSON.stringify({ type: 'text', text: 'A1' }) + '\n'));
+            emitB('stdout', 'data', Buffer.from(JSON.stringify({ type: 'text', text: 'B1' }) + '\n'));
+            emitC('stdout', 'data', Buffer.from(JSON.stringify({ type: 'text', text: 'C1' }) + '\n'));
+
+            const [rA, rB, rC] = await Promise.all([pA, pB, pC]);
+            expect(rA.done).toBe(false);
+            expect(rA.value).toEqual({ type: 'text', content: 'A1' });
+            expect(rB.value).toEqual({ type: 'text', content: 'B1' });
+            expect(rC.value).toEqual({ type: 'text', content: 'C1' });
+            // 三个会话各自 spawn 了一次独立进程
+            expect(spawnCalls).toHaveLength(3);
+
+            // 定向取消中间那条 B：B 立即结束，A/C 继续工作
+            api.cancel('session-B');
+            const fB = await genB.next();
+            expect(fB.done).toBe(true);
+
+            // A 继续产出并正常收尾
+            emitA('stdout', 'data', Buffer.from(JSON.stringify({ type: 'text', text: 'A2' }) + '\n'));
+            emitA('', 'close', 0, null);
+            const fA = await genA.next();
+            expect(fA.done).toBe(false);
+            expect(fA.value).toEqual({ type: 'text', content: 'A2' });
+            expect((await genA.next()).done).toBe(true);
+
+            // C 继续产出并正常收尾
+            emitC('stdout', 'data', Buffer.from(JSON.stringify({ type: 'text', text: 'C2' }) + '\n'));
+            emitC('', 'close', 0, null);
+            const fC = await genC.next();
+            expect(fC.done).toBe(false);
+            expect(fC.value).toEqual({ type: 'text', content: 'C2' });
+            expect((await genC.next()).done).toBe(true);
+        });
     });
 });
 

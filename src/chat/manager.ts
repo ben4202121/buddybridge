@@ -131,6 +131,26 @@ export class ConversationManager {
         return this.conversations.get(this.activeId) || null;
     }
 
+    /** 按 id 获取对话（用于队列项按会话定位；不存在返回 null）。 */
+    getConversation(id: string): Conversation | null {
+        return this.conversations.get(id) ?? null;
+    }
+
+    /** 批量替换指定会话的消息列表（用于分支复制历史），持久化一次。 */
+    replaceMessages(convId: string, messages: ChatMessage[]): boolean {
+        const conv = this.conversations.get(convId);
+        if (!conv) return false;
+        conv.messages = messages.map(m => ({
+            ...m,
+            parts: m.parts ? m.parts.map(p => ({ ...p })) : undefined
+        }));
+        // 只升不降：分叉会话创建时已带单调递增的 updatedAt（createConversation 的 max+1），
+        // 这里若回退到 Date.now() 会让新分叉排序落到旧会话后面（分叉后找不到）。
+        conv.updatedAt = Math.max(conv.updatedAt, Date.now());
+        this.persist().catch((err) => this.handlePersistError(err));
+        return true;
+    }
+
     /** 获取所有对话（按更新时间倒序） */
     getAll(): Conversation[] {
         return Array.from(this.conversations.values())

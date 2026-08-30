@@ -10,6 +10,9 @@ describe('DEFAULT_SETTINGS', () => {
     it('should default timeoutSeconds to 300', () => {
         expect(DEFAULT_SETTINGS.timeoutSeconds).toBe(300);
     });
+    it('should default fontSize to 14', () => {
+        expect(DEFAULT_SETTINGS.fontSize).toBe(14);
+    });
 });
 
 describe('migrateSettings', () => {
@@ -54,6 +57,7 @@ describe('migrateSettings', () => {
         expect(r.maxConversations).toBe(7);
         expect(r.primaryColor).toBe('#ff0000');
         expect(r.timeoutSeconds).toBe(300); // 新字段回落默认
+        expect(r.fontSize).toBe(14); // v8 新增字段回落默认
         expect(r.version).toBe(DEFAULT_SETTINGS.version);
     });
 
@@ -62,6 +66,19 @@ describe('migrateSettings', () => {
         expect(migrateSettings({ timeoutSeconds: 0 }).timeoutSeconds).toBe(300);
         expect(migrateSettings({ timeoutSeconds: -1 }).timeoutSeconds).toBe(300);
         expect(migrateSettings({ timeoutSeconds: '300' }).timeoutSeconds).toBe(300);
+    });
+
+    it('should preserve fontSize when present and within bounds', () => {
+        expect(migrateSettings({ fontSize: 12 }).fontSize).toBe(12);
+        expect(migrateSettings({ fontSize: 18 }).fontSize).toBe(18);
+        expect(migrateSettings({ fontSize: 16 }).fontSize).toBe(16);
+    });
+
+    it('should fall back to default fontSize when missing or invalid', () => {
+        expect(migrateSettings({}).fontSize).toBe(14);
+        expect(migrateSettings({ fontSize: 5 }).fontSize).toBe(14);  // 低于下限
+        expect(migrateSettings({ fontSize: 99 }).fontSize).toBe(14); // 高于上限
+        expect(migrateSettings({ fontSize: '14' }).fontSize).toBe(14); // 非数字
     });
 
     it('should migrate nodePath from stored value', () => {

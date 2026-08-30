@@ -1,6 +1,6 @@
 import { App, PluginSettingTab, Setting, Notice } from 'obsidian';
 import type BuddyBridgePlugin from '../main';
-import { DEFAULT_SETTINGS } from '../types';
+import { DEFAULT_SETTINGS, FONT_SIZE_MIN, FONT_SIZE_MAX } from '../types';
 import { parseExport, downloadJSONFile, pickAndReadJSONFile } from '../io';
 import { ConfirmModal } from './confirm';
 
@@ -95,6 +95,18 @@ export class BuddyBridgeSettingTab extends PluginSettingTab {
                     await plugin.saveSettings();
                 });
             });
+
+        new Setting(containerEl)
+            .setName('字体大小')
+            .setDesc('聊天面板（消息气泡、Markdown 内容与输入框）的文字大小')
+            .addSlider(slider => slider
+                .setLimits(FONT_SIZE_MIN, FONT_SIZE_MAX, 1)
+                .setValue(plugin.settings.fontSize)
+                .setDynamicTooltip()
+                .onChange(async (value) => {
+                    plugin.settings.fontSize = value;
+                    await plugin.saveSettings();
+                }));
 
         // ==================== 管理 ====================
         new Setting(containerEl).setName('管理').setHeading();
