@@ -1,5 +1,9 @@
 import { buildPromptWithCurrentFile, buildPromptContext, buildDedupedPrompt, encodeLineSeparators, type PromptContextState } from '../src/context';
 
+// \u56fa\u5b9a\u6d4b\u8bd5\u8bed\u8a00\u4e3a\u4e2d\u6587\uff1a\u751f\u4ea7\u73af\u5883\u8bed\u8a00\u7531 Obsidian \u7684 localStorage['language'] \u51b3\u5b9a\uff0c
+// node \u6d4b\u8bd5\u73af\u5883\u65e0 localStorage/navigator\uff08i18n \u9ed8\u8ba4\u56de\u843d\u82f1\u6587\uff09\uff0c\u663e\u5f0f mock \u4fdd\u8bc1\u65ad\u8a00\u786e\u5b9a\u6027\u3002
+(global as any).localStorage = { getItem: (key: string) => (key === 'language' ? 'zh-CN' : null) };
+
 const LS = '\u2028';
 
 describe('buildPromptWithCurrentFile (当前文档感知)', () => {

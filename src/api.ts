@@ -1,17 +1,24 @@
 import { spawn, type SpawnOptions } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
-import { getErrorMessage, getString, isObject } from './types';
+import { getErrorMessage, getNumber, getString, isObject } from './types';
 
 const TIMEOUT = 300_000; // 5 分钟
 
 // ===== 流式事件类型 =====
+
+export interface UsageInfo {
+    inputTokens: number;
+    outputTokens: number;
+}
 
 export interface StreamChunk {
     type: 'thinking' | 'text' | 'tool' | 'error' | 'done';
     content: string;
     toolName?: string;
     toolDetail?: string;
+    /** 该轮 token 用量（来自 assistant 信封 message.usage，P2.5 上下文用量显示） */
+    usage?: UsageInfo;
 }
 
 interface MessageBlock {
@@ -232,6 +239,40 @@ export function blockToChunk(block: MessageBlock): StreamChunk | null {
     };
 }
 
+/**
+ * 从 assistant/user 信封的 message.usage 提取 token 用量（P2.5 上下文用量显示）。
+ * 流式输出中 assistant 的 text 事件带 message.usage（input_tokens/output_tokens），
+ * 解析不到或全空时返回 undefined，UI 层按 inputTokens>0 过滤展示。
+ */
+export function extractUsage(raw: unknown): UsageInfo | undefined {
+    if (!isObject(raw)) return undefined;
+    const message = isObject(raw.message) ? raw.message : null;
+    const usage = isObject(message?.usage) ? message.usage : null;
+    if (!usage) return undefined;
+    const input = getNumber(usage, 'input_tokens');
+    const output = getNumber(usage, 'output_tokens');
+    if (input === undefined && output === undefined) return undefined;
+    return { inputTokens: input ?? 0, outputTokens: output ?? 0 };
+}
+
+/** 用量占比状态：<80% 正常，≥80% 预警，≥100% 溢出（P2.5 用量条分级）。 */
+export type UsageLevel = 'normal' | 'warn' | 'critical';
+
+/**
+ * 计算 token 用量占上下文窗口的百分比（P2.5）。窗口非法（≤0）视为 0%，结果钳制在 [0,100]。
+ */
+export function usagePercent(inputTokens: number, windowSize: number): number {
+    if (windowSize <= 0) return 0;
+    return Math.min(100, Math.max(0, (inputTokens / windowSize) * 100));
+}
+
+/** 按百分比分级：≥100% 溢出，≥80% 预警，否则正常。 */
+export function usageLevel(pct: number): UsageLevel {
+    if (pct >= 100) return 'critical';
+    if (pct >= 80) return 'warn';
+    return 'normal';
+}
+
 // ===== 流事件解析 =====
 
 export function parseStreamEvent(raw: unknown): StreamEvent | null {
@@ -258,16 +299,20 @@ export function parseStreamLine(line: string): StreamChunk | null {
 
         // Shape 1: assistant/user envelope with nested message.content blocks
         if (isObject(raw) && (raw.type === 'assistant' || raw.type === 'user')) {
+            const usage = extractUsage(raw);
             const message = isObject(raw.message) ? raw.message : null;
             const content = Array.isArray(message?.content) ? message.content : [];
             for (const item of content) {
                 const block = parseMessageBlock(item);
                 if (block) {
                     const chunk = blockToChunk(block);
-                    if (chunk) return chunk;
+                    if (chunk) {
+                        if (usage) chunk.usage = usage;
+                        return chunk;
+                    }
                 }
             }
-            return null;
+            return usage ? { type: 'text', content: '', usage } : null;
         }
 
         // Shape 2: direct event object

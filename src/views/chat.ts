@@ -1,41 +1,42 @@
 import { ItemView, Notice, MarkdownRenderer, Component, setIcon } from 'obsidian';
 import type { WorkspaceLeaf } from 'obsidian';
 import { ConversationManager } from '../chat/manager';
-import { BuddyBridgeAPI, isStartupBanner } from '../api';
-import { getErrorMessage, type Conversation, ChatMessage, MessagePart, BuddyBridgeSettings } from '../types';
+import { BuddyBridgeAPI, isStartupBanner, usagePercent, usageLevel, type UsageInfo } from '../api';
+import { getErrorMessage, DEFAULT_SETTINGS, type Conversation, ChatMessage, MessagePart, BuddyBridgeSettings } from '../types';
 import { buildPromptContext, buildDedupedPrompt, encodeLineSeparators, type PromptContextState } from '../context';
+import { t, tF } from '../i18n';
 import { SendQueue, type QueueItem } from '../chat/queue';
 import { isGatewayEmptyStream } from '../chat/failure';
 
 export const VIEW_TYPE_CHAT = "buddybridge-panel";
 
 const COMMANDS: Record<string, string> = {
-    '/clear': '清空对话，重新开始',
-    '/help': '显示 CodeBuddy 帮助信息',
-    '/status': '显示当前仓库和会话状态',
-    '/doctor': '检查 CodeBuddy 环境状态',
-    '/compact': '压缩上下文以节省空间',
-    '/summarize': '总结并压缩对话上下文',
-    '/context': '计算当前会话 token 分布',
-    '/cost': '显示会话成本和 token 用量',
-    '/model': '查看或切换 AI 模型',
-    '/permissions': '管理工具和目录访问权限',
-    '/config': '查看或修改本地配置',
-    '/export': '导出当前对话',
-    '/resume': '恢复之前的会话',
-    '/rewind': '回退到之前的消息点',
-    '/init': '初始化 CodeBuddy 仓库',
-    '/plan': '预览计划模式下的计划文件',
-    '/fork': '在当前对话位置创建分支',
-    '/memory': '管理长期记忆',
-    '/mcp': '管理 MCP 连接',
-    '/todos': '显示待办事项列表',
-    '/stats': '显示使用统计信息',
-    '/cr': '审查代码质量',
-    '/fix': '自动修复代码问题',
-    '/tests': '生成单元测试',
-    '/explain': '解释代码工作原理',
-    '/rules': '生成代码规范规则',
+    '/clear': t('cmd.clear'),
+    '/help': t('cmd.help'),
+    '/status': t('cmd.status'),
+    '/doctor': t('cmd.doctor'),
+    '/compact': t('cmd.compact'),
+    '/summarize': t('cmd.summarize'),
+    '/context': t('cmd.context'),
+    '/cost': t('cmd.cost'),
+    '/model': t('cmd.model'),
+    '/permissions': t('cmd.permissions'),
+    '/config': t('cmd.config'),
+    '/export': t('cmd.export'),
+    '/resume': t('cmd.resume'),
+    '/rewind': t('cmd.rewind'),
+    '/init': t('cmd.init'),
+    '/plan': t('cmd.plan'),
+    '/fork': t('cmd.fork'),
+    '/memory': t('cmd.memory'),
+    '/mcp': t('cmd.mcp'),
+    '/todos': t('cmd.todos'),
+    '/stats': t('cmd.stats'),
+    '/cr': t('cmd.cr'),
+    '/fix': t('cmd.fix'),
+    '/tests': t('cmd.tests'),
+    '/explain': t('cmd.explain'),
+    '/rules': t('cmd.rules'),
 };
 
 export class BuddyBridgeChatView extends ItemView {
@@ -44,6 +45,10 @@ export class BuddyBridgeChatView extends ItemView {
     private messageContainer!: HTMLElement;
     private inputEl!: HTMLTextAreaElement;
     private sendBtn!: HTMLButtonElement;
+    /** 最近一轮的 token 用量（P2.5 上下文用量显示）；由流式 assistant 信封的 message.usage 实时更新。 */
+    private currentUsage: UsageInfo | null = null;
+    private usageBar!: HTMLElement;
+    private usageLabel!: HTMLElement;
     private tabBar!: HTMLElement;
     private currentFileBar!: HTMLElement;
     private commandDropdown!: HTMLElement | null;
@@ -134,7 +139,7 @@ export class BuddyBridgeChatView extends ItemView {
     }
 
     getViewType(): string { return VIEW_TYPE_CHAT; }
-    getDisplayText(): string { return "BuddyBridge 聊天"; }
+    getDisplayText(): string { return t('view.title'); }
     getIcon(): string { return "bot"; }
 
     getManager(): ConversationManager { return this.manager; }
@@ -174,7 +179,7 @@ export class BuddyBridgeChatView extends ItemView {
         const newBtn = this.tabBar.createEl('button', {
             text: '',
             cls: 'buddybridge-new-chat-btn',
-            attr: { title: '新建对话', 'aria-label': '新建对话' }
+            attr: { title: t('conv.new'), 'aria-label': t('conv.new') }
         });
         setIcon(newBtn, 'plus');
         newBtn.onclick = () => this.createNewChat();
@@ -207,7 +212,7 @@ export class BuddyBridgeChatView extends ItemView {
         const inputArea = container.createDiv({ cls: 'buddybridge-input-area' });
         this.inputEl = inputArea.createEl('textarea', {
             cls: 'buddybridge-input',
-            attr: { placeholder: '输入消息... (Shift+Enter 换行，Enter 发送)', rows: '2' }
+            attr: { placeholder: t('input.placeholder'), rows: '2' }
         });
         this.inputEl.onkeydown = (e) => this.handleKeydown(e);
         this.inputEl.oninput = () => {
@@ -216,9 +221,9 @@ export class BuddyBridgeChatView extends ItemView {
         };
 
         this.sendBtn = inputArea.createEl('button', {
-            text: '发送',
+            text: t('input.send'),
             cls: 'buddybridge-send-btn',
-            attr: { 'aria-label': '发送' }
+            attr: { 'aria-label': t('input.send') }
         });
         this.sendBtn.onclick = () => {
             // 当前活动会话正在流式 → 停止该会话的流（队列保留继续）；否则发送
@@ -229,6 +234,15 @@ export class BuddyBridgeChatView extends ItemView {
                 void this.sendMessage();
             }
         };
+
+        // 上下文用量条（P2.5）：显示最近一轮占上下文窗口的比例，≥80% 预警。
+        // 静态样式走 CSS 类（Obsidian 规则禁 el.style 直赋）；填充宽度由 CSS 变量
+        // --bb-usage-pct 驱动，经 setCssProps 更新。常驻显示（未收到用量数据时按 0%），
+        // 打开面板即可看到指示器；收到带 usage 的 chunk 后实时刷新。
+        this.usageBar = inputArea.createDiv({ cls: 'buddybridge-usage-bar' });
+        this.usageBar.createDiv({ cls: 'buddybridge-usage-fill' });
+        this.usageLabel = this.usageBar.createEl('span', { cls: 'buddybridge-usage-label' });
+        this.renderUsageBar();
 
         // 从插件设置同步最大对话数（P0.4 会话裁剪）
         try {
@@ -263,7 +277,7 @@ export class BuddyBridgeChatView extends ItemView {
     private atConversationLimit(): boolean {
         const max = this.manager.getMaxConversations();
         if (this.manager.atMaxConversations()) {
-            new Notice(`对话已满（最多 ${max} 个），请先删除旧对话再新建`);
+            new Notice(tF('notice.convFull', { max }));
             return true;
         }
         return false;
@@ -325,7 +339,7 @@ export class BuddyBridgeChatView extends ItemView {
             tab.createSpan({ text: conv.title, cls: 'buddybridge-tab-title' });
             const closeBtn = tab.createSpan({
                 cls: 'buddybridge-tab-close',
-                attr: { title: '关闭对话', 'aria-label': '关闭对话', role: 'button', tabindex: '0' }
+                attr: { title: t('tab.close'), 'aria-label': t('tab.close'), role: 'button', tabindex: '0' }
             });
             setIcon(closeBtn, 'x');
             closeBtn.onclick = (e: MouseEvent) => this.deleteChat(conv.id, e);
@@ -351,17 +365,17 @@ export class BuddyBridgeChatView extends ItemView {
             const empty = this.messageContainer.createDiv({ cls: 'buddybridge-empty-chat' });
             const icon = empty.createDiv({ cls: 'buddybridge-empty-chat-icon' });
             setIcon(icon, 'message-square');
-            empty.createDiv({ cls: 'buddybridge-empty-chat-title', text: '开始新对话' });
-            empty.createDiv({ cls: 'buddybridge-empty-chat-subtitle', text: '输入消息开始聊天，或点击 + 新建对话' });
+            empty.createDiv({ cls: 'buddybridge-empty-chat-title', text: t('empty.title') });
+            empty.createDiv({ cls: 'buddybridge-empty-chat-subtitle', text: t('empty.subtitle') });
 
             // 快捷提示
             const tips = empty.createDiv({ cls: 'buddybridge-empty-chat-tips' });
-            tips.createDiv({ text: '💡 提示' });
+            tips.createDiv({ text: t('empty.tips') });
             const tipList = tips.createEl('ul');
             const tipItems = [
-                'Shift+Enter 换行，Enter 发送',
-                '输入 / 查看可用命令',
-                '多轮对话自动保持上下文',
+                t('tip.enter'),
+                t('tip.commands'),
+                t('tip.context'),
             ];
             for (const tip of tipItems) {
                 tipList.createEl('li', { text: tip });
@@ -383,7 +397,7 @@ export class BuddyBridgeChatView extends ItemView {
         // 分支入口（Phase 1）：悬浮按钮 → 从这里继续新对话
         const forkBtn = row.createDiv({
             cls: 'buddybridge-fork-btn',
-            attr: { title: '从这里继续新对话', 'aria-label': '从这里继续新对话', role: 'button', tabindex: '0' }
+            attr: { title: t('tab.branch'), 'aria-label': t('tab.branch'), role: 'button', tabindex: '0' }
         });
         setIcon(forkBtn, 'git-branch');
         forkBtn.onclick = (e: MouseEvent) => {
@@ -425,7 +439,7 @@ export class BuddyBridgeChatView extends ItemView {
         let toolsBlock: HTMLElement | null = null;
         for (const part of parts) {
             if (part.kind === 'thinking') {
-                this.renderThinkingBlock(bubble, part.content || '', '已思考');
+                this.renderThinkingBlock(bubble, part.content || '', t('thinking.done'));
             } else if (part.kind === 'tool') {
                 if (!toolsBlock) {
                     toolsBlock = this.renderToolsBlock(bubble);
@@ -471,7 +485,7 @@ export class BuddyBridgeChatView extends ItemView {
             const hdr = toolsBlock.createDiv({ cls: 'buddybridge-tools-header' });
             const icon = hdr.createSpan({ cls: 'buddybridge-tools-header-icon' });
             setIcon(icon, 'wrench');
-            hdr.createSpan({ cls: 'buddybridge-tools-header-text', text: '工具调用' });
+            hdr.createSpan({ cls: 'buddybridge-tools-header-text', text: t('tool.title') });
             const chevron = hdr.createSpan({ cls: 'buddybridge-tools-header-chevron', text: '▾' });
             hdr.addEventListener('click', () => {
                 const list = toolsBlock.querySelector('.buddybridge-tools-list');
@@ -541,7 +555,7 @@ export class BuddyBridgeChatView extends ItemView {
         setIcon(icon, 'alert-triangle');
 
         const errorMsg = content.replace(/^错误:\s*/, '').replace(/^Error:\s*/, '');
-        card.createDiv({ cls: 'buddybridge-error-card-title', text: '请求失败' });
+        card.createDiv({ cls: 'buddybridge-error-card-title', text: t('error.title') });
         card.createDiv({ cls: 'buddybridge-error-card-body', text: errorMsg });
 
         const hint = this.getErrorHint(errorMsg);
@@ -553,9 +567,9 @@ export class BuddyBridgeChatView extends ItemView {
         if (onRetry) {
             const actions = card.createDiv({ cls: 'buddybridge-error-card-actions' });
             const retryBtn = actions.createEl('button', {
-                text: '重试',
+                text: t('error.retry'),
                 cls: 'mod-cta buddybridge-error-retry-btn',
-                attr: { 'aria-label': '重试上次发送' }
+                attr: { 'aria-label': t('error.retryAria') }
             });
             retryBtn.onclick = (e: MouseEvent) => {
                 e.preventDefault();
@@ -567,20 +581,20 @@ export class BuddyBridgeChatView extends ItemView {
 
     private getErrorHint(errorMsg: string): string | null {
         if (errorMsg.includes('找不到 codebuddy') || errorMsg.includes('ENOENT') || errorMsg.includes('codebuddy')) {
-            return '请在设置中指定正确的 CodeBuddy 路径，或确认已安装 WorkBuddy 桌面版。';
+            return t('error.hintPath');
         }
         if (errorMsg.includes('Node.js') || errorMsg.includes('node')) {
-            return '请确认 Node.js 已正确安装，或运行环境初始化提示词。';
+            return t('error.hintNode');
         }
         if (errorMsg.includes('timeout') || errorMsg.includes('超时') || errorMsg.includes('TIMEOUT')) {
-            return '请求超时，请重试。';
+            return t('error.hintTimeout');
         }
         return null;
     }
 
     private renderThinkingIndicator(bubble: HTMLElement) {
         const thinking = bubble.createDiv({ cls: 'buddybridge-thinking' });
-        thinking.createSpan({ cls: 'buddybridge-thinking-text', text: '思考中' });
+        thinking.createSpan({ cls: 'buddybridge-thinking-text', text: t('thinking.label') });
         const dots = thinking.createDiv({ cls: 'buddybridge-thinking-dots' });
         for (let i = 0; i < 3; i++) {
             dots.createSpan({ cls: 'buddybridge-dot' });
@@ -739,7 +753,7 @@ export class BuddyBridgeChatView extends ItemView {
         this.inputEl.disabled = false; // 流式期间输入框保持可用（排队核心）
         const activeId = this.manager.getActive()?.id ?? null;
         const busy = activeId !== null && this.draining.has(activeId);
-        this.sendBtn.setText(busy ? '停止' : '发送');
+        this.sendBtn.setText(busy ? t('input.stop') : t('input.send'));
         this.sendBtn.toggleClass('buddybridge-send-btn-stop', busy);
     }
 
@@ -944,6 +958,13 @@ export class BuddyBridgeChatView extends ItemView {
                     continue;
                 }
 
+                // P2.5 上下文用量：assistant 信封携带本轮 message.usage（input/output tokens），
+                // 实时刷新用量条（仅有 usage 的占位 chunk 也触发，见 parseStreamLine）
+                if (chunk.usage) {
+                    this.currentUsage = chunk.usage;
+                    this.renderUsageBar();
+                }
+
                 if (firstChunk) {
                     firstChunk = false;
                     // 移除思考指示器（仅内联渲染时）
@@ -968,7 +989,7 @@ export class BuddyBridgeChatView extends ItemView {
                     }
                     this.manager.updateMessageParts(convId, aiMsg.id, parts, true);
                     if (isActive && bubble) {
-                        this.renderThinkingBlock(bubble, thinkingContent, '思考中...');
+                        this.renderThinkingBlock(bubble, thinkingContent, t('thinking.inline'));
                     }
                 } else if (chunk.type === 'tool') {
                     parts.push({ kind: 'tool', name: chunk.toolName || '', detail: chunk.toolDetail || '' });
@@ -985,33 +1006,33 @@ export class BuddyBridgeChatView extends ItemView {
                     }
                 } else if (chunk.type === 'error') {
                     streamingError = chunk.content;
-                    this.manager.updateMessage(convId, aiMsg.id, `错误: ${chunk.content}`, true);
-                    new Notice(`请求失败: ${chunk.content}`);
+                    this.manager.updateMessage(convId, aiMsg.id, `${t('msg.errorPrefix')}${chunk.content}`, true);
+                    new Notice(tF('notice.requestFail', { msg: chunk.content }));
                 }
             }
 
             if (streamingError) {
                 // P0.3/P0.5：错误卡直接写入内容，并清空可能残留的 parts
-                this.manager.updateMessage(convId, aiMsg.id, `错误: ${streamingError}`);
+                this.manager.updateMessage(convId, aiMsg.id, `${t('msg.errorPrefix')}${streamingError}`);
                 this.manager.updateMessageParts(convId, aiMsg.id, undefined, true);
             } else {
                 const hasContent = Boolean(textContent || thinkingContent || parts.length > 0);
                 const stopped = this.stopRequests.has(convId);
                 if (!hasContent) {
                     // 正文只存文本；思考/工具调用已通过 parts 持久化（流式结束后由 parts 重建可折叠块）
-                    this.manager.updateMessage(convId, aiMsg.id, stopped ? '（已停止）' : '（无响应，请重试）');
+                    this.manager.updateMessage(convId, aiMsg.id, stopped ? t('msg.stopped') : t('msg.noResponse'));
                 } else if (stopped && textContent) {
-                    this.manager.updateMessage(convId, aiMsg.id, textContent + '\n\n（已停止）');
+                    this.manager.updateMessage(convId, aiMsg.id, textContent + '\n\n' + t('msg.stopped'));
                 } else if (isGatewayEmptyStream(textContent, thinkingContent.length, parts.length)) {
                     // 上游网关只回占位 chunk（Empty stream）：整条回复是网关失败而非模型输出，
                     // 该 session 已无法正常产出（反复失败 = 会话在 CLI 侧卡死）。
                     // 显示错误卡 + 滚动会话自愈：下一条（含错误卡「重试」）用新 sessionId 重开，
                     // 并把近期对话作为背景转写注入新会话，避免丢失多轮上下文。
-                    this.manager.updateMessage(convId, aiMsg.id, `错误: ${textContent}`);
+                    this.manager.updateMessage(convId, aiMsg.id, `${t('msg.errorPrefix')}${textContent}`);
                     this.manager.updateMessageParts(convId, aiMsg.id, undefined, true);
                     this.manager.setSessionId(convId, this.api.generateId());
                     this.preserveRecentContext(convId);
-                    new Notice('上游网关无输出（Empty stream），已重置会话，请重试');
+                    new Notice(t('notice.gatewayEmpty'));
                 } else {
                     this.manager.updateMessage(convId, aiMsg.id, textContent);
                 }
@@ -1024,8 +1045,8 @@ export class BuddyBridgeChatView extends ItemView {
             await this.manager.flush();
         } catch (error: unknown) {
             const message = getErrorMessage(error);
-            this.manager.updateMessage(convId, aiMsg.id, `错误: ${message}`);
-            new Notice(`请求失败: ${message}`);
+            this.manager.updateMessage(convId, aiMsg.id, `${t('msg.errorPrefix')}${message}`);
+            new Notice(tF('notice.requestFail', { msg: message }));
             if (isActive) {
                 await this.renderMessages();
             }
@@ -1055,7 +1076,7 @@ export class BuddyBridgeChatView extends ItemView {
 
             const del = chip.createSpan({
                 cls: 'buddybridge-queue-chip-del',
-                attr: { title: '删除该条', 'aria-label': '删除该条', role: 'button', tabindex: '0' }
+                attr: { title: t('queue.delete'), 'aria-label': t('queue.delete'), role: 'button', tabindex: '0' }
             });
             setIcon(del, 'x');
             del.onclick = (e: MouseEvent) => {
@@ -1127,7 +1148,7 @@ export class BuddyBridgeChatView extends ItemView {
         if (this.atConversationLimit()) return;
 
         const history = conv.messages.slice(0, idx + 1);
-        const newConv = this.manager.createConversation(`${conv.title}（分支）`);
+        const newConv = this.manager.createConversation(`${conv.title}${t('conv.branchSuffix')}`);
         this.manager.replaceMessages(newConv.id, history);
         this.forkTranscripts.set(newConv.id, this.buildForkTranscript(history));
 
@@ -1137,12 +1158,12 @@ export class BuddyBridgeChatView extends ItemView {
     }
 
     /** 构建分支注入转写：截至分叉点的对话（角色标注），供新 session 作为背景参考。 */
-    private buildForkTranscript(messages: ChatMessage[], label = '[系统注入·分支上下文] 以下是你与此用户此前的对话（截至分支点），仅作背景参考：'): string {
+    private buildForkTranscript(messages: ChatMessage[], label = t('marker.forkTranscript')): string {
         const lines: string[] = [label];
         for (const m of messages) {
             const content = m.content.trim();
             if (!content) continue;
-            lines.push(`${m.role === 'user' ? '用户' : '助手'}: ${content}`);
+            lines.push(`${m.role === 'user' ? t('role.user') : t('role.assistant')}: ${content}`);
         }
         return lines.join('\n');
     }
@@ -1162,9 +1183,38 @@ export class BuddyBridgeChatView extends ItemView {
             convId,
             this.buildForkTranscript(
                 history.slice(-12),
-                '[系统注入·会话重置] 以下是你与此用户此前的对话（会话已因网关故障重置），仅作背景参考：'
+                t('marker.sessionReset')
             )
         );
+    }
+
+    /**
+     * P2.5 渲染上下文用量条：以最近一轮 inputTokens 为当前上下文占用、contextWindowSize 为分母，
+     * 计算百分比并经 --bb-usage-pct 驱动填充宽度；≥80% 预警（橙），≥100% 溢出（红）。
+     */
+    private renderUsageBar() {
+        const windowSize = this.pluginSettings?.contextWindowSize ?? DEFAULT_SETTINGS.contextWindowSize;
+        if (windowSize <= 0) {
+            this.usageBar.addClass('buddybridge-hidden');
+            return;
+        }
+        const tokens = Math.max(this.currentUsage?.inputTokens ?? 0, 0);
+        const pct = usagePercent(tokens, windowSize);
+        const level = usageLevel(pct);
+        this.usageBar.setCssProps({ '--bb-usage-pct': `${pct}%` });
+        this.usageBar.removeClass('buddybridge-usage-warn');
+        this.usageBar.removeClass('buddybridge-usage-critical');
+        if (level === 'critical') {
+            this.usageBar.addClass('buddybridge-usage-critical');
+        } else if (level === 'warn') {
+            this.usageBar.addClass('buddybridge-usage-warn');
+        }
+        this.usageLabel.setText(tF('usage.label', {
+            tokens: tokens.toLocaleString(),
+            window: windowSize.toLocaleString(),
+            pct: pct.toFixed(0)
+        }));
+        this.usageBar.removeClass('buddybridge-hidden');
     }
 
     private updateCurrentFileBar() {

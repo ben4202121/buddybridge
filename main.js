@@ -45,15 +45,18 @@ var path = __toESM(require("path"));
 var fs = __toESM(require("fs"));
 
 // src/types.ts
-var CURRENT_SETTINGS_VERSION = 8;
+var CURRENT_SETTINGS_VERSION = 9;
 var FONT_SIZE_MIN = 12;
 var FONT_SIZE_MAX = 18;
+var CONTEXT_WINDOW_MIN = 1e3;
+var CONTEXT_WINDOW_MAX = 1e6;
 var DATA_VERSION = 1;
 var DEFAULT_SETTINGS = {
   codebuddyPath: "",
   maxConversations: 20,
   primaryColor: "",
   fontSize: 14,
+  contextWindowSize: 2e5,
   timeoutSeconds: 300,
   nodePath: "",
   noteLinkInjection: true,
@@ -88,6 +91,7 @@ function migrateSettings(stored) {
   const maxConversations = getNumber(stored, "maxConversations");
   const primaryColor = getString(stored, "primaryColor");
   const fontSize = getNumber(stored, "fontSize");
+  const contextWindowSize = getNumber(stored, "contextWindowSize");
   const timeoutSeconds = getNumber(stored, "timeoutSeconds");
   const nodePath = getString(stored, "nodePath");
   const noteLinkInjection = typeof stored.noteLinkInjection === "boolean" ? stored.noteLinkInjection : DEFAULT_SETTINGS.noteLinkInjection;
@@ -97,6 +101,7 @@ function migrateSettings(stored) {
     maxConversations: typeof maxConversations === "number" && maxConversations > 0 ? maxConversations : DEFAULT_SETTINGS.maxConversations,
     primaryColor: primaryColor != null ? primaryColor : DEFAULT_SETTINGS.primaryColor,
     fontSize: typeof fontSize === "number" && fontSize >= FONT_SIZE_MIN && fontSize <= FONT_SIZE_MAX ? fontSize : DEFAULT_SETTINGS.fontSize,
+    contextWindowSize: typeof contextWindowSize === "number" && contextWindowSize >= CONTEXT_WINDOW_MIN && contextWindowSize <= CONTEXT_WINDOW_MAX ? contextWindowSize : DEFAULT_SETTINGS.contextWindowSize,
     timeoutSeconds: typeof timeoutSeconds === "number" && timeoutSeconds > 0 ? timeoutSeconds : DEFAULT_SETTINGS.timeoutSeconds,
     nodePath: nodePath != null ? nodePath : DEFAULT_SETTINGS.nodePath,
     noteLinkInjection,
@@ -327,6 +332,31 @@ function blockToChunk(block) {
     toolDetail: typeof input === "string" ? input : JSON.stringify(input != null ? input : {})
   };
 }
+function extractUsage(raw) {
+  if (!isObject(raw))
+    return void 0;
+  const message = isObject(raw.message) ? raw.message : null;
+  const usage = isObject(message == null ? void 0 : message.usage) ? message.usage : null;
+  if (!usage)
+    return void 0;
+  const input = getNumber(usage, "input_tokens");
+  const output = getNumber(usage, "output_tokens");
+  if (input === void 0 && output === void 0)
+    return void 0;
+  return { inputTokens: input != null ? input : 0, outputTokens: output != null ? output : 0 };
+}
+function usagePercent(inputTokens, windowSize) {
+  if (windowSize <= 0)
+    return 0;
+  return Math.min(100, Math.max(0, inputTokens / windowSize * 100));
+}
+function usageLevel(pct) {
+  if (pct >= 100)
+    return "critical";
+  if (pct >= 80)
+    return "warn";
+  return "normal";
+}
 function parseStreamEvent(raw) {
   if (!isObject(raw))
     return null;
@@ -351,17 +381,21 @@ function parseStreamLine(line) {
   try {
     const raw = JSON.parse(line);
     if (isObject(raw) && (raw.type === "assistant" || raw.type === "user")) {
+      const usage = extractUsage(raw);
       const message = isObject(raw.message) ? raw.message : null;
       const content = Array.isArray(message == null ? void 0 : message.content) ? message.content : [];
       for (const item of content) {
         const block = parseMessageBlock(item);
         if (block) {
           const chunk = blockToChunk(block);
-          if (chunk)
+          if (chunk) {
+            if (usage)
+              chunk.usage = usage;
             return chunk;
+          }
         }
       }
-      return null;
+      return usage ? { type: "text", content: "", usage } : null;
     }
     const event = parseStreamEvent(raw);
     if (!event)
@@ -845,14 +879,265 @@ var ConversationManager = class {
   }
 };
 
+// src/i18n.ts
+function detectLanguage() {
+  try {
+    const stored = typeof localStorage !== "undefined" ? localStorage.getItem("language") : null;
+    const raw = stored || (typeof navigator !== "undefined" ? navigator.language : "") || "";
+    return raw.toLowerCase().startsWith("zh") ? "zh" : "en";
+  } catch (e) {
+    return "zh";
+  }
+}
+var ZH = {
+  // 视图标题
+  "view.title": "BuddyBridge \u804A\u5929",
+  // 命令描述（/command 下拉）
+  "cmd.clear": "\u6E05\u7A7A\u5BF9\u8BDD\uFF0C\u91CD\u65B0\u5F00\u59CB",
+  "cmd.help": "\u663E\u793A CodeBuddy \u5E2E\u52A9\u4FE1\u606F",
+  "cmd.status": "\u663E\u793A\u5F53\u524D\u4ED3\u5E93\u548C\u4F1A\u8BDD\u72B6\u6001",
+  "cmd.doctor": "\u68C0\u67E5 CodeBuddy \u73AF\u5883\u72B6\u6001",
+  "cmd.compact": "\u538B\u7F29\u4E0A\u4E0B\u6587\u4EE5\u8282\u7701\u7A7A\u95F4",
+  "cmd.summarize": "\u603B\u7ED3\u5E76\u538B\u7F29\u5BF9\u8BDD\u4E0A\u4E0B\u6587",
+  "cmd.context": "\u8BA1\u7B97\u5F53\u524D\u4F1A\u8BDD token \u5206\u5E03",
+  "cmd.cost": "\u663E\u793A\u4F1A\u8BDD\u6210\u672C\u548C token \u7528\u91CF",
+  "cmd.model": "\u67E5\u770B\u6216\u5207\u6362 AI \u6A21\u578B",
+  "cmd.permissions": "\u7BA1\u7406\u5DE5\u5177\u548C\u76EE\u5F55\u8BBF\u95EE\u6743\u9650",
+  "cmd.config": "\u67E5\u770B\u6216\u4FEE\u6539\u672C\u5730\u914D\u7F6E",
+  "cmd.export": "\u5BFC\u51FA\u5F53\u524D\u5BF9\u8BDD",
+  "cmd.resume": "\u6062\u590D\u4E4B\u524D\u7684\u4F1A\u8BDD",
+  "cmd.rewind": "\u56DE\u9000\u5230\u4E4B\u524D\u7684\u6D88\u606F\u70B9",
+  "cmd.init": "\u521D\u59CB\u5316 CodeBuddy \u4ED3\u5E93",
+  "cmd.plan": "\u9884\u89C8\u8BA1\u5212\u6A21\u5F0F\u4E0B\u7684\u8BA1\u5212\u6587\u4EF6",
+  "cmd.fork": "\u5728\u5F53\u524D\u5BF9\u8BDD\u4F4D\u7F6E\u521B\u5EFA\u5206\u652F",
+  "cmd.memory": "\u7BA1\u7406\u957F\u671F\u8BB0\u5FC6",
+  "cmd.mcp": "\u7BA1\u7406 MCP \u8FDE\u63A5",
+  "cmd.todos": "\u663E\u793A\u5F85\u529E\u4E8B\u9879\u5217\u8868",
+  "cmd.stats": "\u663E\u793A\u4F7F\u7528\u7EDF\u8BA1\u4FE1\u606F",
+  "cmd.cr": "\u5BA1\u67E5\u4EE3\u7801\u8D28\u91CF",
+  "cmd.fix": "\u81EA\u52A8\u4FEE\u590D\u4EE3\u7801\u95EE\u9898",
+  "cmd.tests": "\u751F\u6210\u5355\u5143\u6D4B\u8BD5",
+  "cmd.explain": "\u89E3\u91CA\u4EE3\u7801\u5DE5\u4F5C\u539F\u7406",
+  "cmd.rules": "\u751F\u6210\u4EE3\u7801\u89C4\u8303\u89C4\u5219",
+  // 标签页 / 新建对话
+  "tab.close": "\u5173\u95ED\u5BF9\u8BDD",
+  "tab.branch": "\u4ECE\u8FD9\u91CC\u7EE7\u7EED\u65B0\u5BF9\u8BDD",
+  "conv.new": "\u65B0\u5EFA\u5BF9\u8BDD",
+  "conv.branchSuffix": "\uFF08\u5206\u652F\uFF09",
+  // 输入区
+  "input.placeholder": "\u8F93\u5165\u6D88\u606F... (Shift+Enter \u6362\u884C\uFF0CEnter \u53D1\u9001)",
+  "input.send": "\u53D1\u9001",
+  "input.stop": "\u505C\u6B62",
+  // 空态
+  "empty.title": "\u5F00\u59CB\u65B0\u5BF9\u8BDD",
+  "empty.subtitle": "\u8F93\u5165\u6D88\u606F\u5F00\u59CB\u804A\u5929\uFF0C\u6216\u70B9\u51FB + \u65B0\u5EFA\u5BF9\u8BDD",
+  "empty.tips": "\u{1F4A1} \u63D0\u793A",
+  "tip.enter": "Shift+Enter \u6362\u884C\uFF0CEnter \u53D1\u9001",
+  "tip.commands": "\u8F93\u5165 / \u67E5\u770B\u53EF\u7528\u547D\u4EE4",
+  "tip.context": "\u591A\u8F6E\u5BF9\u8BDD\u81EA\u52A8\u4FDD\u6301\u4E0A\u4E0B\u6587",
+  // 思考 / 工具 / 错误卡
+  "thinking.label": "\u601D\u8003\u4E2D",
+  "thinking.done": "\u5DF2\u601D\u8003",
+  "thinking.inline": "\u601D\u8003\u4E2D...",
+  "tool.title": "\u5DE5\u5177\u8C03\u7528",
+  "error.title": "\u8BF7\u6C42\u5931\u8D25",
+  "error.retry": "\u91CD\u8BD5",
+  "error.retryAria": "\u91CD\u8BD5\u4E0A\u6B21\u53D1\u9001",
+  "error.hintPath": "\u8BF7\u5728\u8BBE\u7F6E\u4E2D\u6307\u5B9A\u6B63\u786E\u7684 CodeBuddy \u8DEF\u5F84\uFF0C\u6216\u786E\u8BA4\u5DF2\u5B89\u88C5 WorkBuddy \u684C\u9762\u7248\u3002",
+  "error.hintNode": "\u8BF7\u786E\u8BA4 Node.js \u5DF2\u6B63\u786E\u5B89\u88C5\uFF0C\u6216\u8FD0\u884C\u73AF\u5883\u521D\u59CB\u5316\u63D0\u793A\u8BCD\u3002",
+  "error.hintTimeout": "\u8BF7\u6C42\u8D85\u65F6\uFF0C\u8BF7\u91CD\u8BD5\u3002",
+  // 消息占位 / 前缀
+  "msg.stopped": "\uFF08\u5DF2\u505C\u6B62\uFF09",
+  "msg.noResponse": "\uFF08\u65E0\u54CD\u5E94\uFF0C\u8BF7\u91CD\u8BD5\uFF09",
+  "msg.errorPrefix": "\u9519\u8BEF: ",
+  "role.user": "\u7528\u6237",
+  "role.assistant": "\u52A9\u624B",
+  // 通知
+  "notice.convFull": "\u5BF9\u8BDD\u5DF2\u6EE1\uFF08\u6700\u591A {max} \u4E2A\uFF09\uFF0C\u8BF7\u5148\u5220\u9664\u65E7\u5BF9\u8BDD\u518D\u65B0\u5EFA",
+  "notice.requestFail": "\u8BF7\u6C42\u5931\u8D25: {msg}",
+  "notice.gatewayEmpty": "\u4E0A\u6E38\u7F51\u5173\u65E0\u8F93\u51FA\uFF08Empty stream\uFF09\uFF0C\u5DF2\u91CD\u7F6E\u4F1A\u8BDD\uFF0C\u8BF7\u91CD\u8BD5",
+  // 队列
+  "queue.delete": "\u5220\u9664\u8BE5\u6761",
+  // 用量条（P2.5）
+  "usage.label": "\u4E0A\u4E0B\u6587 {tokens} / {window} ({pct}%)",
+  // 系统注入标记（方案 A：跟随界面语言）
+  "marker.currentNote": "[\u7CFB\u7EDF\u6CE8\u5165\xB7\u5F53\u524D\u7B14\u8BB0: {path}]",
+  "marker.noNote": "[\u7CFB\u7EDF\u6CE8\u5165\xB7\u5F53\u524D\u7B14\u8BB0: \u65E0]",
+  "marker.vault": "[\u7CFB\u7EDF\u6CE8\u5165\xB7Vault: {path}]",
+  "marker.forkTranscript": "[\u7CFB\u7EDF\u6CE8\u5165\xB7\u5206\u652F\u4E0A\u4E0B\u6587] \u4EE5\u4E0B\u662F\u4F60\u4E0E\u6B64\u7528\u6237\u6B64\u524D\u7684\u5BF9\u8BDD\uFF08\u622A\u81F3\u5206\u652F\u70B9\uFF09\uFF0C\u4EC5\u4F5C\u80CC\u666F\u53C2\u8003\uFF1A",
+  "marker.sessionReset": "[\u7CFB\u7EDF\u6CE8\u5165\xB7\u4F1A\u8BDD\u91CD\u7F6E] \u4EE5\u4E0B\u662F\u4F60\u4E0E\u6B64\u7528\u6237\u6B64\u524D\u7684\u5BF9\u8BDD\uFF08\u4F1A\u8BDD\u5DF2\u56E0\u7F51\u5173\u6545\u969C\u91CD\u7F6E\uFF09\uFF0C\u4EC5\u4F5C\u80CC\u666F\u53C2\u8003\uFF1A",
+  // 设置页
+  "tab.heading.connection": "\u8FDE\u63A5\u914D\u7F6E",
+  "settings.pathName": "CodeBuddy \u8DEF\u5F84",
+  "settings.pathDesc": "codebuddy \u53EF\u6267\u884C\u6587\u4EF6\u8DEF\u5F84\u3002\u5982 WorkBuddy \u81EA\u5B9A\u4E49\u5B89\u88C5\uFF0C\u8DEF\u5F84\u901A\u5E38\u4E3A\uFF1A\u5B89\u88C5\u76EE\u5F55\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy\uFF08\u53F3\u952E WorkBuddy \u5FEB\u6377\u65B9\u5F0F \u2192 \u6253\u5F00\u6587\u4EF6\u4F4D\u7F6E \u53EF\u627E\u5230\u5B89\u88C5\u76EE\u5F55\uFF09",
+  "settings.pathPlaceholder": "WorkBuddy\u5B89\u88C5\u76EE\u5F55\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy",
+  "settings.nodeName": "Node \u8DEF\u5F84\uFF08\u53EF\u9009\uFF09",
+  "settings.nodeDesc": "\u7559\u7A7A\u81EA\u52A8\u68C0\u6D4B\u3002\u4EC5\u5F53\u4EE5\u7EAF\u811A\u672C\u65B9\u5F0F\u542F\u52A8 codebuddy\uFF08\u975E .exe/.cmd\uFF09\u65F6\u4F7F\u7528\u3002",
+  "settings.autoDetect": "\u81EA\u52A8\u68C0\u6D4B",
+  "settings.timeoutName": "CLI \u8D85\u65F6\u65F6\u957F\uFF08\u79D2\uFF09",
+  "settings.timeoutDesc": "\u8BF7\u6C42\u8D85\u8FC7\u8BE5\u65F6\u957F\u672A\u6536\u5230\u5B8C\u6574\u56DE\u590D\u65F6\u81EA\u52A8\u7EC8\u6B62\u5E76\u63D0\u793A\uFF08\u9ED8\u8BA4 300 \u79D2\uFF09",
+  "tab.heading.injection": "\u4E0A\u4E0B\u6587\u6CE8\u5165",
+  "settings.noteLinkName": "\u6CE8\u5165\u5F53\u524D\u7B14\u8BB0\u94FE\u63A5",
+  "settings.noteLinkDesc": "\u53D1\u9001\u6D88\u606F\u65F6\u81EA\u52A8\u5728\u6D88\u606F\u524D\u9644\u52A0 {marker}\uFF0C\u8BA9 AI \u77E5\u9053\u4F60\u5728\u770B\u54EA\u4E2A\u7B14\u8BB0\uFF08\u9ED8\u8BA4\u5F00\u542F\uFF09",
+  "settings.vaultName": "\u6CE8\u5165 Vault \u4E0A\u4E0B\u6587",
+  "settings.vaultDesc": "\u989D\u5916\u9644\u52A0 {marker}\uFF0C\u5E2E\u52A9 AI \u7406\u89E3\u7B14\u8BB0\u6240\u5728\u7684\u4ED3\u5E93\uFF08\u9ED8\u8BA4\u5173\u95ED\uFF09",
+  "settings.pathExample": "\u8DEF\u5F84",
+  "tab.heading.appearance": "\u5916\u89C2",
+  "settings.colorName": "\u4E3B\u8272\u8C03",
+  "settings.colorDesc": "\u804A\u5929\u9762\u677F\u7684\u4E3B\u9898\u8272\u3002\u7559\u7A7A\u4F7F\u7528 Obsidian \u9ED8\u8BA4\u5F3A\u8C03\u8272\u3002",
+  "settings.fontName": "\u5B57\u4F53\u5927\u5C0F",
+  "settings.fontDesc": "\u804A\u5929\u9762\u677F\uFF08\u6D88\u606F\u6C14\u6CE1\u3001Markdown \u5185\u5BB9\u4E0E\u8F93\u5165\u6846\uFF09\u7684\u6587\u5B57\u5927\u5C0F",
+  "tab.heading.usage": "\u4E0A\u4E0B\u6587\u7528\u91CF",
+  "settings.windowName": "\u4E0A\u4E0B\u6587\u7A97\u53E3\u5927\u5C0F",
+  "settings.windowDesc": "\u7528\u91CF\u663E\u793A\u7684\u5206\u6BCD\uFF08token\uFF09\u3002\u5F53\u5BF9\u8BDD\u6D88\u8017\u63A5\u8FD1\u8BE5\u503C\u65F6\u4F1A\u7ED9\u51FA\u9884\u8B66\u3002\u9ED8\u8BA4 {default}",
+  "tab.heading.manage": "\u7BA1\u7406",
+  "settings.maxConvName": "\u6700\u5927\u5BF9\u8BDD\u6570",
+  "settings.maxConvDesc": "\u6700\u591A\u4FDD\u7559\u591A\u5C11\u4E2A\u5BF9\u8BDD\uFF08\u8D85\u51FA\u90E8\u5206\u81EA\u52A8\u5220\u9664\uFF09",
+  "settings.exportName": "\u5BFC\u51FA\u8BBE\u7F6E\uFF08\u542B\u804A\u5929\u8BB0\u5F55\uFF09",
+  "settings.exportDesc": "\u5C06\u5168\u90E8\u8BBE\u7F6E\u4E0E\u804A\u5929\u8BB0\u5F55\u5BFC\u51FA\u4E3A\u5E26\u7248\u672C\u53F7\u7684 JSON \u6587\u4EF6\uFF0C\u7528\u4E8E\u5907\u4EFD\u6216\u8FC1\u79FB",
+  "settings.exportBtn": "\u5BFC\u51FA",
+  "settings.importName": "\u5BFC\u5165\u8BBE\u7F6E\uFF08\u542B\u804A\u5929\u8BB0\u5F55\uFF09",
+  "settings.importDesc": "\u4ECE JSON \u6587\u4EF6\u6062\u590D\u8BBE\u7F6E\u4E0E\u804A\u5929\u8BB0\u5F55\uFF08\u4F1A\u8986\u76D6\u5F53\u524D\u6570\u636E\uFF0C\u9700\u4E8C\u6B21\u786E\u8BA4\uFF09",
+  "settings.importBtn": "\u5BFC\u5165",
+  "settings.resetName": "\u91CD\u7F6E\u4E3A\u9ED8\u8BA4",
+  "settings.resetDesc": "\u5C06\u6240\u6709\u8BBE\u7F6E\u6062\u590D\u4E3A\u9ED8\u8BA4\u503C\uFF08\u4E0D\u4F1A\u5220\u9664\u804A\u5929\u8BB0\u5F55\uFF0C\u9700\u4E8C\u6B21\u786E\u8BA4\uFF09",
+  "settings.resetBtn": "\u91CD\u7F6E",
+  "settings.resetConfirm": "\u786E\u8BA4\u5C06\u6240\u6709\u8BBE\u7F6E\u6062\u590D\u4E3A\u9ED8\u8BA4\u503C\uFF1F\u804A\u5929\u8BB0\u5F55\u5C06\u4FDD\u7559\u3002",
+  "settings.resetDone": "\u8BBE\u7F6E\u5DF2\u91CD\u7F6E\u4E3A\u9ED8\u8BA4"
+};
+var EN = {
+  "view.title": "BuddyBridge Chat",
+  "cmd.clear": "Clear conversation and start fresh",
+  "cmd.help": "Show CodeBuddy help",
+  "cmd.status": "Show current repo and session status",
+  "cmd.doctor": "Check CodeBuddy environment",
+  "cmd.compact": "Compact context to save space",
+  "cmd.summarize": "Summarize and compact conversation context",
+  "cmd.context": "Compute token distribution of current session",
+  "cmd.cost": "Show session cost and token usage",
+  "cmd.model": "View or switch AI model",
+  "cmd.permissions": "Manage tool and directory access permissions",
+  "cmd.config": "View or modify local config",
+  "cmd.export": "Export current conversation",
+  "cmd.resume": "Resume a previous session",
+  "cmd.rewind": "Rewind to an earlier message point",
+  "cmd.init": "Initialize CodeBuddy repo",
+  "cmd.plan": "Preview plan-mode plan files",
+  "cmd.fork": "Create a branch at the current position",
+  "cmd.memory": "Manage long-term memory",
+  "cmd.mcp": "Manage MCP connections",
+  "cmd.todos": "Show todo list",
+  "cmd.stats": "Show usage statistics",
+  "cmd.cr": "Review code quality",
+  "cmd.fix": "Auto-fix code issues",
+  "cmd.tests": "Generate unit tests",
+  "cmd.explain": "Explain how the code works",
+  "cmd.rules": "Generate coding rules",
+  "tab.close": "Close conversation",
+  "tab.branch": "Continue as new conversation from here",
+  "conv.new": "New conversation",
+  "conv.branchSuffix": " (branch)",
+  "input.placeholder": "Type a message... (Shift+Enter for newline, Enter to send)",
+  "input.send": "Send",
+  "input.stop": "Stop",
+  "empty.title": "Start a new conversation",
+  "empty.subtitle": "Type a message to chat, or click + to start a new conversation",
+  "empty.tips": "\u{1F4A1} Tips",
+  "tip.enter": "Shift+Enter for newline, Enter to send",
+  "tip.commands": "Type / to see available commands",
+  "tip.context": "Context is kept automatically across turns",
+  "thinking.label": "Thinking",
+  "thinking.done": "Thought",
+  "thinking.inline": "Thinking...",
+  "tool.title": "Tool calls",
+  "error.title": "Request failed",
+  "error.retry": "Retry",
+  "error.retryAria": "Retry last send",
+  "error.hintPath": "Set the correct CodeBuddy path in settings, or confirm WorkBuddy desktop is installed.",
+  "error.hintNode": "Confirm Node.js is installed correctly, or run the environment setup prompt.",
+  "error.hintTimeout": "Request timed out, please retry.",
+  "msg.stopped": " (stopped)",
+  "msg.noResponse": " (no response, please retry)",
+  "msg.errorPrefix": "Error: ",
+  "role.user": "User",
+  "role.assistant": "Assistant",
+  "notice.convFull": "Conversation limit reached (max {max}), delete an old conversation first",
+  "notice.requestFail": "Request failed: {msg}",
+  "notice.gatewayEmpty": "Gateway returned empty stream, session has been reset, please retry",
+  "queue.delete": "Remove this item",
+  "usage.label": "Context {tokens} / {window} ({pct}%)",
+  "marker.currentNote": "[System injection\xB7Current note: {path}]",
+  "marker.noNote": "[System injection\xB7Current note: none]",
+  "marker.vault": "[System injection\xB7Vault: {path}]",
+  "marker.forkTranscript": "[System injection\xB7Fork context] This is your earlier conversation with this user (up to the fork point), provided as background reference only:",
+  "marker.sessionReset": "[System injection\xB7Session reset] This is your earlier conversation with this user (the session was reset due to a gateway failure), provided as background reference only:",
+  "tab.heading.connection": "Connection",
+  "settings.pathName": "CodeBuddy path",
+  "settings.pathDesc": "Path to the codebuddy executable. For a custom WorkBuddy install, the path is usually: install-dir\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy (right-click the WorkBuddy shortcut \u2192 Open file location to find the install dir)",
+  "settings.pathPlaceholder": "WorkBuddy install dir\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy",
+  "settings.nodeName": "Node path (optional)",
+  "settings.nodeDesc": "Leave empty for auto-detection. Only used when codebuddy is launched as a bare script (not .exe/.cmd).",
+  "settings.autoDetect": "Auto-detect",
+  "settings.timeoutName": "CLI timeout (seconds)",
+  "settings.timeoutDesc": "Automatically abort a request that receives no complete reply within this time (default 300s)",
+  "tab.heading.injection": "Context injection",
+  "settings.noteLinkName": "Inject current note link",
+  "settings.noteLinkDesc": "Prepend {marker} to messages so the AI knows which note you are viewing (default on)",
+  "settings.vaultName": "Inject Vault context",
+  "settings.vaultDesc": "Additionally append {marker} to help the AI understand the vault root (default off)",
+  "settings.pathExample": "path",
+  "tab.heading.appearance": "Appearance",
+  "settings.colorName": "Accent color",
+  "settings.colorDesc": "Theme color of the chat panel. Leave empty to use the Obsidian default accent.",
+  "settings.fontName": "Font size",
+  "settings.fontDesc": "Text size in the chat panel (message bubbles, markdown content and the input box)",
+  "tab.heading.usage": "Context usage",
+  "settings.windowName": "Context window size",
+  "settings.windowDesc": "Denominator (tokens) for the usage display. A warning appears when conversation usage approaches this value. Default {default}",
+  "tab.heading.manage": "Manage",
+  "settings.maxConvName": "Max conversations",
+  "settings.maxConvDesc": "Maximum number of conversations to keep (older ones are deleted automatically)",
+  "settings.exportName": "Export settings (incl. chats)",
+  "settings.exportDesc": "Export all settings and chat history as a versioned JSON file for backup or migration",
+  "settings.exportBtn": "Export",
+  "settings.importName": "Import settings (incl. chats)",
+  "settings.importDesc": "Restore settings and chat history from a JSON file (overwrites current data, requires confirmation)",
+  "settings.importBtn": "Import",
+  "settings.resetName": "Reset to defaults",
+  "settings.resetDesc": "Reset all settings to defaults (chat history is kept, requires confirmation)",
+  "settings.resetBtn": "Reset",
+  "settings.resetConfirm": "Reset all settings to defaults? Chat history will be kept.",
+  "settings.resetDone": "Settings reset to defaults"
+};
+function translate(lang, key) {
+  var _a;
+  const dict = lang === "zh" ? ZH : EN;
+  return (_a = dict[key]) != null ? _a : key;
+}
+function t(key) {
+  return translate(detectLanguage(), key);
+}
+function tf(lang, key, params) {
+  let s = translate(lang, key);
+  if (params) {
+    for (const [k, v] of Object.entries(params)) {
+      s = s.split(`{${k}}`).join(String(v));
+    }
+  }
+  return s;
+}
+function tF(key, params) {
+  return tf(detectLanguage(), key, params);
+}
+
 // src/context.ts
 function buildPromptContext(input) {
   const lines = [];
   if (input.noteLinkInjection && input.notePath) {
-    lines.push(`[\u7CFB\u7EDF\u6CE8\u5165\xB7\u5F53\u524D\u7B14\u8BB0: ${input.notePath}]`);
+    lines.push(tF("marker.currentNote", { path: input.notePath }));
   }
   if (input.vaultContextInjection && input.vaultPath) {
-    lines.push(`[\u7CFB\u7EDF\u6CE8\u5165\xB7Vault: ${input.vaultPath}]`);
+    lines.push(tF("marker.vault", { path: input.vaultPath }));
   }
   if (lines.length === 0) {
     return input.userText;
@@ -871,7 +1156,7 @@ function buildDedupedPrompt(prev, current, userText, flags) {
     vaultContextInjection: flags.vaultContextInjection
   });
   if (flags.noteLinkInjection && (prev == null ? void 0 : prev.notePath) && !current.notePath) {
-    text = `[\u7CFB\u7EDF\u6CE8\u5165\xB7\u5F53\u524D\u7B14\u8BB0: \u65E0]
+    text = `${tF("marker.noNote")}
 
 ${text}`;
   }
@@ -959,45 +1244,47 @@ var SendQueue = class {
 function isGatewayEmptyStream(text, thinkingLen = 0, partsLen = 0) {
   if (thinkingLen > 0 || partsLen > 0)
     return false;
-  const t = text.trim();
-  if (!t)
+  const t2 = text.trim();
+  if (!t2)
     return false;
-  return /^empty\s*stream\b|^placeholder\s*chunks\b|upstream\s*gateway\s*sent\s*only/i.test(t);
+  return /^empty\s*stream\b|^placeholder\s*chunks\b|upstream\s*gateway\s*sent\s*only/i.test(t2);
 }
 
 // src/views/chat.ts
 var VIEW_TYPE_CHAT = "buddybridge-panel";
 var COMMANDS = {
-  "/clear": "\u6E05\u7A7A\u5BF9\u8BDD\uFF0C\u91CD\u65B0\u5F00\u59CB",
-  "/help": "\u663E\u793A CodeBuddy \u5E2E\u52A9\u4FE1\u606F",
-  "/status": "\u663E\u793A\u5F53\u524D\u4ED3\u5E93\u548C\u4F1A\u8BDD\u72B6\u6001",
-  "/doctor": "\u68C0\u67E5 CodeBuddy \u73AF\u5883\u72B6\u6001",
-  "/compact": "\u538B\u7F29\u4E0A\u4E0B\u6587\u4EE5\u8282\u7701\u7A7A\u95F4",
-  "/summarize": "\u603B\u7ED3\u5E76\u538B\u7F29\u5BF9\u8BDD\u4E0A\u4E0B\u6587",
-  "/context": "\u8BA1\u7B97\u5F53\u524D\u4F1A\u8BDD token \u5206\u5E03",
-  "/cost": "\u663E\u793A\u4F1A\u8BDD\u6210\u672C\u548C token \u7528\u91CF",
-  "/model": "\u67E5\u770B\u6216\u5207\u6362 AI \u6A21\u578B",
-  "/permissions": "\u7BA1\u7406\u5DE5\u5177\u548C\u76EE\u5F55\u8BBF\u95EE\u6743\u9650",
-  "/config": "\u67E5\u770B\u6216\u4FEE\u6539\u672C\u5730\u914D\u7F6E",
-  "/export": "\u5BFC\u51FA\u5F53\u524D\u5BF9\u8BDD",
-  "/resume": "\u6062\u590D\u4E4B\u524D\u7684\u4F1A\u8BDD",
-  "/rewind": "\u56DE\u9000\u5230\u4E4B\u524D\u7684\u6D88\u606F\u70B9",
-  "/init": "\u521D\u59CB\u5316 CodeBuddy \u4ED3\u5E93",
-  "/plan": "\u9884\u89C8\u8BA1\u5212\u6A21\u5F0F\u4E0B\u7684\u8BA1\u5212\u6587\u4EF6",
-  "/fork": "\u5728\u5F53\u524D\u5BF9\u8BDD\u4F4D\u7F6E\u521B\u5EFA\u5206\u652F",
-  "/memory": "\u7BA1\u7406\u957F\u671F\u8BB0\u5FC6",
-  "/mcp": "\u7BA1\u7406 MCP \u8FDE\u63A5",
-  "/todos": "\u663E\u793A\u5F85\u529E\u4E8B\u9879\u5217\u8868",
-  "/stats": "\u663E\u793A\u4F7F\u7528\u7EDF\u8BA1\u4FE1\u606F",
-  "/cr": "\u5BA1\u67E5\u4EE3\u7801\u8D28\u91CF",
-  "/fix": "\u81EA\u52A8\u4FEE\u590D\u4EE3\u7801\u95EE\u9898",
-  "/tests": "\u751F\u6210\u5355\u5143\u6D4B\u8BD5",
-  "/explain": "\u89E3\u91CA\u4EE3\u7801\u5DE5\u4F5C\u539F\u7406",
-  "/rules": "\u751F\u6210\u4EE3\u7801\u89C4\u8303\u89C4\u5219"
+  "/clear": t("cmd.clear"),
+  "/help": t("cmd.help"),
+  "/status": t("cmd.status"),
+  "/doctor": t("cmd.doctor"),
+  "/compact": t("cmd.compact"),
+  "/summarize": t("cmd.summarize"),
+  "/context": t("cmd.context"),
+  "/cost": t("cmd.cost"),
+  "/model": t("cmd.model"),
+  "/permissions": t("cmd.permissions"),
+  "/config": t("cmd.config"),
+  "/export": t("cmd.export"),
+  "/resume": t("cmd.resume"),
+  "/rewind": t("cmd.rewind"),
+  "/init": t("cmd.init"),
+  "/plan": t("cmd.plan"),
+  "/fork": t("cmd.fork"),
+  "/memory": t("cmd.memory"),
+  "/mcp": t("cmd.mcp"),
+  "/todos": t("cmd.todos"),
+  "/stats": t("cmd.stats"),
+  "/cr": t("cmd.cr"),
+  "/fix": t("cmd.fix"),
+  "/tests": t("cmd.tests"),
+  "/explain": t("cmd.explain"),
+  "/rules": t("cmd.rules")
 };
 var BuddyBridgeChatView = class extends import_obsidian.ItemView {
   constructor(leaf, api, loadDataCallback) {
     super(leaf);
+    /** 最近一轮的 token 用量（P2.5 上下文用量显示）；由流式 assistant 信封的 message.usage 实时更新。 */
+    this.currentUsage = null;
     /** 各会话当前流式中的 assistant 消息 id（convId → msgId）；多会话各自一条流，互不串窗。 */
     this.streamingMsgIds = /* @__PURE__ */ new Map();
     /** 各会话的停止请求（convId）：只影响该会话当前这条流，队列保留继续。 */
@@ -1081,7 +1368,7 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
     return VIEW_TYPE_CHAT;
   }
   getDisplayText() {
-    return "BuddyBridge \u804A\u5929";
+    return t("view.title");
   }
   getIcon() {
     return "bot";
@@ -1116,7 +1403,7 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
     const newBtn = this.tabBar.createEl("button", {
       text: "",
       cls: "buddybridge-new-chat-btn",
-      attr: { title: "\u65B0\u5EFA\u5BF9\u8BDD", "aria-label": "\u65B0\u5EFA\u5BF9\u8BDD" }
+      attr: { title: t("conv.new"), "aria-label": t("conv.new") }
     });
     (0, import_obsidian.setIcon)(newBtn, "plus");
     newBtn.onclick = () => this.createNewChat();
@@ -1137,7 +1424,7 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
     const inputArea = container.createDiv({ cls: "buddybridge-input-area" });
     this.inputEl = inputArea.createEl("textarea", {
       cls: "buddybridge-input",
-      attr: { placeholder: "\u8F93\u5165\u6D88\u606F... (Shift+Enter \u6362\u884C\uFF0CEnter \u53D1\u9001)", rows: "2" }
+      attr: { placeholder: t("input.placeholder"), rows: "2" }
     });
     this.inputEl.onkeydown = (e) => this.handleKeydown(e);
     this.inputEl.oninput = () => {
@@ -1145,9 +1432,9 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
       this.updateCommandDropdown();
     };
     this.sendBtn = inputArea.createEl("button", {
-      text: "\u53D1\u9001",
+      text: t("input.send"),
       cls: "buddybridge-send-btn",
-      attr: { "aria-label": "\u53D1\u9001" }
+      attr: { "aria-label": t("input.send") }
     });
     this.sendBtn.onclick = () => {
       var _a2, _b2;
@@ -1158,6 +1445,10 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
         void this.sendMessage();
       }
     };
+    this.usageBar = inputArea.createDiv({ cls: "buddybridge-usage-bar" });
+    this.usageBar.createDiv({ cls: "buddybridge-usage-fill" });
+    this.usageLabel = this.usageBar.createEl("span", { cls: "buddybridge-usage-label" });
+    this.renderUsageBar();
     try {
       const plugin = (_d = (_c = this.app.plugins) == null ? void 0 : _c.plugins) == null ? void 0 : _d["buddybridge"];
       if ((_e = plugin == null ? void 0 : plugin.settings) == null ? void 0 : _e.maxConversations) {
@@ -1185,7 +1476,7 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
   atConversationLimit() {
     const max = this.manager.getMaxConversations();
     if (this.manager.atMaxConversations()) {
-      new import_obsidian.Notice(`\u5BF9\u8BDD\u5DF2\u6EE1\uFF08\u6700\u591A ${max} \u4E2A\uFF09\uFF0C\u8BF7\u5148\u5220\u9664\u65E7\u5BF9\u8BDD\u518D\u65B0\u5EFA`);
+      new import_obsidian.Notice(tF("notice.convFull", { max }));
       return true;
     }
     return false;
@@ -1225,7 +1516,7 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
     var _a;
     const newBtn = this.tabBar.querySelector(".buddybridge-new-chat-btn");
     const oldTabs = this.tabBar.querySelectorAll(".buddybridge-tab");
-    oldTabs.forEach((t) => t.remove());
+    oldTabs.forEach((t2) => t2.remove());
     const conversations = this.manager.getAll();
     const activeId = (_a = this.manager.getActive()) == null ? void 0 : _a.id;
     for (const conv of conversations) {
@@ -1236,7 +1527,7 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
       tab.createSpan({ text: conv.title, cls: "buddybridge-tab-title" });
       const closeBtn = tab.createSpan({
         cls: "buddybridge-tab-close",
-        attr: { title: "\u5173\u95ED\u5BF9\u8BDD", "aria-label": "\u5173\u95ED\u5BF9\u8BDD", role: "button", tabindex: "0" }
+        attr: { title: t("tab.close"), "aria-label": t("tab.close"), role: "button", tabindex: "0" }
       });
       (0, import_obsidian.setIcon)(closeBtn, "x");
       closeBtn.onclick = (e) => this.deleteChat(conv.id, e);
@@ -1259,15 +1550,15 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
       const empty = this.messageContainer.createDiv({ cls: "buddybridge-empty-chat" });
       const icon = empty.createDiv({ cls: "buddybridge-empty-chat-icon" });
       (0, import_obsidian.setIcon)(icon, "message-square");
-      empty.createDiv({ cls: "buddybridge-empty-chat-title", text: "\u5F00\u59CB\u65B0\u5BF9\u8BDD" });
-      empty.createDiv({ cls: "buddybridge-empty-chat-subtitle", text: "\u8F93\u5165\u6D88\u606F\u5F00\u59CB\u804A\u5929\uFF0C\u6216\u70B9\u51FB + \u65B0\u5EFA\u5BF9\u8BDD" });
+      empty.createDiv({ cls: "buddybridge-empty-chat-title", text: t("empty.title") });
+      empty.createDiv({ cls: "buddybridge-empty-chat-subtitle", text: t("empty.subtitle") });
       const tips = empty.createDiv({ cls: "buddybridge-empty-chat-tips" });
-      tips.createDiv({ text: "\u{1F4A1} \u63D0\u793A" });
+      tips.createDiv({ text: t("empty.tips") });
       const tipList = tips.createEl("ul");
       const tipItems = [
-        "Shift+Enter \u6362\u884C\uFF0CEnter \u53D1\u9001",
-        "\u8F93\u5165 / \u67E5\u770B\u53EF\u7528\u547D\u4EE4",
-        "\u591A\u8F6E\u5BF9\u8BDD\u81EA\u52A8\u4FDD\u6301\u4E0A\u4E0B\u6587"
+        t("tip.enter"),
+        t("tip.commands"),
+        t("tip.context")
       ];
       for (const tip of tipItems) {
         tipList.createEl("li", { text: tip });
@@ -1285,7 +1576,7 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
     });
     const forkBtn = row.createDiv({
       cls: "buddybridge-fork-btn",
-      attr: { title: "\u4ECE\u8FD9\u91CC\u7EE7\u7EED\u65B0\u5BF9\u8BDD", "aria-label": "\u4ECE\u8FD9\u91CC\u7EE7\u7EED\u65B0\u5BF9\u8BDD", role: "button", tabindex: "0" }
+      attr: { title: t("tab.branch"), "aria-label": t("tab.branch"), role: "button", tabindex: "0" }
     });
     (0, import_obsidian.setIcon)(forkBtn, "git-branch");
     forkBtn.onclick = (e) => {
@@ -1322,7 +1613,7 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
     let toolsBlock = null;
     for (const part of parts) {
       if (part.kind === "thinking") {
-        this.renderThinkingBlock(bubble, part.content || "", "\u5DF2\u601D\u8003");
+        this.renderThinkingBlock(bubble, part.content || "", t("thinking.done"));
       } else if (part.kind === "tool") {
         if (!toolsBlock) {
           toolsBlock = this.renderToolsBlock(bubble);
@@ -1366,7 +1657,7 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
       const hdr = toolsBlock.createDiv({ cls: "buddybridge-tools-header" });
       const icon = hdr.createSpan({ cls: "buddybridge-tools-header-icon" });
       (0, import_obsidian.setIcon)(icon, "wrench");
-      hdr.createSpan({ cls: "buddybridge-tools-header-text", text: "\u5DE5\u5177\u8C03\u7528" });
+      hdr.createSpan({ cls: "buddybridge-tools-header-text", text: t("tool.title") });
       const chevron = hdr.createSpan({ cls: "buddybridge-tools-header-chevron", text: "\u25BE" });
       hdr.addEventListener("click", () => {
         const list = toolsBlock.querySelector(".buddybridge-tools-list");
@@ -1431,7 +1722,7 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
     const icon = card.createDiv({ cls: "buddybridge-error-card-icon" });
     (0, import_obsidian.setIcon)(icon, "alert-triangle");
     const errorMsg = content.replace(/^错误:\s*/, "").replace(/^Error:\s*/, "");
-    card.createDiv({ cls: "buddybridge-error-card-title", text: "\u8BF7\u6C42\u5931\u8D25" });
+    card.createDiv({ cls: "buddybridge-error-card-title", text: t("error.title") });
     card.createDiv({ cls: "buddybridge-error-card-body", text: errorMsg });
     const hint = this.getErrorHint(errorMsg);
     if (hint) {
@@ -1440,9 +1731,9 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
     if (onRetry) {
       const actions = card.createDiv({ cls: "buddybridge-error-card-actions" });
       const retryBtn = actions.createEl("button", {
-        text: "\u91CD\u8BD5",
+        text: t("error.retry"),
         cls: "mod-cta buddybridge-error-retry-btn",
-        attr: { "aria-label": "\u91CD\u8BD5\u4E0A\u6B21\u53D1\u9001" }
+        attr: { "aria-label": t("error.retryAria") }
       });
       retryBtn.onclick = (e) => {
         e.preventDefault();
@@ -1453,19 +1744,19 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
   }
   getErrorHint(errorMsg) {
     if (errorMsg.includes("\u627E\u4E0D\u5230 codebuddy") || errorMsg.includes("ENOENT") || errorMsg.includes("codebuddy")) {
-      return "\u8BF7\u5728\u8BBE\u7F6E\u4E2D\u6307\u5B9A\u6B63\u786E\u7684 CodeBuddy \u8DEF\u5F84\uFF0C\u6216\u786E\u8BA4\u5DF2\u5B89\u88C5 WorkBuddy \u684C\u9762\u7248\u3002";
+      return t("error.hintPath");
     }
     if (errorMsg.includes("Node.js") || errorMsg.includes("node")) {
-      return "\u8BF7\u786E\u8BA4 Node.js \u5DF2\u6B63\u786E\u5B89\u88C5\uFF0C\u6216\u8FD0\u884C\u73AF\u5883\u521D\u59CB\u5316\u63D0\u793A\u8BCD\u3002";
+      return t("error.hintNode");
     }
     if (errorMsg.includes("timeout") || errorMsg.includes("\u8D85\u65F6") || errorMsg.includes("TIMEOUT")) {
-      return "\u8BF7\u6C42\u8D85\u65F6\uFF0C\u8BF7\u91CD\u8BD5\u3002";
+      return t("error.hintTimeout");
     }
     return null;
   }
   renderThinkingIndicator(bubble) {
     const thinking = bubble.createDiv({ cls: "buddybridge-thinking" });
-    thinking.createSpan({ cls: "buddybridge-thinking-text", text: "\u601D\u8003\u4E2D" });
+    thinking.createSpan({ cls: "buddybridge-thinking-text", text: t("thinking.label") });
     const dots = thinking.createDiv({ cls: "buddybridge-thinking-dots" });
     for (let i = 0; i < 3; i++) {
       dots.createSpan({ cls: "buddybridge-dot" });
@@ -1613,7 +1904,7 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
     this.inputEl.disabled = false;
     const activeId = (_b = (_a = this.manager.getActive()) == null ? void 0 : _a.id) != null ? _b : null;
     const busy = activeId !== null && this.draining.has(activeId);
-    this.sendBtn.setText(busy ? "\u505C\u6B62" : "\u53D1\u9001");
+    this.sendBtn.setText(busy ? t("input.stop") : t("input.send"));
     this.sendBtn.toggleClass("buddybridge-send-btn-stop", busy);
   }
   stopStreaming() {
@@ -1784,6 +2075,10 @@ ${base}` : base);
         if (chunk.type === "text" && !hasRealContent && isStartupBanner(chunk.content)) {
           continue;
         }
+        if (chunk.usage) {
+          this.currentUsage = chunk.usage;
+          this.renderUsageBar();
+        }
         if (firstChunk) {
           firstChunk = false;
           if (isActive && bubble) {
@@ -1805,7 +2100,7 @@ ${base}` : base);
           }
           this.manager.updateMessageParts(convId, aiMsg.id, parts, true);
           if (isActive && bubble) {
-            this.renderThinkingBlock(bubble, thinkingContent, "\u601D\u8003\u4E2D...");
+            this.renderThinkingBlock(bubble, thinkingContent, t("thinking.inline"));
           }
         } else if (chunk.type === "tool") {
           parts.push({ kind: "tool", name: chunk.toolName || "", detail: chunk.toolDetail || "" });
@@ -1822,26 +2117,26 @@ ${base}` : base);
           }
         } else if (chunk.type === "error") {
           streamingError = chunk.content;
-          this.manager.updateMessage(convId, aiMsg.id, `\u9519\u8BEF: ${chunk.content}`, true);
-          new import_obsidian.Notice(`\u8BF7\u6C42\u5931\u8D25: ${chunk.content}`);
+          this.manager.updateMessage(convId, aiMsg.id, `${t("msg.errorPrefix")}${chunk.content}`, true);
+          new import_obsidian.Notice(tF("notice.requestFail", { msg: chunk.content }));
         }
       }
       if (streamingError) {
-        this.manager.updateMessage(convId, aiMsg.id, `\u9519\u8BEF: ${streamingError}`);
+        this.manager.updateMessage(convId, aiMsg.id, `${t("msg.errorPrefix")}${streamingError}`);
         this.manager.updateMessageParts(convId, aiMsg.id, void 0, true);
       } else {
         const hasContent = Boolean(textContent || thinkingContent || parts.length > 0);
         const stopped = this.stopRequests.has(convId);
         if (!hasContent) {
-          this.manager.updateMessage(convId, aiMsg.id, stopped ? "\uFF08\u5DF2\u505C\u6B62\uFF09" : "\uFF08\u65E0\u54CD\u5E94\uFF0C\u8BF7\u91CD\u8BD5\uFF09");
+          this.manager.updateMessage(convId, aiMsg.id, stopped ? t("msg.stopped") : t("msg.noResponse"));
         } else if (stopped && textContent) {
-          this.manager.updateMessage(convId, aiMsg.id, textContent + "\n\n\uFF08\u5DF2\u505C\u6B62\uFF09");
+          this.manager.updateMessage(convId, aiMsg.id, textContent + "\n\n" + t("msg.stopped"));
         } else if (isGatewayEmptyStream(textContent, thinkingContent.length, parts.length)) {
-          this.manager.updateMessage(convId, aiMsg.id, `\u9519\u8BEF: ${textContent}`);
+          this.manager.updateMessage(convId, aiMsg.id, `${t("msg.errorPrefix")}${textContent}`);
           this.manager.updateMessageParts(convId, aiMsg.id, void 0, true);
           this.manager.setSessionId(convId, this.api.generateId());
           this.preserveRecentContext(convId);
-          new import_obsidian.Notice("\u4E0A\u6E38\u7F51\u5173\u65E0\u8F93\u51FA\uFF08Empty stream\uFF09\uFF0C\u5DF2\u91CD\u7F6E\u4F1A\u8BDD\uFF0C\u8BF7\u91CD\u8BD5");
+          new import_obsidian.Notice(t("notice.gatewayEmpty"));
         } else {
           this.manager.updateMessage(convId, aiMsg.id, textContent);
         }
@@ -1852,8 +2147,8 @@ ${base}` : base);
       await this.manager.flush();
     } catch (error) {
       const message = getErrorMessage(error);
-      this.manager.updateMessage(convId, aiMsg.id, `\u9519\u8BEF: ${message}`);
-      new import_obsidian.Notice(`\u8BF7\u6C42\u5931\u8D25: ${message}`);
+      this.manager.updateMessage(convId, aiMsg.id, `${t("msg.errorPrefix")}${message}`);
+      new import_obsidian.Notice(tF("notice.requestFail", { msg: message }));
       if (isActive) {
         await this.renderMessages();
       }
@@ -1883,7 +2178,7 @@ ${base}` : base);
       body.onclick = () => this.editQueueItem(item.id, chip, body);
       const del = chip.createSpan({
         cls: "buddybridge-queue-chip-del",
-        attr: { title: "\u5220\u9664\u8BE5\u6761", "aria-label": "\u5220\u9664\u8BE5\u6761", role: "button", tabindex: "0" }
+        attr: { title: t("queue.delete"), "aria-label": t("queue.delete"), role: "button", tabindex: "0" }
       });
       (0, import_obsidian.setIcon)(del, "x");
       del.onclick = (e) => {
@@ -1954,7 +2249,7 @@ ${base}` : base);
     if (this.atConversationLimit())
       return;
     const history = conv.messages.slice(0, idx + 1);
-    const newConv = this.manager.createConversation(`${conv.title}\uFF08\u5206\u652F\uFF09`);
+    const newConv = this.manager.createConversation(`${conv.title}${t("conv.branchSuffix")}`);
     this.manager.replaceMessages(newConv.id, history);
     this.forkTranscripts.set(newConv.id, this.buildForkTranscript(history));
     this.renderTabs();
@@ -1962,13 +2257,13 @@ ${base}` : base);
     this.updateSendButton();
   }
   /** 构建分支注入转写：截至分叉点的对话（角色标注），供新 session 作为背景参考。 */
-  buildForkTranscript(messages, label = "[\u7CFB\u7EDF\u6CE8\u5165\xB7\u5206\u652F\u4E0A\u4E0B\u6587] \u4EE5\u4E0B\u662F\u4F60\u4E0E\u6B64\u7528\u6237\u6B64\u524D\u7684\u5BF9\u8BDD\uFF08\u622A\u81F3\u5206\u652F\u70B9\uFF09\uFF0C\u4EC5\u4F5C\u80CC\u666F\u53C2\u8003\uFF1A") {
+  buildForkTranscript(messages, label = t("marker.forkTranscript")) {
     const lines = [label];
     for (const m of messages) {
       const content = m.content.trim();
       if (!content)
         continue;
-      lines.push(`${m.role === "user" ? "\u7528\u6237" : "\u52A9\u624B"}: ${content}`);
+      lines.push(`${m.role === "user" ? t("role.user") : t("role.assistant")}: ${content}`);
     }
     return lines.join("\n");
   }
@@ -1989,9 +2284,38 @@ ${base}` : base);
       convId,
       this.buildForkTranscript(
         history.slice(-12),
-        "[\u7CFB\u7EDF\u6CE8\u5165\xB7\u4F1A\u8BDD\u91CD\u7F6E] \u4EE5\u4E0B\u662F\u4F60\u4E0E\u6B64\u7528\u6237\u6B64\u524D\u7684\u5BF9\u8BDD\uFF08\u4F1A\u8BDD\u5DF2\u56E0\u7F51\u5173\u6545\u969C\u91CD\u7F6E\uFF09\uFF0C\u4EC5\u4F5C\u80CC\u666F\u53C2\u8003\uFF1A"
+        t("marker.sessionReset")
       )
     );
+  }
+  /**
+   * P2.5 渲染上下文用量条：以最近一轮 inputTokens 为当前上下文占用、contextWindowSize 为分母，
+   * 计算百分比并经 --bb-usage-pct 驱动填充宽度；≥80% 预警（橙），≥100% 溢出（红）。
+   */
+  renderUsageBar() {
+    var _a, _b, _c, _d;
+    const windowSize = (_b = (_a = this.pluginSettings) == null ? void 0 : _a.contextWindowSize) != null ? _b : DEFAULT_SETTINGS.contextWindowSize;
+    if (windowSize <= 0) {
+      this.usageBar.addClass("buddybridge-hidden");
+      return;
+    }
+    const tokens = Math.max((_d = (_c = this.currentUsage) == null ? void 0 : _c.inputTokens) != null ? _d : 0, 0);
+    const pct = usagePercent(tokens, windowSize);
+    const level = usageLevel(pct);
+    this.usageBar.setCssProps({ "--bb-usage-pct": `${pct}%` });
+    this.usageBar.removeClass("buddybridge-usage-warn");
+    this.usageBar.removeClass("buddybridge-usage-critical");
+    if (level === "critical") {
+      this.usageBar.addClass("buddybridge-usage-critical");
+    } else if (level === "warn") {
+      this.usageBar.addClass("buddybridge-usage-warn");
+    }
+    this.usageLabel.setText(tF("usage.label", {
+      tokens: tokens.toLocaleString(),
+      window: windowSize.toLocaleString(),
+      pct: pct.toFixed(0)
+    }));
+    this.usageBar.removeClass("buddybridge-hidden");
   }
   updateCurrentFileBar() {
     if (this.currentFilePath) {
@@ -2044,35 +2368,37 @@ var BuddyBridgeSettingTab = class extends import_obsidian3.PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     const plugin = this.plugin;
-    new import_obsidian3.Setting(containerEl).setName("\u8FDE\u63A5\u914D\u7F6E").setHeading();
-    new import_obsidian3.Setting(containerEl).setName("CodeBuddy \u8DEF\u5F84").setDesc("codebuddy \u53EF\u6267\u884C\u6587\u4EF6\u8DEF\u5F84\u3002\u5982 WorkBuddy \u81EA\u5B9A\u4E49\u5B89\u88C5\uFF0C\u8DEF\u5F84\u901A\u5E38\u4E3A\uFF1A\u5B89\u88C5\u76EE\u5F55\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy\uFF08\u53F3\u952E WorkBuddy \u5FEB\u6377\u65B9\u5F0F \u2192 \u6253\u5F00\u6587\u4EF6\u4F4D\u7F6E \u53EF\u627E\u5230\u5B89\u88C5\u76EE\u5F55\uFF09").addText((text) => text.setPlaceholder("WorkBuddy\u5B89\u88C5\u76EE\u5F55\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy").setValue(plugin.settings.codebuddyPath).onChange(async (value) => {
+    new import_obsidian3.Setting(containerEl).setName(t("tab.heading.connection")).setHeading();
+    new import_obsidian3.Setting(containerEl).setName(t("settings.pathName")).setDesc(t("settings.pathDesc")).addText((text) => text.setPlaceholder(t("settings.pathPlaceholder")).setValue(plugin.settings.codebuddyPath).onChange(async (value) => {
       plugin.settings.codebuddyPath = value;
       plugin.api.setCodebuddyPath(value);
       await plugin.saveSettings();
     }));
-    new import_obsidian3.Setting(containerEl).setName("Node \u8DEF\u5F84\uFF08\u53EF\u9009\uFF09").setDesc("\u7559\u7A7A\u81EA\u52A8\u68C0\u6D4B\u3002\u4EC5\u5F53\u4EE5\u7EAF\u811A\u672C\u65B9\u5F0F\u542F\u52A8 codebuddy\uFF08\u975E .exe/.cmd\uFF09\u65F6\u4F7F\u7528\u3002").addText((text) => text.setPlaceholder("\u81EA\u52A8\u68C0\u6D4B").setValue(plugin.settings.nodePath).onChange(async (value) => {
+    new import_obsidian3.Setting(containerEl).setName(t("settings.nodeName")).setDesc(t("settings.nodeDesc")).addText((text) => text.setPlaceholder(t("settings.autoDetect")).setValue(plugin.settings.nodePath).onChange(async (value) => {
       plugin.settings.nodePath = value;
       plugin.api.setNodePath(value);
       await plugin.saveSettings();
     }));
-    new import_obsidian3.Setting(containerEl).setName("CLI \u8D85\u65F6\u65F6\u957F\uFF08\u79D2\uFF09").setDesc("\u8BF7\u6C42\u8D85\u8FC7\u8BE5\u65F6\u957F\u672A\u6536\u5230\u5B8C\u6574\u56DE\u590D\u65F6\u81EA\u52A8\u7EC8\u6B62\u5E76\u63D0\u793A\uFF08\u9ED8\u8BA4 300 \u79D2\uFF09").addText((text) => text.setPlaceholder("300").setValue(String(plugin.settings.timeoutSeconds)).onChange(async (value) => {
+    new import_obsidian3.Setting(containerEl).setName(t("settings.timeoutName")).setDesc(t("settings.timeoutDesc")).addText((text) => text.setPlaceholder("300").setValue(String(plugin.settings.timeoutSeconds)).onChange(async (value) => {
       const num = parseInt(value);
       if (!isNaN(num) && num > 0) {
         plugin.settings.timeoutSeconds = num;
         await plugin.saveSettings();
       }
     }));
-    new import_obsidian3.Setting(containerEl).setName("\u4E0A\u4E0B\u6587\u6CE8\u5165").setHeading();
-    new import_obsidian3.Setting(containerEl).setName("\u6CE8\u5165\u5F53\u524D\u7B14\u8BB0\u94FE\u63A5").setDesc("\u53D1\u9001\u6D88\u606F\u65F6\u81EA\u52A8\u5728\u6D88\u606F\u524D\u9644\u52A0 [\u7CFB\u7EDF\u6CE8\u5165\xB7\u5F53\u524D\u7B14\u8BB0: \u8DEF\u5F84]\uFF0C\u8BA9 AI \u77E5\u9053\u4F60\u5728\u770B\u54EA\u4E2A\u7B14\u8BB0\uFF08\u9ED8\u8BA4\u5F00\u542F\uFF09").addToggle((toggle) => toggle.setValue(plugin.settings.noteLinkInjection).onChange(async (value) => {
+    new import_obsidian3.Setting(containerEl).setName(t("tab.heading.injection")).setHeading();
+    const noteMarker = tF("marker.currentNote", { path: t("settings.pathExample") });
+    const vaultMarker = tF("marker.vault", { path: t("settings.pathExample") });
+    new import_obsidian3.Setting(containerEl).setName(t("settings.noteLinkName")).setDesc(tF("settings.noteLinkDesc", { marker: noteMarker })).addToggle((toggle) => toggle.setValue(plugin.settings.noteLinkInjection).onChange(async (value) => {
       plugin.settings.noteLinkInjection = value;
       await plugin.saveSettings();
     }));
-    new import_obsidian3.Setting(containerEl).setName("\u6CE8\u5165 Vault \u4E0A\u4E0B\u6587").setDesc("\u989D\u5916\u9644\u52A0 [\u7CFB\u7EDF\u6CE8\u5165\xB7Vault: \u4ED3\u5E93\u6839\u8DEF\u5F84]\uFF0C\u5E2E\u52A9 AI \u7406\u89E3\u7B14\u8BB0\u6240\u5728\u7684\u4ED3\u5E93\uFF08\u9ED8\u8BA4\u5173\u95ED\uFF09").addToggle((toggle) => toggle.setValue(plugin.settings.vaultContextInjection).onChange(async (value) => {
+    new import_obsidian3.Setting(containerEl).setName(t("settings.vaultName")).setDesc(tF("settings.vaultDesc", { marker: vaultMarker })).addToggle((toggle) => toggle.setValue(plugin.settings.vaultContextInjection).onChange(async (value) => {
       plugin.settings.vaultContextInjection = value;
       await plugin.saveSettings();
     }));
-    new import_obsidian3.Setting(containerEl).setName("\u5916\u89C2").setHeading();
-    new import_obsidian3.Setting(containerEl).setName("\u4E3B\u8272\u8C03").setDesc("\u804A\u5929\u9762\u677F\u7684\u4E3B\u9898\u8272\u3002\u7559\u7A7A\u4F7F\u7528 Obsidian \u9ED8\u8BA4\u5F3A\u8C03\u8272\u3002").addText((text) => {
+    new import_obsidian3.Setting(containerEl).setName(t("tab.heading.appearance")).setHeading();
+    new import_obsidian3.Setting(containerEl).setName(t("settings.colorName")).setDesc(t("settings.colorDesc")).addText((text) => {
       text.inputEl.type = "color";
       text.setValue(plugin.settings.primaryColor || "#8b5cf6");
       text.onChange(async (value) => {
@@ -2080,39 +2406,47 @@ var BuddyBridgeSettingTab = class extends import_obsidian3.PluginSettingTab {
         await plugin.saveSettings();
       });
     });
-    new import_obsidian3.Setting(containerEl).setName("\u5B57\u4F53\u5927\u5C0F").setDesc("\u804A\u5929\u9762\u677F\uFF08\u6D88\u606F\u6C14\u6CE1\u3001Markdown \u5185\u5BB9\u4E0E\u8F93\u5165\u6846\uFF09\u7684\u6587\u5B57\u5927\u5C0F").addSlider((slider) => slider.setLimits(FONT_SIZE_MIN, FONT_SIZE_MAX, 1).setValue(plugin.settings.fontSize).setDynamicTooltip().onChange(async (value) => {
+    new import_obsidian3.Setting(containerEl).setName(t("settings.fontName")).setDesc(t("settings.fontDesc")).addSlider((slider) => slider.setLimits(FONT_SIZE_MIN, FONT_SIZE_MAX, 1).setValue(plugin.settings.fontSize).setDynamicTooltip().onChange(async (value) => {
       plugin.settings.fontSize = value;
       await plugin.saveSettings();
     }));
-    new import_obsidian3.Setting(containerEl).setName("\u7BA1\u7406").setHeading();
-    new import_obsidian3.Setting(containerEl).setName("\u6700\u5927\u5BF9\u8BDD\u6570").setDesc("\u6700\u591A\u4FDD\u7559\u591A\u5C11\u4E2A\u5BF9\u8BDD\uFF08\u8D85\u51FA\u90E8\u5206\u81EA\u52A8\u5220\u9664\uFF09").addText((text) => text.setPlaceholder("20").setValue(String(plugin.settings.maxConversations)).onChange(async (value) => {
+    new import_obsidian3.Setting(containerEl).setName(t("tab.heading.usage")).setHeading();
+    new import_obsidian3.Setting(containerEl).setName(t("settings.windowName")).setDesc(tF("settings.windowDesc", { default: DEFAULT_SETTINGS.contextWindowSize })).addText((text) => text.setPlaceholder(String(DEFAULT_SETTINGS.contextWindowSize)).setValue(String(plugin.settings.contextWindowSize)).onChange(async (value) => {
+      const num = parseInt(value, 10);
+      if (!isNaN(num) && num >= CONTEXT_WINDOW_MIN && num <= CONTEXT_WINDOW_MAX) {
+        plugin.settings.contextWindowSize = num;
+        await plugin.saveSettings();
+      }
+    }));
+    new import_obsidian3.Setting(containerEl).setName(t("tab.heading.manage")).setHeading();
+    new import_obsidian3.Setting(containerEl).setName(t("settings.maxConvName")).setDesc(t("settings.maxConvDesc")).addText((text) => text.setPlaceholder("20").setValue(String(plugin.settings.maxConversations)).onChange(async (value) => {
       const num = parseInt(value);
       if (!isNaN(num) && num > 0) {
         plugin.settings.maxConversations = num;
         await plugin.saveSettings();
       }
     }));
-    new import_obsidian3.Setting(containerEl).setName("\u5BFC\u51FA\u8BBE\u7F6E\uFF08\u542B\u804A\u5929\u8BB0\u5F55\uFF09").setDesc("\u5C06\u5168\u90E8\u8BBE\u7F6E\u4E0E\u804A\u5929\u8BB0\u5F55\u5BFC\u51FA\u4E3A\u5E26\u7248\u672C\u53F7\u7684 JSON \u6587\u4EF6\uFF0C\u7528\u4E8E\u5907\u4EFD\u6216\u8FC1\u79FB").addButton((btn) => btn.setButtonText("\u5BFC\u51FA").onClick(async () => {
+    new import_obsidian3.Setting(containerEl).setName(t("settings.exportName")).setDesc(t("settings.exportDesc")).addButton((btn) => btn.setButtonText(t("settings.exportBtn")).onClick(async () => {
       await plugin.exportData();
     }));
-    new import_obsidian3.Setting(containerEl).setName("\u5BFC\u5165\u8BBE\u7F6E\uFF08\u542B\u804A\u5929\u8BB0\u5F55\uFF09").setDesc("\u4ECE JSON \u6587\u4EF6\u6062\u590D\u8BBE\u7F6E\u4E0E\u804A\u5929\u8BB0\u5F55\uFF08\u4F1A\u8986\u76D6\u5F53\u524D\u6570\u636E\uFF0C\u9700\u4E8C\u6B21\u786E\u8BA4\uFF09").addButton((btn) => {
-      btn.setButtonText("\u5BFC\u5165");
+    new import_obsidian3.Setting(containerEl).setName(t("settings.importName")).setDesc(t("settings.importDesc")).addButton((btn) => {
+      btn.setButtonText(t("settings.importBtn"));
       btn.buttonEl.addEventListener("click", (evt) => {
         evt.preventDefault();
         evt.stopPropagation();
         void plugin.importDataFromFile();
       });
     });
-    new import_obsidian3.Setting(containerEl).setName("\u91CD\u7F6E\u4E3A\u9ED8\u8BA4").setDesc("\u5C06\u6240\u6709\u8BBE\u7F6E\u6062\u590D\u4E3A\u9ED8\u8BA4\u503C\uFF08\u4E0D\u4F1A\u5220\u9664\u804A\u5929\u8BB0\u5F55\uFF0C\u9700\u4E8C\u6B21\u786E\u8BA4\uFF09").addButton((btn) => btn.setButtonText("\u91CD\u7F6E").onClick(() => {
+    new import_obsidian3.Setting(containerEl).setName(t("settings.resetName")).setDesc(t("settings.resetDesc")).addButton((btn) => btn.setButtonText(t("settings.resetBtn")).onClick(() => {
       new ConfirmModal(
         this.app,
-        "\u786E\u8BA4\u5C06\u6240\u6709\u8BBE\u7F6E\u6062\u590D\u4E3A\u9ED8\u8BA4\u503C\uFF1F\u804A\u5929\u8BB0\u5F55\u5C06\u4FDD\u7559\u3002",
+        t("settings.resetConfirm"),
         async () => {
           plugin.settings = { ...DEFAULT_SETTINGS };
           plugin.api.setCodebuddyPath("");
           plugin.api.setNodePath("");
           await plugin.saveSettings();
-          new import_obsidian3.Notice("\u8BBE\u7F6E\u5DF2\u91CD\u7F6E\u4E3A\u9ED8\u8BA4");
+          new import_obsidian3.Notice(t("settings.resetDone"));
           this.display();
         }
       ).open();

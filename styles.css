@@ -622,6 +622,7 @@
 /* ==================== 输入区 ==================== */
 .buddybridge-input-area {
     display: flex;
+    flex-wrap: wrap;
     gap: var(--buddybridge-gap-md);
     padding: 10px var(--buddybridge-gap-lg);
     border-top: 1px solid var(--background-modifier-border);
@@ -824,6 +825,56 @@
     display: flex;
     gap: 8px;
     justify-content: flex-end;
+}
+
+/* ==================== 上下文用量条（P2.5） ==================== */
+.buddybridge-usage-bar {
+    flex-basis: 100%; /* 独占一行，位于输入框/发送按钮下方 */
+    position: relative;
+    height: 18px;
+    margin-top: 2px;
+    border-radius: 4px;
+    background: var(--background-modifier-border);
+    overflow: hidden;
+    cursor: default;
+}
+
+.buddybridge-usage-fill {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: var(--bb-usage-pct, 0%);
+    background: var(--text-accent);
+    opacity: 0.35;
+    transition: width 0.2s ease;
+}
+
+.buddybridge-usage-label {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    padding: 0 8px;
+    font-size: 11px;
+    line-height: 1;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+
+.buddybridge-usage-bar.buddybridge-usage-warn .buddybridge-usage-fill {
+    background: var(--color-orange);
+    opacity: 0.5;
+}
+
+.buddybridge-usage-bar.buddybridge-usage-critical .buddybridge-usage-fill {
+    background: var(--color-red);
+    opacity: 0.55;
+}
+
+.buddybridge-usage-bar.buddybridge-usage-warn .buddybridge-usage-label,
+.buddybridge-usage-bar.buddybridge-usage-critical .buddybridge-usage-label {
+    color: var(--text-warning);
 }
 
 /* ==================== 不可见辅助类 ==================== */

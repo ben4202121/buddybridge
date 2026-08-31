@@ -1,5 +1,5 @@
 import { spawn } from 'child_process';
-import { BuddyBridgeAPI, parseStreamLine, parseMessageBlock, blockToChunk, parseStreamEvent, isWindowsWrapper, isBareFallback, needsWindowsShell, escapeCmdArg, isStartupBanner, resolveCodebuddyPath, type StreamChunk } from '../src/api';
+import { BuddyBridgeAPI, parseStreamLine, parseMessageBlock, blockToChunk, parseStreamEvent, isWindowsWrapper, isBareFallback, needsWindowsShell, escapeCmdArg, isStartupBanner, resolveCodebuddyPath, extractUsage, usagePercent, usageLevel, type StreamChunk } from '../src/api';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -505,6 +505,98 @@ describe('parseStreamLine', () => {
     it('returns null for unknown events without fallback text', () => {
         const line = JSON.stringify({ type: 'unknown', value: 123 });
         expect(parseStreamLine(line)).toBeNull();
+    });
+
+    it('attaches usage to assistant text chunk (P2.5)', () => {
+        const line = JSON.stringify({
+            type: 'assistant',
+            message: {
+                content: [{ type: 'text', text: 'hello' }],
+                usage: { input_tokens: 24512, output_tokens: 1024 }
+            }
+        });
+        expect(parseStreamLine(line)).toEqual({
+            type: 'text',
+            content: 'hello',
+            usage: { inputTokens: 24512, outputTokens: 1024 }
+        });
+    });
+
+    it('attaches usage to empty assistant envelope (P2.5)', () => {
+        const line = JSON.stringify({
+            type: 'assistant',
+            message: {
+                content: [{ type: 'image', url: 'http://x' }],
+                usage: { input_tokens: 100, output_tokens: 50 }
+            }
+        });
+        expect(parseStreamLine(line)).toEqual({
+            type: 'text',
+            content: '',
+            usage: { inputTokens: 100, outputTokens: 50 }
+        });
+    });
+});
+
+describe('extractUsage (P2.5 上下文用量)', () => {
+    it('extracts input/output tokens from message.usage', () => {
+        const raw = { type: 'assistant', message: { usage: { input_tokens: 100, output_tokens: 50 } } };
+        expect(extractUsage(raw)).toEqual({ inputTokens: 100, outputTokens: 50 });
+    });
+
+    it('handles missing output_tokens (defaults to 0)', () => {
+        const raw = { type: 'assistant', message: { usage: { input_tokens: 100 } } };
+        expect(extractUsage(raw)).toEqual({ inputTokens: 100, outputTokens: 0 });
+    });
+
+    it('handles missing input_tokens (defaults to 0)', () => {
+        const raw = { type: 'assistant', message: { usage: { output_tokens: 50 } } };
+        expect(extractUsage(raw)).toEqual({ inputTokens: 0, outputTokens: 50 });
+    });
+
+    it('returns undefined when both token fields absent', () => {
+        expect(extractUsage({ type: 'assistant', message: { usage: {} } })).toBeUndefined();
+    });
+
+    it('returns undefined when no message.usage', () => {
+        expect(extractUsage({ type: 'assistant', message: { content: [] } })).toBeUndefined();
+    });
+
+    it('returns undefined for zero tokens', () => {
+        const raw = { type: 'assistant', message: { usage: { input_tokens: 0, output_tokens: 0 } } };
+        expect(extractUsage(raw)).toEqual({ inputTokens: 0, outputTokens: 0 });
+    });
+
+    it('returns undefined for non-object input', () => {
+        expect(extractUsage(null)).toBeUndefined();
+        expect(extractUsage('nope')).toBeUndefined();
+        expect(extractUsage([])).toBeUndefined();
+    });
+});
+
+describe('usagePercent / usageLevel (P2.5 用量条分级)', () => {
+    it('computes plain percentage', () => {
+        expect(usagePercent(100000, 200000)).toBeCloseTo(50, 5);
+        expect(usagePercent(20000, 200000)).toBeCloseTo(10, 5);
+    });
+
+    it('clamps below 0 and above 100', () => {
+        expect(usagePercent(-50, 200000)).toBe(0);
+        expect(usagePercent(250000, 200000)).toBe(100);
+    });
+
+    it('treats invalid window as 0%', () => {
+        expect(usagePercent(100, 0)).toBe(0);
+        expect(usagePercent(100, -5)).toBe(0);
+    });
+
+    it('grades warn at >=80% and critical at >=100%', () => {
+        expect(usageLevel(79.9)).toBe('normal');
+        expect(usageLevel(80)).toBe('warn');
+        expect(usageLevel(99.9)).toBe('warn');
+        expect(usageLevel(100)).toBe('critical');
+        expect(usageLevel(150)).toBe('critical');
+        expect(usageLevel(0)).toBe('normal');
     });
 });
 

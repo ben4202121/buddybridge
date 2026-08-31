@@ -1,5 +1,7 @@
 // ==================== 当前文档感知 / 上下文注入 ====================
 
+import { tF } from './i18n';
+
 export interface PromptContextInput {
     userText: string;
     /** 当前活动笔记路径（可为空） */
@@ -23,10 +25,10 @@ export interface PromptContextInput {
 export function buildPromptContext(input: PromptContextInput): string {
     const lines: string[] = [];
     if (input.noteLinkInjection && input.notePath) {
-        lines.push(`[系统注入·当前笔记: ${input.notePath}]`);
+        lines.push(tF('marker.currentNote', { path: input.notePath }));
     }
     if (input.vaultContextInjection && input.vaultPath) {
-        lines.push(`[系统注入·Vault: ${input.vaultPath}]`);
+        lines.push(tF('marker.vault', { path: input.vaultPath }));
     }
     if (lines.length === 0) {
         return input.userText;
@@ -90,7 +92,7 @@ export function buildDedupedPrompt(
 
     // 笔记由非空变为空：显式告知「无笔记」，防止 agent 继续按旧笔记行动
     if (flags.noteLinkInjection && prev?.notePath && !current.notePath) {
-        text = `[系统注入·当前笔记: 无]\n\n${text}`;
+        text = `${tF('marker.noNote')}\n\n${text}`;
     }
 
     return { text, state: current };

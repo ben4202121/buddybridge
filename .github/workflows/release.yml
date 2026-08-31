@@ -1,0 +1,49 @@
+name: Release
+
+# P4.2 自动发布：推送语义化版本 tag（如 2.3.0）时，自动构建产物并发布 GitHub Release。
+# 依赖：P4.1 CI 已就绪（本仓库 tag 一律打在 main 的通过 CI 的提交上）。
+
+on:
+  push:
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify tag matches manifest version
+        run: |
+          TAG="${{ github.ref_name }}"
+          MANIFEST_VERSION=$(node -p "require('./manifest.json').version")
+          echo "Tag: $TAG  |  manifest.json version: $MANIFEST_VERSION"
+          if [ "$TAG" != "$MANIFEST_VERSION" ]; then
+            echo "::error::Tag $TAG does not match manifest.json version $MANIFEST_VERSION"
+            exit 1
+          fi
+
+      - name: Production build
+        run: node esbuild.config.mjs production
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            main.js
+            manifest.json
+            styles.css
+          generate_release_notes: true

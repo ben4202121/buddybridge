@@ -36,6 +36,8 @@ export interface BuddyBridgeSettings {
     primaryColor: string;
     /** 聊天区字体大小（px），默认 14 */
     fontSize: number;
+    /** 上下文窗口大小（token），用量显示的分母，默认 200000 */
+    contextWindowSize: number;
     /** CLI 请求超时（秒），默认 300 */
     timeoutSeconds: number;
     /** Node.js 可执行文件路径（留空自动检测，仅裸脚本启动时使用） */
@@ -58,12 +60,17 @@ export interface BuddyBridgeSettings {
  * - v6：v2.0.2 新增 nodePath / noteLinkInjection / vaultContextInjection
  * - v7：v2.0.2 注入开关字段命名定稿（noteLinkInjection / vaultContextInjection）
  * - v8：v2.2.0 新增 fontSize（聊天区字体大小，px）
+ * - v9：v2.3.0 新增 contextWindowSize（上下文窗口大小，token）
  */
-const CURRENT_SETTINGS_VERSION = 8;
+const CURRENT_SETTINGS_VERSION = 9;
 
 /** 聊天区字体大小范围（px），与设置页滑块联动 */
 export const FONT_SIZE_MIN = 12;
 export const FONT_SIZE_MAX = 18;
+
+/** 上下文窗口大小范围（token），与设置页输入联动 */
+export const CONTEXT_WINDOW_MIN = 1000;
+export const CONTEXT_WINDOW_MAX = 1000000;
 
 /**
  * 持久化数据 blob 的格式版本号。
@@ -77,6 +84,7 @@ export const DEFAULT_SETTINGS: BuddyBridgeSettings = {
     maxConversations: 20,
     primaryColor: '',
     fontSize: 14,
+    contextWindowSize: 200000,
     timeoutSeconds: 300,
     nodePath: '',
     noteLinkInjection: true,
@@ -127,6 +135,7 @@ export function migrateSettings(stored: unknown): BuddyBridgeSettings {
     const maxConversations = getNumber(stored, 'maxConversations');
     const primaryColor = getString(stored, 'primaryColor');
     const fontSize = getNumber(stored, 'fontSize');
+    const contextWindowSize = getNumber(stored, 'contextWindowSize');
     const timeoutSeconds = getNumber(stored, 'timeoutSeconds');
     const nodePath = getString(stored, 'nodePath');
 
@@ -147,6 +156,11 @@ export function migrateSettings(stored: unknown): BuddyBridgeSettings {
         fontSize: typeof fontSize === 'number' && fontSize >= FONT_SIZE_MIN && fontSize <= FONT_SIZE_MAX
             ? fontSize
             : DEFAULT_SETTINGS.fontSize,
+        contextWindowSize: typeof contextWindowSize === 'number'
+            && contextWindowSize >= CONTEXT_WINDOW_MIN
+            && contextWindowSize <= CONTEXT_WINDOW_MAX
+            ? contextWindowSize
+            : DEFAULT_SETTINGS.contextWindowSize,
         timeoutSeconds: typeof timeoutSeconds === 'number' && timeoutSeconds > 0
             ? timeoutSeconds
             : DEFAULT_SETTINGS.timeoutSeconds,

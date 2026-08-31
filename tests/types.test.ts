@@ -13,6 +13,9 @@ describe('DEFAULT_SETTINGS', () => {
     it('should default fontSize to 14', () => {
         expect(DEFAULT_SETTINGS.fontSize).toBe(14);
     });
+    it('should default contextWindowSize to 200000 (P2.5)', () => {
+        expect(DEFAULT_SETTINGS.contextWindowSize).toBe(200000);
+    });
 });
 
 describe('migrateSettings', () => {
@@ -79,6 +82,20 @@ describe('migrateSettings', () => {
         expect(migrateSettings({ fontSize: 5 }).fontSize).toBe(14);  // 低于下限
         expect(migrateSettings({ fontSize: 99 }).fontSize).toBe(14); // 高于上限
         expect(migrateSettings({ fontSize: '14' }).fontSize).toBe(14); // 非数字
+    });
+
+    it('should preserve contextWindowSize when present and within bounds (P2.5)', () => {
+        expect(migrateSettings({ contextWindowSize: 1000 }).contextWindowSize).toBe(1000);
+        expect(migrateSettings({ contextWindowSize: 1000000 }).contextWindowSize).toBe(1000000);
+        expect(migrateSettings({ contextWindowSize: 128000 }).contextWindowSize).toBe(128000);
+    });
+
+    it('should fall back to default contextWindowSize when missing or invalid (P2.5)', () => {
+        expect(migrateSettings({}).contextWindowSize).toBe(200000);
+        expect(migrateSettings({ contextWindowSize: 999 }).contextWindowSize).toBe(200000);   // 低于下限
+        expect(migrateSettings({ contextWindowSize: 1000001 }).contextWindowSize).toBe(200000); // 高于上限
+        expect(migrateSettings({ contextWindowSize: '200000' }).contextWindowSize).toBe(200000); // 非数字
+        expect(migrateSettings({ contextWindowSize: 0 }).contextWindowSize).toBe(200000);
     });
 
     it('should migrate nodePath from stored value', () => {
