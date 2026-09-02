@@ -274,6 +274,16 @@ describe('parseMessageBlock', () => {
             input: { x: 1 }
         });
     });
+
+    it('normalizes tool_use block to tool_call (P1.3 CLI 抓包实测)', () => {
+        expect(parseMessageBlock({ type: 'tool_use', id: 'x', name: 'Read', input: { file_path: 'a' } })).toEqual({
+            type: 'tool_call',
+            thinking: undefined,
+            text: undefined,
+            name: 'Read',
+            input: { file_path: 'a' }
+        });
+    });
 });
 
 describe('blockToChunk', () => {
@@ -294,6 +304,18 @@ describe('blockToChunk', () => {
     it('converts tool_call block with object input', () => {
         expect(blockToChunk({ type: 'tool_call', name: 'n', input: { x: 1 } })).toEqual({
             type: 'tool', content: '', toolName: 'n', toolDetail: JSON.stringify({ x: 1 })
+        });
+    });
+
+    it('summarizes file_path input to basename for tool card', () => {
+        expect(blockToChunk({ type: 'tool_call', name: 'Read', input: { file_path: 'C:\\repo\\src\\index.ts' } })).toEqual({
+            type: 'tool', content: '', toolName: 'Read', toolDetail: 'index.ts'
+        });
+    });
+
+    it('keeps command input as-is for tool card', () => {
+        expect(blockToChunk({ type: 'tool_call', name: 'Bash', input: { command: 'npm run build' } })).toEqual({
+            type: 'tool', content: '', toolName: 'Bash', toolDetail: 'npm run build'
         });
     });
 });
@@ -441,6 +463,42 @@ describe('parseStreamLine', () => {
         expect(parseStreamLine(line)).toEqual(expected);
     });
 
+    it('parses real CLI tool_use envelope into tool chunk (P1.3 抓包实测)', () => {
+        const line = JSON.stringify({
+            type: 'assistant',
+            uuid: 'u',
+            session_id: 's',
+            message: {
+                id: 'm',
+                content: [
+                    { type: 'tool_use', id: 'chatcmpl-tool-1', name: 'Read', input: { file_path: 'C:\\tmp\\probe\\sample.txt' } }
+                ],
+                model: 'm',
+                role: 'assistant',
+                stop_reason: 'tool_use',
+                type: 'message',
+                usage: null
+            }
+        });
+        const expected: StreamChunk = { type: 'tool', content: '', toolName: 'Read', toolDetail: 'sample.txt' };
+        expect(parseStreamLine(line)).toEqual(expected);
+    });
+
+    it('skips user tool_result blocks', () => {
+        const line = JSON.stringify({
+            type: 'user',
+            parent_tool_use_id: 'chatcmpl-tool-1',
+            message: {
+                content: [
+                    { type: 'tool_result', tool_use_id: 'chatcmpl-tool-1', content: [{ type: 'text', text: 'file content' }] }
+                ],
+                role: 'user',
+                type: 'message'
+            }
+        });
+        expect(parseStreamLine(line)).toBeNull();
+    });
+
     it('parses user envelope with text block', () => {
         const line = JSON.stringify({
             type: 'user',
@@ -505,6 +563,20 @@ describe('parseStreamLine', () => {
     it('returns null for unknown events without fallback text', () => {
         const line = JSON.stringify({ type: 'unknown', value: 123 });
         expect(parseStreamLine(line)).toBeNull();
+    });
+
+    it('returns null for benign system/file-history metadata events without unknown logging (P1.3 抓包)', () => {
+        let unknownCalls: string[][] = [];
+        const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+        try {
+            expect(parseStreamLine(JSON.stringify({ type: 'system', subtype: 'init', tools: [] }))).toBeNull();
+            expect(parseStreamLine(JSON.stringify({ type: 'system', subtype: 'status', status: null }))).toBeNull();
+            expect(parseStreamLine(JSON.stringify({ type: 'file-history-snapshot', snapshot: {} }))).toBeNull();
+        } finally {
+            unknownCalls = logSpy.mock.calls.filter((c) => String(c[0]).includes('[BB] unknown event'));
+            logSpy.mockRestore();
+        }
+        expect(unknownCalls).toHaveLength(0);
     });
 
     it('attaches usage to assistant text chunk (P2.5)', () => {

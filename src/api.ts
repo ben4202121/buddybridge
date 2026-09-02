@@ -213,14 +213,36 @@ export function resolveCodebuddyPath(customPath: string): string {
 export function parseMessageBlock(block: unknown): MessageBlock | null {
     if (!isObject(block)) return null;
     const type = getString(block, 'type');
-    if (type !== 'thinking' && type !== 'text' && type !== 'tool_call') return null;
+    // CLI 实测发 tool_use（.repro/tool_stream.jsonl），归一化为内部 tool_call
+    const normType = type === 'tool_use' ? 'tool_call' : type;
+    if (normType !== 'thinking' && normType !== 'text' && normType !== 'tool_call') return null;
     return {
-        type,
+        type: normType,
         thinking: getString(block, 'thinking'),
         text: getString(block, 'text'),
         name: getString(block, 'name'),
         input: block.input,
     };
+}
+
+function truncateText(s: string, max = 60): string {
+    return s.length > max ? s.substring(0, max) + '…' : s;
+}
+
+/**
+ * 把工具输入收敛为工具卡的一句话（P1.3 抓包验证：Read 的 input 是 {file_path}）。
+ * file_path 取 basename（绝对路径太长），command/query/pattern 保留原文，其余 JSON 兜底。
+ */
+export function summarizeToolInput(input: unknown): string {
+    if (typeof input === 'string') {
+        return truncateText(input.trim());
+    }
+    if (!isObject(input)) return '';
+    const filePath = getString(input, 'file_path');
+    if (filePath) return path.basename(filePath);
+    const s = getString(input, 'command') || getString(input, 'query') || getString(input, 'pattern') || '';
+    if (s) return truncateText(s);
+    return truncateText(JSON.stringify(input));
 }
 
 export function blockToChunk(block: MessageBlock): StreamChunk | null {
@@ -230,12 +252,11 @@ export function blockToChunk(block: MessageBlock): StreamChunk | null {
     if (block.type === 'text') {
         return { type: 'text', content: block.text || '' };
     }
-    const input = block.input;
     return {
         type: 'tool',
         content: '',
         toolName: block.name || 'unknown',
-        toolDetail: typeof input === 'string' ? input : JSON.stringify(input ?? {}),
+        toolDetail: summarizeToolInput(block.input),
     };
 }
 
@@ -339,6 +360,12 @@ export function parseStreamLine(line: string): StreamChunk | null {
         }
         if (event.type === 'error') {
             return { type: 'error', content: event.error || event.message || '未知错误' };
+        }
+
+        // 已知良性元数据事件（抓包验证）：system/init、system/status、file-history-snapshot。
+        // 不产出 chunk，也不打 unknown 日志（原会在每次请求刷屏）。其余未知类型仍输出 JSON 便于调试。
+        if (event.type === 'system' || event.type === 'file-history-snapshot' || event.type === 'file-history-change') {
+            return null;
         }
 
         // 未知事件类型, 输出原始 JSON 便于调试

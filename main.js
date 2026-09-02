@@ -307,15 +307,33 @@ function parseMessageBlock(block) {
   if (!isObject(block))
     return null;
   const type = getString(block, "type");
-  if (type !== "thinking" && type !== "text" && type !== "tool_call")
+  const normType = type === "tool_use" ? "tool_call" : type;
+  if (normType !== "thinking" && normType !== "text" && normType !== "tool_call")
     return null;
   return {
-    type,
+    type: normType,
     thinking: getString(block, "thinking"),
     text: getString(block, "text"),
     name: getString(block, "name"),
     input: block.input
   };
+}
+function truncateText(s, max = 60) {
+  return s.length > max ? s.substring(0, max) + "\u2026" : s;
+}
+function summarizeToolInput(input) {
+  if (typeof input === "string") {
+    return truncateText(input.trim());
+  }
+  if (!isObject(input))
+    return "";
+  const filePath = getString(input, "file_path");
+  if (filePath)
+    return path.basename(filePath);
+  const s = getString(input, "command") || getString(input, "query") || getString(input, "pattern") || "";
+  if (s)
+    return truncateText(s);
+  return truncateText(JSON.stringify(input));
 }
 function blockToChunk(block) {
   if (block.type === "thinking") {
@@ -324,12 +342,11 @@ function blockToChunk(block) {
   if (block.type === "text") {
     return { type: "text", content: block.text || "" };
   }
-  const input = block.input;
   return {
     type: "tool",
     content: "",
     toolName: block.name || "unknown",
-    toolDetail: typeof input === "string" ? input : JSON.stringify(input != null ? input : {})
+    toolDetail: summarizeToolInput(block.input)
   };
 }
 function extractUsage(raw) {
@@ -420,6 +437,9 @@ function parseStreamLine(line) {
     }
     if (event.type === "error") {
       return { type: "error", content: event.error || event.message || "\u672A\u77E5\u9519\u8BEF" };
+    }
+    if (event.type === "system" || event.type === "file-history-snapshot" || event.type === "file-history-change") {
+      return null;
     }
     console.log("[BB] unknown event:", line.substring(0, 200));
     const fallbackText = event.text || event.content || event.message || "";

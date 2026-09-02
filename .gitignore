@@ -19,3 +19,5 @@ release-notes-*.md
 PATCH-*.md
 交接-*.md
 buddybridge-v2.0.2-*/
+# 抓包复现产物（不入库）
+.repro/
