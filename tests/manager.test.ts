@@ -61,8 +61,8 @@ describe('ConversationManager', () => {
 
     it('loads conversations from persisted data and activates the first', async () => {
         const conversations: Conversation[] = [
-            { id: '1', title: 'first', sessionId: '', messages: [], createdAt: 100, updatedAt: 100 },
-            { id: '2', title: 'second', sessionId: '', messages: [], createdAt: 200, updatedAt: 200 }
+            { id: '1', title: 'first', sessionId: '', messages: [], createdAt: 100, updatedAt: 100, attachedFiles: [] },
+            { id: '2', title: 'second', sessionId: '', messages: [], createdAt: 200, updatedAt: 200, attachedFiles: [] }
         ];
         manager.load(conversations);
         expect(manager.getActive()?.id).toBe('1');
@@ -195,5 +195,49 @@ describe('ConversationManager', () => {
 
         expect(manager.removeMessages(conv.id, ['missing'])).toBe(0);
         expect(manager.removeMessages('missing-conv', ['x'])).toBe(0);
+    });
+
+    describe('P2.4 附加文件管理 (attached files)', () => {
+        it('createConversation initializes attachedFiles to empty', () => {
+            expect(manager.createConversation().attachedFiles).toEqual([]);
+        });
+
+        it('attachFiles adds paths, dedups, and returns added count', async () => {
+            const conv = manager.createConversation();
+            expect(manager.attachFiles(conv.id, ['a.md', 'b.md'])).toBe(2);
+            expect(manager.getActive()?.attachedFiles).toEqual(['a.md', 'b.md']);
+            // 去重：重复路径不重复计入
+            expect(manager.attachFiles(conv.id, ['a.md', 'c.md'])).toBe(1);
+            expect(manager.getActive()?.attachedFiles).toEqual(['a.md', 'b.md', 'c.md']);
+            await new Promise(r => setTimeout(r, 0));
+        });
+
+        it('attachFiles ignores empty/blank paths and missing conversation', () => {
+            const conv = manager.createConversation();
+            expect(manager.attachFiles(conv.id, ['', '  ', 'a.md'])).toBe(1);
+            expect(manager.attachFiles(conv.id, [])).toBe(0);
+            expect(manager.attachFiles('nope', ['a.md'])).toBe(0);
+        });
+
+        it('detachFile removes a single path', async () => {
+            const conv = manager.createConversation();
+            manager.attachFiles(conv.id, ['a.md', 'b.md']);
+            expect(manager.detachFile(conv.id, 'a.md')).toBe(true);
+            expect(manager.getActive()?.attachedFiles).toEqual(['b.md']);
+            // 移除不存在的路径返回 false
+            expect(manager.detachFile(conv.id, 'zzz.md')).toBe(false);
+            expect(manager.detachFile('nope', 'a.md')).toBe(false);
+            await new Promise(r => setTimeout(r, 0));
+        });
+
+        it('clearAttachedFiles empties the list', async () => {
+            const conv = manager.createConversation();
+            manager.attachFiles(conv.id, ['a.md']);
+            expect(manager.clearAttachedFiles(conv.id)).toBe(true);
+            expect(manager.getActive()?.attachedFiles).toEqual([]);
+            // 已空时返回 false（无变更）
+            expect(manager.clearAttachedFiles(conv.id)).toBe(false);
+            await new Promise(r => setTimeout(r, 0));
+        });
     });
 });

@@ -45,7 +45,7 @@ var path = __toESM(require("path"));
 var fs = __toESM(require("fs"));
 
 // src/types.ts
-var CURRENT_SETTINGS_VERSION = 9;
+var CURRENT_SETTINGS_VERSION = 10;
 var FONT_SIZE_MIN = 12;
 var FONT_SIZE_MAX = 18;
 var CONTEXT_WINDOW_MIN = 1e3;
@@ -61,6 +61,7 @@ var DEFAULT_SETTINGS = {
   nodePath: "",
   noteLinkInjection: true,
   vaultContextInjection: false,
+  enabledSkills: [],
   version: CURRENT_SETTINGS_VERSION
 };
 function isObject(value) {
@@ -96,6 +97,7 @@ function migrateSettings(stored) {
   const nodePath = getString(stored, "nodePath");
   const noteLinkInjection = typeof stored.noteLinkInjection === "boolean" ? stored.noteLinkInjection : DEFAULT_SETTINGS.noteLinkInjection;
   const vaultContextInjection = typeof stored.vaultContextInjection === "boolean" ? stored.vaultContextInjection : DEFAULT_SETTINGS.vaultContextInjection;
+  const enabledSkills = Array.isArray(stored.enabledSkills) ? stored.enabledSkills.filter((s) => typeof s === "string" && s.trim().length > 0).map((s) => s.trim()) : [];
   return {
     codebuddyPath: (_a = getString(stored, "codebuddyPath")) != null ? _a : DEFAULT_SETTINGS.codebuddyPath,
     maxConversations: typeof maxConversations === "number" && maxConversations > 0 ? maxConversations : DEFAULT_SETTINGS.maxConversations,
@@ -106,6 +108,7 @@ function migrateSettings(stored) {
     nodePath: nodePath != null ? nodePath : DEFAULT_SETTINGS.nodePath,
     noteLinkInjection,
     vaultContextInjection,
+    enabledSkills,
     version: CURRENT_SETTINGS_VERSION
   };
 }
@@ -126,7 +129,8 @@ function normalizeConversation(raw) {
   const messages = Array.isArray(raw.messages) ? raw.messages : [];
   const createdAt = (_d = getNumber(raw, "createdAt")) != null ? _d : Date.now();
   const updatedAt = (_e = getNumber(raw, "updatedAt")) != null ? _e : createdAt;
-  return { id, title, sessionId, messages, createdAt, updatedAt };
+  const attachedFiles = Array.isArray(raw.attachedFiles) ? raw.attachedFiles.filter((p) => typeof p === "string" && p.length > 0) : [];
+  return { id, title, sessionId, messages, createdAt, updatedAt, attachedFiles };
 }
 function normalizePersistedData(raw) {
   const result = { dataVersion: DATA_VERSION };
@@ -754,7 +758,8 @@ var ConversationManager = class {
       // 首次发送消息时由 Gateway 分配
       messages: [],
       createdAt: Date.now(),
-      updatedAt
+      updatedAt,
+      attachedFiles: []
     };
     this.conversations.set(id, conv);
     this.activeId = id;
@@ -897,6 +902,49 @@ var ConversationManager = class {
     conv.sessionId = sessionId;
     return true;
   }
+  /** 附加文件到指定会话（P2.4）：去重合并，持久化。返回实际新增数。 */
+  attachFiles(convId, paths) {
+    const conv = this.conversations.get(convId);
+    if (!conv || !paths || paths.length === 0)
+      return 0;
+    const existing = new Set(conv.attachedFiles);
+    const added = [];
+    for (const p of paths) {
+      if (typeof p === "string" && p.trim() && !existing.has(p)) {
+        existing.add(p);
+        added.push(p);
+      }
+    }
+    if (added.length === 0)
+      return 0;
+    conv.attachedFiles = Array.from(existing);
+    conv.updatedAt = Date.now();
+    this.persist().catch((err) => this.handlePersistError(err));
+    return added.length;
+  }
+  /** 从指定会话移除一个附加文件（P2.4），持久化。 */
+  detachFile(convId, path2) {
+    const conv = this.conversations.get(convId);
+    if (!conv)
+      return false;
+    const before = conv.attachedFiles.length;
+    conv.attachedFiles = conv.attachedFiles.filter((p) => p !== path2);
+    if (conv.attachedFiles.length === before)
+      return false;
+    conv.updatedAt = Date.now();
+    this.persist().catch((err) => this.handlePersistError(err));
+    return true;
+  }
+  /** 清空指定会话的附加文件（P2.4）。 */
+  clearAttachedFiles(convId) {
+    const conv = this.conversations.get(convId);
+    if (!conv || conv.attachedFiles.length === 0)
+      return false;
+    conv.attachedFiles = [];
+    conv.updatedAt = Date.now();
+    this.persist().catch((err) => this.handlePersistError(err));
+    return true;
+  }
 };
 
 // src/i18n.ts
@@ -939,6 +987,35 @@ var ZH = {
   "cmd.tests": "\u751F\u6210\u5355\u5143\u6D4B\u8BD5",
   "cmd.explain": "\u89E3\u91CA\u4EE3\u7801\u5DE5\u4F5C\u539F\u7406",
   "cmd.rules": "\u751F\u6210\u4EE3\u7801\u89C4\u8303\u89C4\u5219",
+  "cmd.attachCurrentNote": "\u9644\u52A0\u5F53\u524D\u7B14\u8BB0\u5230\u4F1A\u8BDD",
+  // P2.4 附加文件
+  "attach.title": "\u9644\u52A0\u6587\u4EF6",
+  "attach.remove": "\u79FB\u9664",
+  "attach.empty": "\u65E0\u9644\u52A0\u6587\u4EF6",
+  "attach.menu": "\u9644\u52A0\u5230 BuddyBridge \u4F1A\u8BDD",
+  "attach.notice": "\u5DF2\u9644\u52A0 {n} \u4E2A\u6587\u4EF6\u5230\u5F53\u524D\u4F1A\u8BDD",
+  "attach.invalid": "\u65E0\u6CD5\u9644\u52A0\uFF1A{path}",
+  "attach.noActiveNote": "\u6CA1\u6709\u6253\u5F00\u7684\u7B14\u8BB0\uFF0C\u8BF7\u5148\u5728\u7F16\u8F91\u5668\u4E2D\u6253\u5F00\u4E00\u4E2A\u6587\u4EF6",
+  "attach.dropHint": "\u62D6\u5165\u6587\u4EF6\u4EE5\u9644\u52A0\u5230\u5F53\u524D\u4F1A\u8BDD",
+  "attach.truncated": "\n\u2026[\u5185\u5BB9\u8FC7\u957F\u5DF2\u622A\u65AD\uFF0C\u53EF\u8BA9 AI \u8BFB\u53D6\u539F\u6587\u4EF6]",
+  "attach.truncatedNotice": "\u90E8\u5206\u9644\u52A0\u6587\u4EF6\u5185\u5BB9\u8FC7\u957F\u5DF2\u622A\u65AD\uFF08\u547D\u4EE4\u884C\u957F\u5EA6\u9650\u5236\uFF09\uFF0C\u9700\u8981\u5168\u6587\u65F6\u8BF7\u8BA9 AI \u76F4\u63A5\u8BFB\u53D6\u539F\u6587\u4EF6",
+  // P2.8 技能
+  "tab.heading.skills": "\u6280\u80FD\uFF08\u5B98\u65B9\uFF09",
+  "settings.skillsIntro": "\u8C03\u7528 CodeBuddy \u5B98\u65B9\u6280\u80FD",
+  "settings.skillsIntroDesc": '\u6280\u80FD\u8C03\u7528\u662F CLI \u539F\u751F\u80FD\u529B\uFF1A\u4ECE\u5B98\u65B9\u5E02\u573A\u5B89\u88C5\u6280\u80FD\u540E\uFF0C\u5728\u804A\u5929\u4E2D\u76F4\u63A5\u8BF4"\u7528 X \u6280\u80FD\u5904\u7406..."\u5373\u53EF\u89E6\u53D1\uFF0C\u65E0\u9700\u63D2\u4EF6\u6865\u63A5\u3002',
+  "settings.installedTitle": "\u5DF2\u5B89\u88C5\u6280\u80FD",
+  "settings.installedDesc": "\u5237\u65B0\u540E\u52FE\u9009\u8981\u542F\u7528\u7684\u6280\u80FD\uFF1B\u542F\u7528\u540E\u968F\u6BCF\u6761\u6D88\u606F\u6CE8\u5165\u63D0\u793A\uFF0C\u5F15\u5BFC\u6A21\u578B\u4F18\u5148\u4F7F\u7528\u3002",
+  "settings.refreshBtn": "\u5237\u65B0",
+  "settings.installedEmpty": "\u672A\u68C0\u6D4B\u5230\u5DF2\u5B89\u88C5\u6280\u80FD\u3002\u4ECE\u4E0B\u65B9\u5B98\u65B9\u5E02\u573A\u590D\u5236\u5B89\u88C5\u547D\u4EE4\uFF0C\u88C5\u5B8C\u9700\u5B8C\u5168\u91CD\u542F CodeBuddy/WorkBuddy \u624D\u751F\u6548\u3002",
+  "settings.installedScanFail": "\u6280\u80FD\u63A2\u6D4B\u5931\u8D25\uFF1A{msg}",
+  "settings.installedEnable": "\u542F\u7528",
+  "settings.marketTitle": "\u5B98\u65B9\u6280\u80FD\u5E02\u573A\uFF08{n} \u4E2A\uFF09",
+  "settings.marketSearch": "\u641C\u7D22\u6280\u80FD\u540D\u79F0...",
+  "settings.copyInstall": "\u590D\u5236\u5B89\u88C5\u547D\u4EE4",
+  "settings.copyInstallDone": "\u5DF2\u590D\u5236\uFF1A{cmd}\uFF08\u7C98\u8D34\u5230\u7EC8\u7AEF\u6267\u884C\uFF0C\u88C5\u5B8C\u91CD\u542F\u751F\u6548\uFF09",
+  "settings.copyInstallFail": "\u590D\u5236\u5931\u8D25\uFF0C\u8BF7\u624B\u52A8\u6267\u884C\uFF1A{cmd}",
+  "settings.restartHint": "\u{1F4A1} \u5B89\u88C5\u6280\u80FD\u540E\u9700\u5B8C\u5168\u9000\u51FA\u5E76\u91CD\u5F00 CodeBuddy/WorkBuddy\uFF08\u6216\u91CD\u542F Obsidian\uFF09\uFF0C\u6280\u80FD\u624D\u4F1A\u51FA\u73B0\u5728 available_skills\u3002",
+  "marker.skill": "[\u7CFB\u7EDF\u6CE8\u5165\xB7\u6280\u80FD: {name}]",
   // 标签页 / 新建对话
   "tab.close": "\u5173\u95ED\u5BF9\u8BDD",
   "tab.branch": "\u4ECE\u8FD9\u91CC\u7EE7\u7EED\u65B0\u5BF9\u8BDD",
@@ -984,6 +1061,8 @@ var ZH = {
   "marker.currentNote": "[\u7CFB\u7EDF\u6CE8\u5165\xB7\u5F53\u524D\u7B14\u8BB0: {path}]",
   "marker.noNote": "[\u7CFB\u7EDF\u6CE8\u5165\xB7\u5F53\u524D\u7B14\u8BB0: \u65E0]",
   "marker.vault": "[\u7CFB\u7EDF\u6CE8\u5165\xB7Vault: {path}]",
+  "marker.attachedFile": "[\u7CFB\u7EDF\u6CE8\u5165\xB7\u9644\u52A0\u6587\u4EF6: {path}]",
+  "marker.attachedCount": "[\u7CFB\u7EDF\u6CE8\u5165\xB7\u5DF2\u9644\u52A0 {n} \u4E2A\u6587\u4EF6\uFF0C\u8BF7\u9010\u4E00\u9605\u8BFB\u5E76\u5168\u90E8\u7EB3\u5165\u53C2\u8003]",
   "marker.forkTranscript": "[\u7CFB\u7EDF\u6CE8\u5165\xB7\u5206\u652F\u4E0A\u4E0B\u6587] \u4EE5\u4E0B\u662F\u4F60\u4E0E\u6B64\u7528\u6237\u6B64\u524D\u7684\u5BF9\u8BDD\uFF08\u622A\u81F3\u5206\u652F\u70B9\uFF09\uFF0C\u4EC5\u4F5C\u80CC\u666F\u53C2\u8003\uFF1A",
   "marker.sessionReset": "[\u7CFB\u7EDF\u6CE8\u5165\xB7\u4F1A\u8BDD\u91CD\u7F6E] \u4EE5\u4E0B\u662F\u4F60\u4E0E\u6B64\u7528\u6237\u6B64\u524D\u7684\u5BF9\u8BDD\uFF08\u4F1A\u8BDD\u5DF2\u56E0\u7F51\u5173\u6545\u969C\u91CD\u7F6E\uFF09\uFF0C\u4EC5\u4F5C\u80CC\u666F\u53C2\u8003\uFF1A",
   // 设置页
@@ -1053,6 +1132,35 @@ var EN = {
   "cmd.tests": "Generate unit tests",
   "cmd.explain": "Explain how the code works",
   "cmd.rules": "Generate coding rules",
+  "cmd.attachCurrentNote": "Attach current note to conversation",
+  // P2.4 Attached files
+  "attach.title": "Attached files",
+  "attach.remove": "Remove",
+  "attach.empty": "No attached files",
+  "attach.menu": "Attach to BuddyBridge conversation",
+  "attach.notice": "Attached {n} file(s) to the current conversation",
+  "attach.invalid": "Cannot attach: {path}",
+  "attach.noActiveNote": "No note is open \u2014 open a file in the editor first",
+  "attach.dropHint": "Drop files here to attach to the current conversation",
+  "attach.truncated": "\n\u2026[content truncated, ask AI to read the original file]",
+  "attach.truncatedNotice": "Some attached file contents were truncated (command-line length limit); ask AI to read the original file for full text",
+  // P2.8 Skills
+  "tab.heading.skills": "Skills (official)",
+  "settings.skillsIntro": "Use CodeBuddy official skills",
+  "settings.skillsIntroDesc": 'Skill invocation is native to the CLI: install a skill from the official marketplace, then just say "use the X skill to..." in chat \u2014 no bridging needed.',
+  "settings.installedTitle": "Installed skills",
+  "settings.installedDesc": "Refresh, then enable the skills you want. Enabled skills are hinted on every message so the model prefers them.",
+  "settings.refreshBtn": "Refresh",
+  "settings.installedEmpty": "No installed skills detected. Copy an install command from the official marketplace below; fully restart CodeBuddy/WorkBuddy after installing.",
+  "settings.installedScanFail": "Skill scan failed: {msg}",
+  "settings.installedEnable": "Enable",
+  "settings.marketTitle": "Official skill marketplace ({n})",
+  "settings.marketSearch": "Search skill names...",
+  "settings.copyInstall": "Copy install command",
+  "settings.copyInstallDone": "Copied: {cmd} (paste in terminal, restart to apply)",
+  "settings.copyInstallFail": "Copy failed, run manually: {cmd}",
+  "settings.restartHint": "\u{1F4A1} After installing, fully quit and reopen CodeBuddy/WorkBuddy (or restart Obsidian) for the skill to appear in available_skills.",
+  "marker.skill": "[System injection\xB7Skill: {name}]",
   "tab.close": "Close conversation",
   "tab.branch": "Continue as new conversation from here",
   "conv.new": "New conversation",
@@ -1089,6 +1197,8 @@ var EN = {
   "marker.currentNote": "[System injection\xB7Current note: {path}]",
   "marker.noNote": "[System injection\xB7Current note: none]",
   "marker.vault": "[System injection\xB7Vault: {path}]",
+  "marker.attachedFile": "[System injection\xB7Attached file: {path}]",
+  "marker.attachedCount": "[System injection\xB7{n} files attached, read each one and consider all of them]",
   "marker.forkTranscript": "[System injection\xB7Fork context] This is your earlier conversation with this user (up to the fork point), provided as background reference only:",
   "marker.sessionReset": "[System injection\xB7Session reset] This is your earlier conversation with this user (the session was reset due to a gateway failure), provided as background reference only:",
   "tab.heading.connection": "Connection",
@@ -1151,7 +1261,24 @@ function tF(key, params) {
 }
 
 // src/context.ts
+function buildAttachedFilesText(files) {
+  if (files.length === 0)
+    return "";
+  if (files.length > 1) {
+    const paths = files.map((f2) => tF("marker.attachedFile", { path: f2.path }));
+    return `${tF("marker.attachedCount", { n: files.length })}
+
+${paths.join("\n")}`;
+  }
+  const f = files[0];
+  if (f.content && f.content.trim()) {
+    return `${tF("marker.attachedFile", { path: f.path })}
+${f.content}`;
+  }
+  return tF("marker.attachedFile", { path: f.path });
+}
 function buildPromptContext(input) {
+  var _a;
   const lines = [];
   if (input.noteLinkInjection && input.notePath) {
     lines.push(tF("marker.currentNote", { path: input.notePath }));
@@ -1159,24 +1286,49 @@ function buildPromptContext(input) {
   if (input.vaultContextInjection && input.vaultPath) {
     lines.push(tF("marker.vault", { path: input.vaultPath }));
   }
-  if (lines.length === 0) {
+  const attachedText = buildAttachedFilesText((_a = input.attachedFiles) != null ? _a : []);
+  let prefix = lines.join("\n");
+  if (attachedText) {
+    prefix = prefix ? `${prefix}
+
+${attachedText}` : attachedText;
+  }
+  if (!prefix) {
     return input.userText;
   }
-  return lines.join("\n") + "\n\n" + input.userText;
+  return prefix + "\n\n" + input.userText;
 }
-function buildDedupedPrompt(prev, current, userText, flags) {
-  if (prev && prev.notePath === current.notePath && prev.vaultPath === current.vaultPath) {
+function buildDedupedPrompt(prev, current, userText, flags, attachedFiles = [], skillHint = "") {
+  const hasExtra = attachedFiles.length > 0 || skillHint.length > 0;
+  const noteVaultUnchanged = !!prev && prev.notePath === current.notePath && prev.vaultPath === current.vaultPath;
+  if (noteVaultUnchanged && !hasExtra) {
     return { text: userText, state: current };
   }
-  let text = buildPromptContext({
-    userText,
-    notePath: current.notePath,
-    vaultPath: current.vaultPath,
-    noteLinkInjection: flags.noteLinkInjection,
-    vaultContextInjection: flags.vaultContextInjection
-  });
-  if (flags.noteLinkInjection && (prev == null ? void 0 : prev.notePath) && !current.notePath) {
-    text = `${tF("marker.noNote")}
+  let text = userText;
+  if (!noteVaultUnchanged) {
+    text = buildPromptContext({
+      userText,
+      notePath: current.notePath,
+      vaultPath: current.vaultPath,
+      noteLinkInjection: flags.noteLinkInjection,
+      vaultContextInjection: flags.vaultContextInjection
+    });
+    if (flags.noteLinkInjection && (prev == null ? void 0 : prev.notePath) && !current.notePath) {
+      text = `${tF("marker.noNote")}
+
+${text}`;
+    }
+  }
+  if (hasExtra) {
+    const extra = [];
+    if (skillHint) {
+      extra.push(skillHint);
+    }
+    const attachedText = buildAttachedFilesText(attachedFiles);
+    if (attachedText) {
+      extra.push(attachedText);
+    }
+    text = `${extra.join("\n\n")}
 
 ${text}`;
   }
@@ -1184,6 +1336,125 @@ ${text}`;
 }
 function encodeLineSeparators(text) {
   return text.replace(/\r\n|\r|\n/g, "\u2028");
+}
+
+// src/skills.ts
+var import_os = require("os");
+var import_path = require("path");
+var import_promises = require("fs/promises");
+function officialMarketplacePath(homeDir = (0, import_os.homedir)()) {
+  return (0, import_path.join)(homeDir, ".codebuddy", "plugins", "known_marketplaces.json");
+}
+async function readOfficialMarketplace(homeDir = (0, import_os.homedir)()) {
+  const filePath = officialMarketplacePath(homeDir);
+  let text;
+  try {
+    text = await (0, import_promises.readFile)(filePath, "utf-8");
+  } catch (e) {
+    throw new Error(`\u672A\u627E\u5230\u5B98\u65B9\u5E02\u573A\u6CE8\u518C\u8868\uFF08${filePath}\uFF09\uFF0C\u8BF7\u786E\u8BA4\u5DF2\u5B89\u88C5 CodeBuddy/WorkBuddy`);
+  }
+  let registry;
+  try {
+    registry = JSON.parse(text);
+  } catch (e) {
+    throw new Error("\u5B98\u65B9\u5E02\u573A\u6CE8\u518C\u8868\u89E3\u6790\u5931\u8D25\uFF08\u6587\u4EF6\u53EF\u80FD\u635F\u574F\uFF09");
+  }
+  if (!isRecord(registry))
+    return [];
+  const market = registry["codebuddy-plugins-official"];
+  const manifest = isRecord(market) ? market.manifest : void 0;
+  const plugins = isRecord(manifest) && Array.isArray(manifest.plugins) ? manifest.plugins : [];
+  const out = [];
+  for (const p of plugins) {
+    if (!isRecord(p) || typeof p.name !== "string" || p.name.length === 0)
+      continue;
+    out.push({
+      name: p.name,
+      description: typeof p.description === "string" ? p.description : ""
+    });
+  }
+  return out;
+}
+async function detectInstalledSkills(homeDir = (0, import_os.homedir)()) {
+  const roots = [
+    (0, import_path.join)(homeDir, ".codebuddy", "plugins"),
+    (0, import_path.join)(homeDir, ".codebuddy", "skills")
+  ];
+  const seen = /* @__PURE__ */ new Set();
+  const out = [];
+  for (const root of roots) {
+    let entries = [];
+    try {
+      entries = await (0, import_promises.readdir)(root, { withFileTypes: true });
+    } catch (e) {
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory())
+        continue;
+      if (entry.name === "marketplaces")
+        continue;
+      await scanSkillCandidates((0, import_path.join)(root, entry.name), out, seen);
+    }
+  }
+  return out;
+}
+async function scanSkillCandidates(dir, out, seen) {
+  const selfSkill = (0, import_path.join)(dir, "SKILL.md");
+  const skillsDir = (0, import_path.join)(dir, "skills");
+  const skill = await tryReadSkill(selfSkill);
+  if (skill) {
+    pushIfNew(out, seen, skill);
+  }
+  let subDirs = [];
+  try {
+    subDirs = await (0, import_promises.readdir)(skillsDir, { withFileTypes: true });
+  } catch (e) {
+    return;
+  }
+  for (const sub of subDirs) {
+    if (!sub.isDirectory())
+      continue;
+    const s = await tryReadSkill((0, import_path.join)(skillsDir, sub.name, "SKILL.md"));
+    if (s)
+      pushIfNew(out, seen, s);
+  }
+}
+async function tryReadSkill(skillPath) {
+  let md;
+  try {
+    md = await (0, import_promises.readFile)(skillPath, "utf-8");
+  } catch (e) {
+    return null;
+  }
+  const { name, description } = parseSkillMarkdown(md);
+  if (!name)
+    return null;
+  return { name, description: description != null ? description : "" };
+}
+function pushIfNew(out, seen, skill) {
+  if (seen.has(skill.name))
+    return;
+  seen.add(skill.name);
+  out.push(skill);
+}
+function parseSkillMarkdown(md) {
+  var _a, _b, _c, _d;
+  const m = md.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  if (!m)
+    return {};
+  const body = m[1];
+  const name = (_b = (_a = body.match(/^name:\s*(.+)$/m)) == null ? void 0 : _a[1]) == null ? void 0 : _b.trim();
+  const description = (_d = (_c = body.match(/^description:\s*(.+)$/m)) == null ? void 0 : _c[1]) == null ? void 0 : _d.trim();
+  return { name, description };
+}
+function buildSkillInjection(enabledSkills) {
+  if (!enabledSkills || enabledSkills.length === 0)
+    return "";
+  return enabledSkills.filter((s) => typeof s === "string" && s.trim().length > 0).map((s) => tF("marker.skill", { name: s.trim() })).join("\n");
+}
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 // src/chat/queue.ts
@@ -1300,6 +1571,9 @@ var COMMANDS = {
   "/explain": t("cmd.explain"),
   "/rules": t("cmd.rules")
 };
+var ATTACH_MAX_READ_BYTES = 512 * 1024;
+var ATTACH_MAX_FILE_CHARS = 4e3;
+var MAX_CMD_PROMPT_CHARS = 7500;
 var BuddyBridgeChatView = class extends import_obsidian.ItemView {
   constructor(leaf, api, loadDataCallback) {
     super(leaf);
@@ -1360,13 +1634,14 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
     }
   }
   /**
-   * 构建发送给 CLI 的上下文文本：会话内去重。
+   * 构建发送给 CLI 的上下文文本：会话内去重 + P2.4 附加文件（每轮注入）。
    * 笔记 / Vault 上下文「没变化」就不再重复注入，只在变化时注入，
    * 避免 CLI 历史里堆叠 N 行 `[系统注入·当前笔记: ...]` 导致 agent 误判。
+   * 附加文件是用户显式附加的会话级上下文，不受去重影响、每轮都注入。
    * @param notePath 入队时的笔记快照（可选）；未提供时回退当前文件。
    */
-  buildContextText(convId, text, notePath) {
-    var _a, _b;
+  async buildContextText(convId, text, notePath) {
+    var _a, _b, _c;
     const settings = this.pluginSettings;
     const noteLink = (settings == null ? void 0 : settings.noteLinkInjection) !== false;
     const vaultCtx = !!(settings == null ? void 0 : settings.vaultContextInjection);
@@ -1377,12 +1652,21 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
       vaultPath: vaultCtx ? (_a = this.vaultPath) != null ? _a : null : null
     };
     const prev = (_b = this.contextStates.get(convId)) != null ? _b : null;
+    const conv = this.manager.getConversation(convId);
+    const attached = conv ? await this.resolveAttachedFiles(conv.attachedFiles) : [];
+    const skillHint = buildSkillInjection((_c = settings == null ? void 0 : settings.enabledSkills) != null ? _c : []);
     const { text: out, state } = buildDedupedPrompt(prev, current, text, {
       noteLinkInjection: noteLink,
       vaultContextInjection: vaultCtx
-    });
+    }, attached, skillHint);
     this.contextStates.set(convId, state);
-    return out;
+    let final = out;
+    if (final.length > MAX_CMD_PROMPT_CHARS) {
+      final = `${tF("attach.truncated")}
+${final.slice(final.length - MAX_CMD_PROMPT_CHARS)}`;
+      new import_obsidian.Notice(t("attach.truncatedNotice"));
+    }
+    return final;
   }
   getViewType() {
     return VIEW_TYPE_CHAT;
@@ -1427,6 +1711,7 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
     });
     (0, import_obsidian.setIcon)(newBtn, "plus");
     newBtn.onclick = () => this.createNewChat();
+    this.attachBar = container.createDiv({ cls: "buddybridge-attach-bar buddybridge-hidden" });
     this.currentFileBar = container.createDiv({ cls: "buddybridge-current-file" });
     this.currentFilePath = this.getCurrentFilePath();
     this.updateCurrentFileBar();
@@ -1440,6 +1725,21 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
       })
     );
     this.messageContainer = container.createDiv({ cls: "buddybridge-messages" });
+    this.registerDomEvent(this.messageContainer, "dragover", (e) => {
+      e.preventDefault();
+      this.messageContainer.addClass("buddybridge-dragover");
+    });
+    this.registerDomEvent(this.messageContainer, "dragleave", () => {
+      this.messageContainer.removeClass("buddybridge-dragover");
+    });
+    this.registerDomEvent(this.messageContainer, "drop", (e) => {
+      e.preventDefault();
+      this.messageContainer.removeClass("buddybridge-dragover");
+      const paths = this.extractDropPaths(e.dataTransfer);
+      if (paths.length > 0) {
+        this.attachFiles(paths);
+      }
+    });
     this.queueBar = container.createDiv({ cls: "buddybridge-queue-bar buddybridge-hidden" });
     const inputArea = container.createDiv({ cls: "buddybridge-input-area" });
     this.inputEl = inputArea.createEl("textarea", {
@@ -1565,6 +1865,7 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
   }
   async renderMessages() {
     this.messageContainer.empty();
+    this.renderAttachBar();
     const conv = this.manager.getActive();
     if (!conv) {
       const empty = this.messageContainer.createDiv({ cls: "buddybridge-empty-chat" });
@@ -2080,7 +2381,7 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
         }
         bubble = streamingBubble;
       }
-      const base = item.text.startsWith("/") ? item.text : this.buildContextText(convId, item.text, item.notePath);
+      const base = item.text.startsWith("/") ? item.text : await this.buildContextText(convId, item.text, item.notePath);
       const transcript = this.forkTranscripts.get(convId);
       if (transcript) {
         this.forkTranscripts.delete(convId);
@@ -2308,6 +2609,147 @@ ${base}` : base);
       )
     );
   }
+  // ==================== P2.4 附加文件（上下文注入扩展） ====================
+  /**
+   * 附加文件到当前会话（P2.4，public 供 main.ts 右键菜单 / 命令调用）。
+   * 校验文件真实存在（TFile）后交给 manager 去重合并；返回实际新增数。
+   */
+  attachFiles(paths) {
+    const conv = this.manager.getActive();
+    if (!conv)
+      return 0;
+    const valid = [];
+    for (const p of paths) {
+      const file = this.app.vault.getAbstractFileByPath(p);
+      if (file instanceof import_obsidian.TFile) {
+        valid.push(p);
+      } else {
+        new import_obsidian.Notice(tF("attach.invalid", { path: p }));
+      }
+    }
+    const added = this.manager.attachFiles(conv.id, valid);
+    if (added > 0) {
+      new import_obsidian.Notice(tF("attach.notice", { n: added }));
+      this.renderAttachBar();
+    }
+    return added;
+  }
+  /** 从当前会话移除一个附加文件（P2.4）。 */
+  detachAttachedFile(path2) {
+    const conv = this.manager.getActive();
+    if (!conv)
+      return;
+    if (this.manager.detachFile(conv.id, path2)) {
+      this.renderAttachBar();
+    }
+  }
+  /**
+   * P2.4 渲染当前会话的附加文件 chip 条（顶部，随 renderMessages 刷新）。
+   * 无附加文件时隐藏整条；chip 可点击 ✕ 移除。
+   */
+  renderAttachBar() {
+    var _a;
+    this.attachBar.empty();
+    const conv = this.manager.getActive();
+    const files = (_a = conv == null ? void 0 : conv.attachedFiles) != null ? _a : [];
+    if (files.length === 0) {
+      this.attachBar.addClass("buddybridge-hidden");
+      return;
+    }
+    this.attachBar.removeClass("buddybridge-hidden");
+    this.attachBar.createSpan({ cls: "buddybridge-attach-label", text: t("attach.title") });
+    for (const p of files) {
+      const chip = this.attachBar.createDiv({ cls: "buddybridge-attach-chip", attr: { title: p } });
+      const icon = chip.createSpan({ cls: "buddybridge-attach-chip-icon" });
+      (0, import_obsidian.setIcon)(icon, "file-text");
+      chip.createSpan({ cls: "buddybridge-attach-chip-name", text: p.split("/").pop() || p });
+      const close = chip.createSpan({
+        cls: "buddybridge-attach-chip-remove",
+        attr: { title: t("attach.remove"), "aria-label": t("attach.remove"), role: "button", tabindex: "0" }
+      });
+      (0, import_obsidian.setIcon)(close, "x");
+      close.onclick = (e) => {
+        e.stopPropagation();
+        this.detachAttachedFile(p);
+      };
+      close.onkeydown = (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          this.detachAttachedFile(p);
+        }
+      };
+    }
+  }
+  /**
+   * 把附加文件路径解析为注入块所需数据（P2.4）：
+   * - 附加 1 个文件：.md 读全文（≤512KB 上限，超出只给路径避免撑爆上下文）；
+   * - 附加多个文件：**只给路径清单，不读全文**——cmd.exe 8191 上限下多篇全文不可扩展，
+   *   由模型用 Read 自行读取（路径即范围，buildAttachedFilesText 附逐一阅读指令）；
+   * - 非 md / 读取失败 / 文件缺失：同样只给路径（由 CLI 自行读取，缺失时 CLI 侧会明确报错）。
+   */
+  async resolveAttachedFiles(paths) {
+    if (paths.length > 1) {
+      return paths.map((p2) => ({ path: p2 }));
+    }
+    const p = paths[0];
+    if (!p)
+      return [];
+    try {
+      const isMd = p.toLowerCase().endsWith(".md");
+      const stat = await this.app.vault.adapter.stat(p);
+      if (isMd && stat && stat.size <= ATTACH_MAX_READ_BYTES) {
+        let content = await this.app.vault.adapter.read(p);
+        if (content.length > ATTACH_MAX_FILE_CHARS) {
+          content = content.slice(0, ATTACH_MAX_FILE_CHARS) + tF("attach.truncated");
+          new import_obsidian.Notice(t("attach.truncatedNotice"));
+        }
+        return [{ path: p, content }];
+      }
+      return [{ path: p }];
+    } catch (e) {
+      return [{ path: p }];
+    }
+  }
+  /**
+   * 从拖放 DataTransfer 提取 vault 内文件路径（P2.4，best-effort）。
+   * 兼容两种来源：Obsidian 文件管理器拖出的 `obsidian://open?file=` URI，
+   * 以及系统文件拖入（Electron File.path → 裁剪 vault 根前缀为相对路径）。
+   */
+  extractDropPaths(dt) {
+    var _a, _b;
+    const paths = [];
+    if (!dt)
+      return paths;
+    try {
+      const uriList = dt.getData("text/uri-list");
+      if (uriList) {
+        for (const line of uriList.split(/\r?\n/)) {
+          const m = line.trim().match(/^obsidian:\/\/open\?(.*)$/i);
+          if (m) {
+            const file = new URLSearchParams(m[1]).get("file");
+            if (file)
+              paths.push(file);
+          }
+        }
+      }
+    } catch (e) {
+    }
+    if (paths.length === 0) {
+      const base = (_a = this.vaultPath) == null ? void 0 : _a.replace(/\\/g, "/");
+      if (base) {
+        for (const f of Array.from((_b = dt.files) != null ? _b : [])) {
+          const raw = f.path;
+          if (typeof raw === "string") {
+            const norm = raw.replace(/\\/g, "/");
+            if (norm.startsWith(base)) {
+              paths.push(norm.slice(base.length).replace(/^\//, ""));
+            }
+          }
+        }
+      }
+    }
+    return Array.from(new Set(paths));
+  }
   /**
    * P2.5 渲染上下文用量条：以最近一轮 inputTokens 为当前上下文占用、contextWindowSize 为分母，
    * 计算百分比并经 --bb-usage-pct 驱动填充宽度；≥80% 预警（橙），≥100% 溢出（红）。
@@ -2382,6 +2824,8 @@ var ConfirmModal = class extends import_obsidian2.Modal {
 var BuddyBridgeSettingTab = class extends import_obsidian3.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
+    /** 官方市场清单缓存（本地注册表读取，仅一次；搜索复用）。 */
+    this.marketCache = null;
     this.plugin = plugin;
   }
   display() {
@@ -2417,6 +2861,15 @@ var BuddyBridgeSettingTab = class extends import_obsidian3.PluginSettingTab {
       plugin.settings.vaultContextInjection = value;
       await plugin.saveSettings();
     }));
+    new import_obsidian3.Setting(containerEl).setName(t("tab.heading.skills")).setHeading();
+    new import_obsidian3.Setting(containerEl).setName(t("settings.skillsIntro")).setDesc(t("settings.skillsIntroDesc"));
+    const installedListEl = containerEl.createDiv({ cls: "buddybridge-skills-installed" });
+    new import_obsidian3.Setting(containerEl).setName(t("settings.installedTitle")).setDesc(t("settings.installedDesc")).addButton((btn) => btn.setButtonText(t("settings.refreshBtn")).onClick(() => void this.renderInstalledSkills(installedListEl, plugin)));
+    void this.renderInstalledSkills(installedListEl, plugin);
+    const marketListEl = containerEl.createDiv({ cls: "buddybridge-skills-market" });
+    const marketHeader = new import_obsidian3.Setting(containerEl).setName(t("settings.marketTitle")).setDesc(t("settings.restartHint"));
+    new import_obsidian3.Setting(containerEl).addText((text) => text.setPlaceholder(t("settings.marketSearch")).onChange((q) => void this.renderMarketList(marketListEl, q, marketHeader)));
+    void this.renderMarketList(marketListEl, "", marketHeader);
     new import_obsidian3.Setting(containerEl).setName(t("tab.heading.appearance")).setHeading();
     new import_obsidian3.Setting(containerEl).setName(t("settings.colorName")).setDesc(t("settings.colorDesc")).addText((text) => {
       text.inputEl.type = "color";
@@ -2471,6 +2924,79 @@ var BuddyBridgeSettingTab = class extends import_obsidian3.PluginSettingTab {
         }
       ).open();
     }));
+  }
+  /** 已安装技能列表：刷新探测 + 勾选启用（P2.8）。 */
+  async renderInstalledSkills(container, plugin) {
+    container.empty();
+    let skills;
+    try {
+      skills = await detectInstalledSkills();
+    } catch (e) {
+      container.createDiv({ cls: "buddybridge-skills-empty", text: tF("settings.installedScanFail", { msg: getErrorMessage(e) }) });
+      return;
+    }
+    if (skills.length === 0) {
+      container.createDiv({ cls: "buddybridge-skills-empty", text: t("settings.installedEmpty") });
+      return;
+    }
+    const enabled = new Set(plugin.settings.enabledSkills);
+    for (const s of skills) {
+      new import_obsidian3.Setting(container).setName(s.name).setDesc(s.description || void 0).addToggle((toggle) => toggle.setValue(enabled.has(s.name)).onChange(async (value) => {
+        const list = [...plugin.settings.enabledSkills];
+        const idx = list.indexOf(s.name);
+        if (value && idx < 0) {
+          list.push(s.name);
+        } else if (!value && idx >= 0) {
+          list.splice(idx, 1);
+        }
+        plugin.settings.enabledSkills = list;
+        await plugin.saveSettings();
+      }));
+    }
+  }
+  /** 官方市场清单：本地注册表读取（缓存）+ 搜索过滤 + 复制安装命令（P2.8）。 */
+  async renderMarketList(container, query, header) {
+    if (!this.marketCache) {
+      try {
+        this.marketCache = await readOfficialMarketplace();
+      } catch (e) {
+        container.empty();
+        container.createDiv({ cls: "buddybridge-skills-empty", text: getErrorMessage(e) });
+        header.setName(t("settings.marketTitle"));
+        return;
+      }
+    }
+    const plugins = this.marketCache;
+    header.setName(tF("settings.marketTitle", { n: plugins.length }));
+    const q = query.trim().toLowerCase();
+    const filtered = q ? plugins.filter((p) => p.name.toLowerCase().includes(q)) : plugins;
+    container.empty();
+    if (filtered.length === 0) {
+      container.createDiv({ cls: "buddybridge-skills-empty", text: t("settings.marketSearch") });
+      return;
+    }
+    for (const p of filtered) {
+      const row = container.createDiv({ cls: "buddybridge-skills-item" });
+      const info = row.createDiv({ cls: "buddybridge-skills-item-text" });
+      info.createDiv({ cls: "buddybridge-skills-item-name", text: p.name });
+      if (p.description) {
+        info.createDiv({ cls: "buddybridge-skills-item-desc", text: p.description });
+      }
+      const btn = row.createEl("button", {
+        cls: "mod-cta buddybridge-skills-install-btn",
+        text: t("settings.copyInstall"),
+        attr: { "aria-label": `codebuddy plugin install ${p.name}` }
+      });
+      btn.onclick = () => this.copyInstallCommand(p.name);
+    }
+  }
+  /** 复制安装命令到剪贴板（带手动执行兜底提示）。 */
+  copyInstallCommand(name) {
+    const cmd = `codebuddy plugin install ${name}`;
+    void navigator.clipboard.writeText(cmd).then(
+      () => new import_obsidian3.Notice(tF("settings.copyInstallDone", { cmd })),
+      () => new import_obsidian3.Notice(tF("settings.copyInstallFail", { cmd }))
+    );
   }
 };
 
@@ -2664,6 +3190,27 @@ var BuddyBridgePlugin = class extends import_obsidian4.Plugin {
           await this.activateView();
         }
       });
+      this.addCommand({
+        id: "attach-current-note",
+        name: t("cmd.attachCurrentNote"),
+        callback: async () => {
+          const file = this.app.workspace.getActiveFile();
+          if (file) {
+            await this.attachToChat([file.path]);
+          } else {
+            new import_obsidian4.Notice(t("attach.noActiveNote"));
+          }
+        }
+      });
+      this.registerEvent(
+        this.app.workspace.on("file-menu", (menu, file) => {
+          if (!(file instanceof import_obsidian4.TFile))
+            return;
+          menu.addItem((item) => {
+            item.setTitle(tF("attach.menu")).setIcon("paperclip").onClick(() => void this.attachToChat([file.path]));
+          });
+        })
+      );
       this.addSettingTab(new BuddyBridgeSettingTab(this.app, this));
       this.applyPrimaryColor();
       this.applyFontSize();
@@ -2698,6 +3245,17 @@ var BuddyBridgePlugin = class extends import_obsidian4.Plugin {
       console.error("[BB] \u6253\u5F00\u804A\u5929\u9762\u677F\u5931\u8D25:", e);
       new import_obsidian4.Notice("BuddyBridge\uFF1A\u6253\u5F00\u9762\u677F\u5931\u8D25\uFF0C\u8BF7\u67E5\u770B Console");
     }
+  }
+  /** P2.4 附加文件到当前聊天会话（右键菜单 / 命令共用）：面板未打开时先激活。 */
+  async attachToChat(paths) {
+    if (!this.chatView) {
+      await this.activateView();
+    }
+    if (!this.chatView) {
+      new import_obsidian4.Notice("BuddyBridge\uFF1A\u8BF7\u5148\u6253\u5F00\u804A\u5929\u9762\u677F");
+      return;
+    }
+    this.chatView.attachFiles(paths);
   }
   async loadSettings() {
     const data = normalizePersistedData(await this.loadData());

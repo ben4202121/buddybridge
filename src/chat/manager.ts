@@ -65,7 +65,8 @@ export class ConversationManager {
             sessionId: '', // 首次发送消息时由 Gateway 分配
             messages: [],
             createdAt: Date.now(),
-            updatedAt
+            updatedAt,
+            attachedFiles: [],
         };
         this.conversations.set(id, conv);
         this.activeId = id;
@@ -213,6 +214,47 @@ export class ConversationManager {
         const conv = this.conversations.get(convId);
         if (!conv) return false;
         conv.sessionId = sessionId;
+        return true;
+    }
+
+    /** 附加文件到指定会话（P2.4）：去重合并，持久化。返回实际新增数。 */
+    attachFiles(convId: string, paths: string[]): number {
+        const conv = this.conversations.get(convId);
+        if (!conv || !paths || paths.length === 0) return 0;
+        const existing = new Set(conv.attachedFiles);
+        const added: string[] = [];
+        for (const p of paths) {
+            if (typeof p === 'string' && p.trim() && !existing.has(p)) {
+                existing.add(p);
+                added.push(p);
+            }
+        }
+        if (added.length === 0) return 0;
+        conv.attachedFiles = Array.from(existing);
+        conv.updatedAt = Date.now();
+        this.persist().catch((err) => this.handlePersistError(err));
+        return added.length;
+    }
+
+    /** 从指定会话移除一个附加文件（P2.4），持久化。 */
+    detachFile(convId: string, path: string): boolean {
+        const conv = this.conversations.get(convId);
+        if (!conv) return false;
+        const before = conv.attachedFiles.length;
+        conv.attachedFiles = conv.attachedFiles.filter(p => p !== path);
+        if (conv.attachedFiles.length === before) return false;
+        conv.updatedAt = Date.now();
+        this.persist().catch((err) => this.handlePersistError(err));
+        return true;
+    }
+
+    /** 清空指定会话的附加文件（P2.4）。 */
+    clearAttachedFiles(convId: string): boolean {
+        const conv = this.conversations.get(convId);
+        if (!conv || conv.attachedFiles.length === 0) return false;
+        conv.attachedFiles = [];
+        conv.updatedAt = Date.now();
+        this.persist().catch((err) => this.handlePersistError(err));
         return true;
     }
 

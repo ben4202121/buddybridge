@@ -118,6 +118,19 @@ describe('migrateSettings', () => {
         expect(migrateSettings({ noteLinkInjection: 'yes' }).noteLinkInjection).toBe(true);
         expect(migrateSettings({ vaultContextInjection: 1 }).vaultContextInjection).toBe(false);
     });
+
+    it('should default enabledSkills to empty when missing (P2.8)', () => {
+        expect(migrateSettings({}).enabledSkills).toEqual([]);
+    });
+
+    it('should preserve enabledSkills while filtering invalid entries and trimming (P2.8)', () => {
+        const r = migrateSettings({ enabledSkills: ['pdf', 42, '', ' docx '] });
+        expect(r.enabledSkills).toEqual(['pdf', 'docx']);
+    });
+
+    it('should fall back to empty when enabledSkills is not an array (P2.8)', () => {
+        expect(migrateSettings({ enabledSkills: 'pdf' }).enabledSkills).toEqual([]);
+    });
 });
 
 describe('type helpers', () => {
@@ -179,7 +192,7 @@ describe('type helpers', () => {
         });
 
         it('preserves conversations array and stamps dataVersion', () => {
-            const conversations: Conversation[] = [{ id: '1', title: 't', sessionId: '', messages: [], createdAt: 0, updatedAt: 0 }];
+            const conversations: Conversation[] = [{ id: '1', title: 't', sessionId: '', messages: [], createdAt: 0, updatedAt: 0, attachedFiles: [] }];
             expect(normalizePersistedData({ conversations })).toEqual({ dataVersion: DATA_VERSION, conversations });
         });
 
@@ -234,6 +247,19 @@ describe('type helpers', () => {
                 createdAt: 0, updatedAt: 0
             });
             expect(conv!.messages[0].parts).toEqual([{ kind: 'thinking', content: 'x' }]);
+        });
+
+        it('defaults attachedFiles to empty when missing (P2.4)', () => {
+            const conv = normalizeConversation({ id: 'abc' });
+            expect(conv!.attachedFiles).toEqual([]);
+        });
+
+        it('normalizes attachedFiles: keeps valid strings, drops invalid (P2.4)', () => {
+            const conv = normalizeConversation({
+                id: '1', title: 't', sessionId: 's', messages: [], createdAt: 0, updatedAt: 0,
+                attachedFiles: ['a.md', 42, 'b.md', '', 'c.md'] as unknown[]
+            });
+            expect(conv!.attachedFiles).toEqual(['a.md', 'b.md', 'c.md']);
         });
     });
 });

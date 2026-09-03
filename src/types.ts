@@ -27,6 +27,8 @@ export interface Conversation {
     messages: ChatMessage[];
     createdAt: number;
     updatedAt: number;
+    /** P2.4 附加到会话上下文的文件（vault 相对路径，发送时注入；md 读全文，非 md 只给路径） */
+    attachedFiles: string[];
 }
 
 // ==================== 设置类型 ====================
@@ -46,6 +48,8 @@ export interface BuddyBridgeSettings {
     noteLinkInjection: boolean;
     /** 发送消息时额外注入 Vault 根路径 */
     vaultContextInjection: boolean;
+    /** P2.8 已启用的官方技能名列表（发送时注入提示，引导模型优先使用） */
+    enabledSkills: string[];
     version: number;
 }
 
@@ -61,8 +65,9 @@ export interface BuddyBridgeSettings {
  * - v7：v2.0.2 注入开关字段命名定稿（noteLinkInjection / vaultContextInjection）
  * - v8：v2.2.0 新增 fontSize（聊天区字体大小，px）
  * - v9：v2.3.0 新增 contextWindowSize（上下文窗口大小，token）
+ * - v10：v2.4.0 新增 enabledSkills（已启用的官方技能名列表，P2.8）
  */
-const CURRENT_SETTINGS_VERSION = 9;
+const CURRENT_SETTINGS_VERSION = 10;
 
 /** 聊天区字体大小范围（px），与设置页滑块联动 */
 export const FONT_SIZE_MIN = 12;
@@ -89,6 +94,7 @@ export const DEFAULT_SETTINGS: BuddyBridgeSettings = {
     nodePath: '',
     noteLinkInjection: true,
     vaultContextInjection: false,
+    enabledSkills: [],
     version: CURRENT_SETTINGS_VERSION
 };
 
@@ -147,6 +153,13 @@ export function migrateSettings(stored: unknown): BuddyBridgeSettings {
         ? stored.vaultContextInjection
         : DEFAULT_SETTINGS.vaultContextInjection;
 
+    // P2.8 已启用技能：只保留非空字符串并去除首尾空白，缺失回落到空列表
+    const enabledSkills = Array.isArray(stored.enabledSkills)
+        ? (stored.enabledSkills as unknown[])
+            .filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
+            .map((s) => s.trim())
+        : [];
+
     return {
         codebuddyPath: getString(stored, 'codebuddyPath') ?? DEFAULT_SETTINGS.codebuddyPath,
         maxConversations: typeof maxConversations === 'number' && maxConversations > 0
@@ -167,6 +180,7 @@ export function migrateSettings(stored: unknown): BuddyBridgeSettings {
         nodePath: nodePath ?? DEFAULT_SETTINGS.nodePath,
         noteLinkInjection,
         vaultContextInjection,
+        enabledSkills,
         version: CURRENT_SETTINGS_VERSION
     };
 }
@@ -202,7 +216,11 @@ export function normalizeConversation(raw: unknown): Conversation | null {
     const messages = Array.isArray(raw.messages) ? raw.messages as ChatMessage[] : [];
     const createdAt = getNumber(raw, 'createdAt') ?? Date.now();
     const updatedAt = getNumber(raw, 'updatedAt') ?? createdAt;
-    return { id, title, sessionId, messages, createdAt, updatedAt };
+    // P2.4 附加文件：缺失/非法项补齐默认（旧数据无此字段 → []）
+    const attachedFiles = Array.isArray(raw.attachedFiles)
+        ? (raw.attachedFiles as unknown[]).filter((p): p is string => typeof p === 'string' && p.length > 0)
+        : [];
+    return { id, title, sessionId, messages, createdAt, updatedAt, attachedFiles };
 }
 
 export function normalizePersistedData(raw: unknown): PersistedData {

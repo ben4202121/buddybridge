@@ -1,9 +1,10 @@
-import { ItemView, Notice, MarkdownRenderer, Component, setIcon } from 'obsidian';
+import { ItemView, Notice, MarkdownRenderer, Component, setIcon, TFile } from 'obsidian';
 import type { WorkspaceLeaf } from 'obsidian';
 import { ConversationManager } from '../chat/manager';
 import { BuddyBridgeAPI, isStartupBanner, usagePercent, usageLevel, type UsageInfo } from '../api';
 import { getErrorMessage, DEFAULT_SETTINGS, type Conversation, ChatMessage, MessagePart, BuddyBridgeSettings } from '../types';
-import { buildPromptContext, buildDedupedPrompt, encodeLineSeparators, type PromptContextState } from '../context';
+import { buildPromptContext, buildDedupedPrompt, encodeLineSeparators, type PromptContextState, type AttachedFile } from '../context';
+import { buildSkillInjection } from '../skills';
 import { t, tF } from '../i18n';
 import { SendQueue, type QueueItem } from '../chat/queue';
 import { isGatewayEmptyStream } from '../chat/failure';
@@ -39,6 +40,13 @@ const COMMANDS: Record<string, string> = {
     '/rules': t('cmd.rules'),
 };
 
+/** P2.4 附加 md 读全文的体积上限（超出只注入路径，避免撑爆上下文）。 */
+const ATTACH_MAX_READ_BYTES = 512 * 1024;
+/** P2.4 单文件注入内容字符上限：cmd.exe 命令行 8191 字符硬限制（实测），防长文撑爆传输。 */
+const ATTACH_MAX_FILE_CHARS = 4000;
+/** 整条 prompt（含附加内容与用户原文）最终兜底上限：低于 cmd.exe 8191 硬限，留转义余量。 */
+const MAX_CMD_PROMPT_CHARS = 7500;
+
 export class BuddyBridgeChatView extends ItemView {
     private manager: ConversationManager;
     private api: BuddyBridgeAPI;
@@ -51,6 +59,8 @@ export class BuddyBridgeChatView extends ItemView {
     private usageLabel!: HTMLElement;
     private tabBar!: HTMLElement;
     private currentFileBar!: HTMLElement;
+    /** P2.4 当前会话附加文件 chip 条 */
+    private attachBar!: HTMLElement;
     private commandDropdown!: HTMLElement | null;
     /** 各会话当前流式中的 assistant 消息 id（convId → msgId）；多会话各自一条流，互不串窗。 */
     private streamingMsgIds = new Map<string, string>();
@@ -105,12 +115,13 @@ export class BuddyBridgeChatView extends ItemView {
     }
 
     /**
-     * 构建发送给 CLI 的上下文文本：会话内去重。
+     * 构建发送给 CLI 的上下文文本：会话内去重 + P2.4 附加文件（每轮注入）。
      * 笔记 / Vault 上下文「没变化」就不再重复注入，只在变化时注入，
      * 避免 CLI 历史里堆叠 N 行 `[系统注入·当前笔记: ...]` 导致 agent 误判。
+     * 附加文件是用户显式附加的会话级上下文，不受去重影响、每轮都注入。
      * @param notePath 入队时的笔记快照（可选）；未提供时回退当前文件。
      */
-    private buildContextText(convId: string, text: string, notePath?: string | null): string {
+    private async buildContextText(convId: string, text: string, notePath?: string | null): Promise<string> {
         const settings = this.pluginSettings;
         const noteLink = settings?.noteLinkInjection !== false;
         const vaultCtx = !!settings?.vaultContextInjection;
@@ -121,12 +132,23 @@ export class BuddyBridgeChatView extends ItemView {
             vaultPath: vaultCtx ? (this.vaultPath ?? null) : null,
         };
         const prev = this.contextStates.get(convId) ?? null;
+        const conv = this.manager.getConversation(convId);
+        // P2.4 附加文件：读取该会话已附加文件的注入内容（md 读全文、非 md 只给路径）
+        const attached = conv ? await this.resolveAttachedFiles(conv.attachedFiles) : [];
+        // P2.8 已启用技能：全局设置，每轮注入引导模型优先使用（CLI 原生可调 Skill 工具）
+        const skillHint = buildSkillInjection(settings?.enabledSkills ?? []);
         const { text: out, state } = buildDedupedPrompt(prev, current, text, {
             noteLinkInjection: noteLink,
             vaultContextInjection: vaultCtx,
-        });
+        }, attached, skillHint);
         this.contextStates.set(convId, state);
-        return out;
+        // cmd.exe 命令行 8191 字符硬限制：整条 prompt 超限时裁掉注入内容（前缀），保住用户原文
+        let final = out;
+        if (final.length > MAX_CMD_PROMPT_CHARS) {
+            final = `${tF('attach.truncated')}\n${final.slice(final.length - MAX_CMD_PROMPT_CHARS)}`;
+            new Notice(t('attach.truncatedNotice'));
+        }
+        return final;
     }
 
     constructor(leaf: WorkspaceLeaf, api: BuddyBridgeAPI, loadDataCallback: () => Promise<Conversation[]>) {
@@ -184,6 +206,9 @@ export class BuddyBridgeChatView extends ItemView {
         setIcon(newBtn, 'plus');
         newBtn.onclick = () => this.createNewChat();
 
+        // P2.4 附加文件 chip 条（当前会话；renderAttachBar 按需显示/隐藏）
+        this.attachBar = container.createDiv({ cls: 'buddybridge-attach-bar buddybridge-hidden' });
+
         // 当前文件指示器
         this.currentFileBar = container.createDiv({ cls: 'buddybridge-current-file' });
         // 用三级兜底解析：面板打开时活跃视图已是聊天 leaf（getActiveFile() 为 null），
@@ -204,6 +229,23 @@ export class BuddyBridgeChatView extends ItemView {
 
         // 消息区域
         this.messageContainer = container.createDiv({ cls: 'buddybridge-messages' });
+
+        // P2.4 拖拽附加：把文件拖到消息区 → 附加到当前会话（输入区保留原生拖放行为）
+        this.registerDomEvent(this.messageContainer, 'dragover', (e: DragEvent) => {
+            e.preventDefault();
+            this.messageContainer.addClass('buddybridge-dragover');
+        });
+        this.registerDomEvent(this.messageContainer, 'dragleave', () => {
+            this.messageContainer.removeClass('buddybridge-dragover');
+        });
+        this.registerDomEvent(this.messageContainer, 'drop', (e: DragEvent) => {
+            e.preventDefault();
+            this.messageContainer.removeClass('buddybridge-dragover');
+            const paths = this.extractDropPaths(e.dataTransfer);
+            if (paths.length > 0) {
+                this.attachFiles(paths);
+            }
+        });
 
         // 发送队列条（排队中消息，可删除/内联编辑）
         this.queueBar = container.createDiv({ cls: 'buddybridge-queue-bar buddybridge-hidden' });
@@ -360,6 +402,8 @@ export class BuddyBridgeChatView extends ItemView {
 
     async renderMessages() {
         this.messageContainer.empty();
+        // P2.4 随消息渲染刷新附加文件 chip 条（覆盖加载 / 新建 / 切换 / 删除会话各入口）
+        this.renderAttachBar();
         const conv = this.manager.getActive();
         if (!conv) {
             const empty = this.messageContainer.createDiv({ cls: 'buddybridge-empty-chat' });
@@ -936,7 +980,7 @@ export class BuddyBridgeChatView extends ItemView {
             // 不注入上下文。注入文本不进对话历史，聊天仍显示原文。
             const base = item.text.startsWith('/')
                 ? item.text
-                : this.buildContextText(convId, item.text, item.notePath);
+                : await this.buildContextText(convId, item.text, item.notePath);
             // 分支会话：首条发送时前置注入截至分叉点的对话转写（一次性），让新 session 了解此前对话
             const transcript = this.forkTranscripts.get(convId);
             if (transcript) {
@@ -1186,6 +1230,149 @@ export class BuddyBridgeChatView extends ItemView {
                 t('marker.sessionReset')
             )
         );
+    }
+
+    // ==================== P2.4 附加文件（上下文注入扩展） ====================
+
+    /**
+     * 附加文件到当前会话（P2.4，public 供 main.ts 右键菜单 / 命令调用）。
+     * 校验文件真实存在（TFile）后交给 manager 去重合并；返回实际新增数。
+     */
+    attachFiles(paths: string[]): number {
+        const conv = this.manager.getActive();
+        if (!conv) return 0;
+        const valid: string[] = [];
+        for (const p of paths) {
+            const file = this.app.vault.getAbstractFileByPath(p);
+            if (file instanceof TFile) {
+                valid.push(p);
+            } else {
+                new Notice(tF('attach.invalid', { path: p }));
+            }
+        }
+        const added = this.manager.attachFiles(conv.id, valid);
+        if (added > 0) {
+            new Notice(tF('attach.notice', { n: added }));
+            this.renderAttachBar();
+        }
+        return added;
+    }
+
+    /** 从当前会话移除一个附加文件（P2.4）。 */
+    private detachAttachedFile(path: string): void {
+        const conv = this.manager.getActive();
+        if (!conv) return;
+        if (this.manager.detachFile(conv.id, path)) {
+            this.renderAttachBar();
+        }
+    }
+
+    /**
+     * P2.4 渲染当前会话的附加文件 chip 条（顶部，随 renderMessages 刷新）。
+     * 无附加文件时隐藏整条；chip 可点击 ✕ 移除。
+     */
+    private renderAttachBar(): void {
+        this.attachBar.empty();
+        const conv = this.manager.getActive();
+        const files = conv?.attachedFiles ?? [];
+        if (files.length === 0) {
+            this.attachBar.addClass('buddybridge-hidden');
+            return;
+        }
+        this.attachBar.removeClass('buddybridge-hidden');
+        this.attachBar.createSpan({ cls: 'buddybridge-attach-label', text: t('attach.title') });
+        for (const p of files) {
+            const chip = this.attachBar.createDiv({ cls: 'buddybridge-attach-chip', attr: { title: p } });
+            const icon = chip.createSpan({ cls: 'buddybridge-attach-chip-icon' });
+            setIcon(icon, 'file-text');
+            chip.createSpan({ cls: 'buddybridge-attach-chip-name', text: p.split('/').pop() || p });
+            const close = chip.createSpan({
+                cls: 'buddybridge-attach-chip-remove',
+                attr: { title: t('attach.remove'), 'aria-label': t('attach.remove'), role: 'button', tabindex: '0' }
+            });
+            setIcon(close, 'x');
+            close.onclick = (e: MouseEvent) => {
+                e.stopPropagation();
+                this.detachAttachedFile(p);
+            };
+            close.onkeydown = (e: KeyboardEvent) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    this.detachAttachedFile(p);
+                }
+            };
+        }
+    }
+
+    /**
+     * 把附加文件路径解析为注入块所需数据（P2.4）：
+     * - 附加 1 个文件：.md 读全文（≤512KB 上限，超出只给路径避免撑爆上下文）；
+     * - 附加多个文件：**只给路径清单，不读全文**——cmd.exe 8191 上限下多篇全文不可扩展，
+     *   由模型用 Read 自行读取（路径即范围，buildAttachedFilesText 附逐一阅读指令）；
+     * - 非 md / 读取失败 / 文件缺失：同样只给路径（由 CLI 自行读取，缺失时 CLI 侧会明确报错）。
+     */
+    private async resolveAttachedFiles(paths: string[]): Promise<AttachedFile[]> {
+        // 多文件：只注入路径（全文不塞进命令行，交给模型自读）
+        if (paths.length > 1) {
+            return paths.map((p) => ({ path: p }));
+        }
+        const p = paths[0];
+        if (!p) return [];
+        try {
+            const isMd = p.toLowerCase().endsWith('.md');
+            const stat = await this.app.vault.adapter.stat(p);
+            if (isMd && stat && stat.size <= ATTACH_MAX_READ_BYTES) {
+                let content = await this.app.vault.adapter.read(p);
+                // P2.4 命令行长度保护：整条消息经 cmd.exe 传输，实测 8191 字符硬截断。
+                // 单文件全文也按预算截断（保留用户原文），超限追加截断标记让模型去读原文件。
+                if (content.length > ATTACH_MAX_FILE_CHARS) {
+                    content = content.slice(0, ATTACH_MAX_FILE_CHARS) + tF('attach.truncated');
+                    new Notice(t('attach.truncatedNotice'));
+                }
+                return [{ path: p, content }];
+            }
+            return [{ path: p }];
+        } catch {
+            // 文件可能已删除：仍注入路径，让 CLI 侧给出明确报错而非静默
+            return [{ path: p }];
+        }
+    }
+
+    /**
+     * 从拖放 DataTransfer 提取 vault 内文件路径（P2.4，best-effort）。
+     * 兼容两种来源：Obsidian 文件管理器拖出的 `obsidian://open?file=` URI，
+     * 以及系统文件拖入（Electron File.path → 裁剪 vault 根前缀为相对路径）。
+     */
+    private extractDropPaths(dt: DataTransfer | null): string[] {
+        const paths: string[] = [];
+        if (!dt) return paths;
+        try {
+            const uriList = dt.getData('text/uri-list');
+            if (uriList) {
+                for (const line of uriList.split(/\r?\n/)) {
+                    const m = line.trim().match(/^obsidian:\/\/open\?(.*)$/i);
+                    if (m) {
+                        const file = new URLSearchParams(m[1]).get('file');
+                        if (file) paths.push(file);
+                    }
+                }
+            }
+        } catch { /* ignore */ }
+        if (paths.length === 0) {
+            const base = this.vaultPath?.replace(/\\/g, '/');
+            if (base) {
+                for (const f of Array.from(dt.files ?? [])) {
+                    const raw = (f as { path?: string }).path;
+                    if (typeof raw === 'string') {
+                        const norm = raw.replace(/\\/g, '/');
+                        if (norm.startsWith(base)) {
+                            paths.push(norm.slice(base.length).replace(/^\//, ''));
+                        }
+                    }
+                }
+            }
+        }
+        return Array.from(new Set(paths));
     }
 
     /**

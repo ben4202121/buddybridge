@@ -1,7 +1,7 @@
 import { buildExportPayload, serializeExport, validateExport, parseExport, EXPORT_FORMAT, EXPORT_VERSION } from '../src/io';
 import { DEFAULT_SETTINGS, DATA_VERSION, type Conversation } from '../src/types';
 
-const conv: Conversation = { id: '1', title: 't', sessionId: 's', messages: [], createdAt: 1, updatedAt: 2 };
+const conv: Conversation = { id: '1', title: 't', sessionId: 's', messages: [], createdAt: 1, updatedAt: 2, attachedFiles: [] };
 
 describe('buildExportPayload', () => {
     it('builds a versioned export with normalized settings and conversations', () => {

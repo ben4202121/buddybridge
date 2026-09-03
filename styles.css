@@ -130,6 +130,141 @@
     line-height: 20px;
 }
 
+/* ==================== 附加文件 chip 条（P2.4） ==================== */
+.buddybridge-attach-bar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 4px 14px;
+    border-bottom: 1px solid var(--background-modifier-border);
+    background: var(--background-secondary);
+    flex-shrink: 0;
+    font-size: var(--buddybridge-font-size, var(--font-ui-small));
+}
+
+.buddybridge-attach-label {
+    font-size: 11px;
+    color: var(--text-faint);
+    white-space: nowrap;
+}
+
+.buddybridge-attach-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    max-width: 240px;
+    padding: 2px 8px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--buddybridge-radius-lg);
+    background: var(--background-primary);
+    cursor: default;
+}
+
+.buddybridge-attach-chip:hover {
+    background: var(--background-modifier-hover);
+}
+
+.buddybridge-attach-chip-icon {
+    display: inline-flex;
+    align-items: center;
+    color: var(--text-muted);
+    flex-shrink: 0;
+}
+
+.buddybridge-attach-chip-icon svg {
+    width: 12px;
+    height: 12px;
+}
+
+.buddybridge-attach-chip-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-normal);
+}
+
+.buddybridge-attach-chip-remove {
+    display: inline-flex;
+    align-items: center;
+    color: var(--text-muted);
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+.buddybridge-attach-chip-remove:hover {
+    color: var(--text-error);
+}
+
+/* 拖拽附加高亮（P2.4）：文件拖到消息区时给出视觉反馈 */
+.buddybridge-messages.buddybridge-dragover {
+    outline: 2px dashed var(--interactive-accent);
+    outline-offset: -2px;
+}
+
+/* ==================== 技能设置（P2.8） ==================== */
+.buddybridge-skills-installed {
+    margin-bottom: 8px;
+}
+
+.buddybridge-skills-market {
+    max-height: 320px;
+    overflow-y: auto;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-m);
+    margin-bottom: 8px;
+}
+
+.buddybridge-skills-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.buddybridge-skills-item:last-child {
+    border-bottom: none;
+}
+
+.buddybridge-skills-item:hover {
+    background: var(--background-modifier-hover);
+}
+
+.buddybridge-skills-item-text {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.buddybridge-skills-item-name {
+    font-weight: var(--font-semibold);
+    color: var(--text-normal);
+    word-break: break-all;
+}
+
+.buddybridge-skills-item-desc {
+    font-size: 11px;
+    color: var(--text-muted);
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+}
+
+.buddybridge-skills-install-btn {
+    flex-shrink: 0;
+}
+
+.buddybridge-skills-empty {
+    padding: 10px;
+    color: var(--text-muted);
+    font-size: var(--font-ui-small);
+}
+
 /* ==================== 消息区域 ==================== */
 .buddybridge-messages {
     flex: 1;

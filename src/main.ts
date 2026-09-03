@@ -1,10 +1,11 @@
-import { Notice, Plugin } from 'obsidian';
+import { Menu, Notice, Plugin, TFile } from 'obsidian';
 import { BuddyBridgeAPI } from './api';
 import { BuddyBridgeChatView, VIEW_TYPE_CHAT } from './views/chat';
 import { migrateSettings, normalizePersistedData, getErrorMessage, type BuddyBridgeSettings, type PersistedData } from './types';
 import { BuddyBridgeSettingTab } from './settings/tab';
 import { buildExportPayload, serializeExport, parseExport, downloadJSONFile, pickAndReadJSONFile, type BuddyBridgeExport } from './io';
 import { ConfirmModal } from './settings/confirm';
+import { t, tF } from './i18n';
 
 export default class BuddyBridgePlugin extends Plugin {
     settings: BuddyBridgeSettings;
@@ -55,6 +56,33 @@ export default class BuddyBridgePlugin extends Plugin {
                 }
             });
 
+            // P2.4 命令：附加当前笔记到当前会话
+            this.addCommand({
+                id: 'attach-current-note',
+                name: t('cmd.attachCurrentNote'),
+                callback: async () => {
+                    const file = this.app.workspace.getActiveFile();
+                    if (file) {
+                        await this.attachToChat([file.path]);
+                    } else {
+                        new Notice(t('attach.noActiveNote'));
+                    }
+                }
+            });
+
+            // P2.4 右键菜单：笔记文件 → 附加到 BuddyBridge 会话
+            this.registerEvent(
+                this.app.workspace.on('file-menu', (menu: Menu, file) => {
+                    if (!(file instanceof TFile)) return;
+                    menu.addItem((item) => {
+                        item
+                            .setTitle(tF('attach.menu'))
+                            .setIcon('paperclip')
+                            .onClick(() => void this.attachToChat([file.path]));
+                    });
+                })
+            );
+
             this.addSettingTab(new BuddyBridgeSettingTab(this.app, this));
             this.applyPrimaryColor();
             this.applyFontSize();
@@ -97,6 +125,18 @@ export default class BuddyBridgePlugin extends Plugin {
             console.error('[BB] 打开聊天面板失败:', e);
             new Notice('BuddyBridge：打开面板失败，请查看 Console');
         }
+    }
+
+    /** P2.4 附加文件到当前聊天会话（右键菜单 / 命令共用）：面板未打开时先激活。 */
+    private async attachToChat(paths: string[]): Promise<void> {
+        if (!this.chatView) {
+            await this.activateView();
+        }
+        if (!this.chatView) {
+            new Notice('BuddyBridge：请先打开聊天面板');
+            return;
+        }
+        this.chatView.attachFiles(paths);
     }
 
     async loadSettings() {
