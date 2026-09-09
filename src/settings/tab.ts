@@ -62,6 +62,37 @@ export class BuddyBridgeSettingTab extends PluginSettingTab {
                     }
                 }));
 
+        // ==================== 传输（P1 ACP）====================
+        new Setting(containerEl).setName(t('tab.heading.transport')).setHeading();
+
+        new Setting(containerEl)
+            .setName(t('settings.transportName'))
+            .setDesc(t('settings.transportDesc'))
+            .addDropdown((dd) => {
+                dd.addOption('print', t('settings.transportPrint'));
+                dd.addOption('acp', t('settings.transportAcp'));
+                dd.setValue(plugin.settings.transportMode)
+                    .onChange(async (value) => {
+                        plugin.settings.transportMode = value as 'print' | 'acp';
+                        await plugin.saveSettings();
+                    });
+            });
+
+        new Setting(containerEl)
+            .setName(t('settings.permissionName'))
+            .setDesc(t('settings.permissionDesc'))
+            .addDropdown((dd) => {
+                dd.addOption('default', t('settings.permissionDefault'));
+                dd.addOption('acceptEdits', t('settings.permissionAcceptEdits'));
+                dd.addOption('dontAsk', t('settings.permissionDontAsk'));
+                dd.addOption('bypassPermissions', t('settings.permissionBypass'));
+                dd.setValue(plugin.settings.acpPermissionMode)
+                    .onChange(async (value) => {
+                        plugin.settings.acpPermissionMode = value;
+                        await plugin.saveSettings();
+                    });
+            });
+
         // ==================== 上下文注入 ====================
         new Setting(containerEl).setName(t('tab.heading.injection')).setHeading();
 

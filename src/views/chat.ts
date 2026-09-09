@@ -545,7 +545,11 @@ export class BuddyBridgeChatView extends ItemView {
     }
 
     /** 向工具卡容器追加一行工具调用。 */
-    private appendToolRow(toolsBlock: HTMLElement, toolName: string, toolDetail: string): void {
+    private appendToolRow(
+        toolsBlock: HTMLElement,
+        toolName: string,
+        toolDetail: string,
+    ): void {
         const list = toolsBlock.querySelector('.buddybridge-tools-list');
         if (!(list instanceof HTMLElement)) return;
         let iconName = 'wrench';
@@ -1041,6 +1045,12 @@ export class BuddyBridgeChatView extends ItemView {
                     if (isActive && bubble) {
                         const toolsBlock = this.renderToolsBlock(bubble);
                         this.appendToolRow(toolsBlock, chunk.toolName || '', chunk.toolDetail || '');
+                    }
+                } else if (chunk.type === 'done' && chunk.acpSessionId) {
+                    // P1 ACP 写回：session/new 返回的真实 UUID → Conversation.sessionId（持久化），
+                    // 后续轮次以该 UUID 为 key 续接同一 ACP 会话（--print 模式无 acpSessionId）。
+                    if (conv.sessionId !== chunk.acpSessionId) {
+                        this.manager.setSessionId(convId, chunk.acpSessionId);
                     }
                 } else if (chunk.type === 'text') {
                     textContent += chunk.content;

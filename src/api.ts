@@ -2,6 +2,7 @@ import { spawn, type SpawnOptions } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import { getErrorMessage, getNumber, getString, isObject } from './types';
+import { AcpSessionManager } from './acp/manager';
 
 const TIMEOUT = 300_000; // 5 分钟
 
@@ -19,6 +20,8 @@ export interface StreamChunk {
     toolDetail?: string;
     /** 该轮 token 用量（来自 assistant 信封 message.usage，P2.5 上下文用量显示） */
     usage?: UsageInfo;
+    /** ACP：done chunk 携带 session/new 返回的真实 UUID，供 chat 写回 Conversation.sessionId（持久化）；--print 模式无此字段 */
+    acpSessionId?: string;
 }
 
 interface MessageBlock {
@@ -426,6 +429,12 @@ export class BuddyBridgeAPI {
     private timeout: number;
     private scriptPath: string;
     private nodePath = '';
+    /** P1 传输方式：'print'（默认，旧路径）| 'acp'（常驻 ACP 进程） */
+    private transportMode: 'print' | 'acp' = 'print';
+    /** P1 ACP --permission-mode（新连接生效） */
+    private acpPermissionMode = 'acceptEdits';
+    /** P1 常驻 ACP 会话管理器（懒初始化；切回 print 即销毁） */
+    private acp: AcpSessionManager | null = null;
     /**
      * 在途流式请求的取消句柄表：sessionId → cancel 回调。
      * 传输层按会话并发：每个会话的流式各占一个独立进程（每条消息一个 spawn），
@@ -462,6 +471,31 @@ export class BuddyBridgeAPI {
         return this.timeout;
     }
 
+    /** 设置传输方式（print/acp）。切回 print 时销毁常驻 ACP 进程（进程自下次请求重生）。 */
+    setTransportMode(mode: 'print' | 'acp'): void {
+        this.transportMode = mode;
+        if (mode !== 'acp' && this.acp) {
+            this.acp.dispose();
+            this.acp = null;
+        }
+    }
+
+    getTransportMode(): 'print' | 'acp' {
+        return this.transportMode;
+    }
+
+    /** 设置 ACP 权限模式（新连接生效；已存活的连接保持旧值）。 */
+    setAcpPermissionMode(mode: string): void {
+        this.acpPermissionMode = mode || 'acceptEdits';
+        this.acp?.setPermissionMode(this.acpPermissionMode);
+    }
+
+    /** 销毁常驻 ACP 进程（Obsidian unload）。print 模式下为空操作。 */
+    disposeAcp(): void {
+        this.acp?.dispose();
+        this.acp = null;
+    }
+
     generateId(): string {
         return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
             const r: number = (Math.random() * 16) | 0;
@@ -471,6 +505,30 @@ export class BuddyBridgeAPI {
     }
 
     async *sendMessage(sessionId: string, text: string, vaultPath?: string): AsyncGenerator<StreamChunk> {
+        // P1 缝合点：ACP 传输分支 —— 产出与下方 --print 路径相同的 StreamChunk 流，
+        // 聊天视图 for-await 消费点零改动；取消经 activeStreams 定向到 ACP manager。
+        if (this.transportMode === 'acp') {
+            if (!this.acp) {
+                this.acp = new AcpSessionManager({
+                    scriptPath: this.scriptPath,
+                    nodePath: this.nodePath,
+                    permissionMode: this.acpPermissionMode,
+                    timeoutMs: this.timeout,
+                });
+            }
+            // ACP 走 JSON-RPC（不经过 cmd），无换行截断问题：chat 发送前为绕 cmd 把 \n
+            // 编码成 U+2028，此处还原为自然换行，模型看到干净的正文（print 路径原样不动）。
+            const acpText = text.split(String.fromCharCode(0x2028)).join('\n');
+            const acpGen = this.acp.sendMessage(sessionId, acpText, vaultPath);
+            this.activeStreams.set(sessionId, () => this.acp?.cancel(sessionId));
+            try {
+                yield* acpGen;
+            } finally {
+                this.activeStreams.delete(sessionId);
+            }
+            return;
+        }
+
         // 并发支持：取消标志 / 唤醒器 / 进程句柄改为每次调用的局部变量（不再共享实例字段），
         // 每个会话的流式各占一个独立进程，互不踩踏；取消经 activeStreams 按 sessionId 定向。
         let cancelled = false;

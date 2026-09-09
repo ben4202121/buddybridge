@@ -40,12 +40,12 @@ module.exports = __toCommonJS(main_exports);
 var import_obsidian4 = require("obsidian");
 
 // src/api.ts
-var import_child_process = require("child_process");
+var import_child_process2 = require("child_process");
 var path = __toESM(require("path"));
 var fs = __toESM(require("fs"));
 
 // src/types.ts
-var CURRENT_SETTINGS_VERSION = 10;
+var CURRENT_SETTINGS_VERSION = 11;
 var FONT_SIZE_MIN = 12;
 var FONT_SIZE_MAX = 18;
 var CONTEXT_WINDOW_MIN = 1e3;
@@ -62,6 +62,8 @@ var DEFAULT_SETTINGS = {
   noteLinkInjection: true,
   vaultContextInjection: false,
   enabledSkills: [],
+  transportMode: "print",
+  acpPermissionMode: "acceptEdits",
   version: CURRENT_SETTINGS_VERSION
 };
 function isObject(value) {
@@ -98,6 +100,8 @@ function migrateSettings(stored) {
   const noteLinkInjection = typeof stored.noteLinkInjection === "boolean" ? stored.noteLinkInjection : DEFAULT_SETTINGS.noteLinkInjection;
   const vaultContextInjection = typeof stored.vaultContextInjection === "boolean" ? stored.vaultContextInjection : DEFAULT_SETTINGS.vaultContextInjection;
   const enabledSkills = Array.isArray(stored.enabledSkills) ? stored.enabledSkills.filter((s) => typeof s === "string" && s.trim().length > 0).map((s) => s.trim()) : [];
+  const transportMode = stored.transportMode === "acp" ? "acp" : "print";
+  const acpPermissionMode = getString(stored, "acpPermissionMode") || DEFAULT_SETTINGS.acpPermissionMode;
   return {
     codebuddyPath: (_a = getString(stored, "codebuddyPath")) != null ? _a : DEFAULT_SETTINGS.codebuddyPath,
     maxConversations: typeof maxConversations === "number" && maxConversations > 0 ? maxConversations : DEFAULT_SETTINGS.maxConversations,
@@ -109,6 +113,8 @@ function migrateSettings(stored) {
     noteLinkInjection,
     vaultContextInjection,
     enabledSkills,
+    transportMode,
+    acpPermissionMode,
     version: CURRENT_SETTINGS_VERSION
   };
 }
@@ -154,6 +160,593 @@ function normalizePersistedData(raw) {
     result.settings = migrateSettings(raw.settings);
   }
   return result;
+}
+
+// src/acp/transport.ts
+var import_child_process = require("child_process");
+var INIT_TIMEOUT_MS = 1e4;
+var INIT_MAX_ATTEMPTS = 3;
+var INIT_RETRY_DELAYS_MS = [1e3, 2e3, 4e3];
+var AcpConnection = class {
+  constructor(options) {
+    this.proc = null;
+    this.state = "starting";
+    this.nextId = 1;
+    this.pending = /* @__PURE__ */ new Map();
+    this.buffer = "";
+    this.errOut = "";
+    this.closed = false;
+    this.options = options;
+  }
+  getState() {
+    return this.state;
+  }
+  isAlive() {
+    return this.state === "ready" && this.proc !== null && this.proc.exitCode === null;
+  }
+  /** 启动进程并完成 initialize 握手（含退避重试）。失败抛错并置 stale。 */
+  async start() {
+    if (this.proc)
+      return;
+    this.spawnProc();
+    await this.handshake();
+    this.state = "ready";
+  }
+  spawnProc() {
+    var _a, _b;
+    const { scriptPath, nodePath, permissionMode, cwd } = this.options;
+    const procOptions = { stdio: ["pipe", "pipe", "pipe"] };
+    if (cwd)
+      procOptions.cwd = cwd;
+    const cliArgs = ["--acp", "--permission-mode", permissionMode];
+    let proc;
+    if (isWindowsWrapper(scriptPath) || isBareFallback(scriptPath)) {
+      if (needsWindowsShell(scriptPath)) {
+        procOptions.shell = true;
+      }
+      proc = (0, import_child_process.spawn)(scriptPath, cliArgs, procOptions);
+    } else {
+      const nodeBin = nodePath || "node";
+      proc = (0, import_child_process.spawn)(nodeBin, [scriptPath, ...cliArgs], procOptions);
+    }
+    this.proc = proc;
+    this.closed = false;
+    this.buffer = "";
+    this.errOut = "";
+    (_a = proc.stdout) == null ? void 0 : _a.on("data", (d) => this.onStdout(d));
+    (_b = proc.stderr) == null ? void 0 : _b.on("data", (d) => {
+      this.errOut += d.toString();
+    });
+    proc.on("error", (e) => {
+      this.failAll(new Error(`ACP \u8FDB\u7A0B\u542F\u52A8\u5931\u8D25: ${e.message}`));
+      this.markStale(proc, null);
+    });
+    proc.on("close", (code, signal) => {
+      const errOut = this.errOut.substring(0, 300);
+      this.failAll(new Error(`ACP \u8FDB\u7A0B\u9000\u51FA\uFF08code=${code}${signal ? `, ${signal}` : ""}${errOut ? `, ${errOut}` : ""}\uFF09`));
+      this.markStale(proc, code);
+    });
+  }
+  onStdout(d) {
+    this.buffer += d.toString();
+    const lines = this.buffer.split("\n");
+    this.buffer = lines.pop() || "";
+    for (const line of lines) {
+      if (!line.trim())
+        continue;
+      this.onLine(line);
+    }
+  }
+  onLine(line) {
+    let msg;
+    try {
+      msg = JSON.parse(line);
+    } catch (e) {
+      return;
+    }
+    if (!isObject(msg))
+      return;
+    const hasId = typeof msg.id === "number" || typeof msg.id === "string";
+    if (hasId) {
+      const id = msg.id;
+      const pending = this.pending.get(Number(id));
+      if (!pending)
+        return;
+      this.pending.delete(Number(id));
+      clearTimeout(pending.timer);
+      if (msg.error) {
+        const detail = extractErrorDetail(msg.error);
+        pending.reject(new Error(detail));
+      } else {
+        pending.resolve(msg.result);
+      }
+      return;
+    }
+    const method = msg.method;
+    if (method === "session/update") {
+      const params = isObject(msg.params) ? msg.params : null;
+      this.options.onSessionUpdate(params ? params.update : void 0);
+    }
+  }
+  /** 发请求并等待结果。返回 result；超时/出错 reject。 */
+  request(method, params, timeoutMs) {
+    return new Promise((resolve, reject) => {
+      var _a, _b;
+      if (!this.proc) {
+        reject(new Error("ACP \u8FDB\u7A0B\u672A\u5C31\u7EEA\uFF0C\u65E0\u6CD5\u53D1\u8D77\u8BF7\u6C42"));
+        return;
+      }
+      const id = this.nextId++;
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`ACP \u8BF7\u6C42\u8D85\u65F6: ${method}`));
+      }, timeoutMs != null ? timeoutMs : this.options.timeoutMs);
+      (_a = timer.unref) == null ? void 0 : _a.call(timer);
+      this.pending.set(id, { resolve, reject, timer });
+      const body = JSON.stringify({ jsonrpc: "2.0", id, method, params });
+      (_b = this.proc.stdin) == null ? void 0 : _b.write(body + "\n");
+    });
+  }
+  /** 单向通知（不等待响应）。用于 session/cancel 等。 */
+  notify(method, params) {
+    if (!this.proc || !this.proc.stdin)
+      return;
+    this.proc.stdin.write(JSON.stringify({ jsonrpc: "2.0", method, params }) + "\n");
+  }
+  async handshake() {
+    var _a;
+    let attempt = 0;
+    while (attempt < INIT_MAX_ATTEMPTS) {
+      attempt++;
+      try {
+        await this.request("initialize", {
+          protocolVersion: 1,
+          clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
+          agentCapabilities: { loadSession: true, canLoadExistingSession: true }
+        }, INIT_TIMEOUT_MS);
+        return;
+      } catch (e) {
+        if (attempt >= INIT_MAX_ATTEMPTS) {
+          this.markStale(this.proc, null);
+          throw new Error(`ACP \u63E1\u624B\u5931\u8D25\uFF08\u5DF2\u91CD\u8BD5 ${attempt} \u6B21\uFF09: ${getErrorMessage(e)}`);
+        }
+        this.failAll(new Error("\u63E1\u624B\u5931\u8D25\uFF0C\u8FDB\u7A0B\u91CD\u542F"));
+        this.killProc();
+        this.spawnProc();
+        await sleep((_a = INIT_RETRY_DELAYS_MS[attempt - 1]) != null ? _a : 4e3);
+      }
+    }
+  }
+  markStale(proc, code) {
+    var _a, _b;
+    if (this.proc && proc && this.proc !== proc)
+      return;
+    this.closed = true;
+    this.state = "stale";
+    this.proc = null;
+    (_b = (_a = this.options).onExit) == null ? void 0 : _b.call(_a, code, this.errOut.substring(0, 300));
+  }
+  failAll(err) {
+    for (const [, pending] of this.pending) {
+      clearTimeout(pending.timer);
+      pending.reject(err);
+    }
+    this.pending.clear();
+  }
+  killProc() {
+    const proc = this.proc;
+    if (!proc || !proc.pid)
+      return;
+    try {
+      if (process.platform === "win32" && proc.pid) {
+        (0, import_child_process.spawn)("taskkill", ["/pid", String(proc.pid), "/T", "/F"]);
+      } else {
+        proc.kill();
+      }
+    } catch (e) {
+    }
+  }
+  /** 停止并释放进程（关闭 stdin → CLI 自退；Windows 再补进程树清理）。 */
+  stop() {
+    var _a;
+    const proc = this.proc;
+    if (!proc) {
+      this.state = "stale";
+      return;
+    }
+    try {
+      (_a = proc.stdin) == null ? void 0 : _a.end();
+    } catch (e) {
+    }
+    this.killProc();
+    this.failAll(new Error("ACP \u8FDE\u63A5\u5DF2\u5173\u95ED"));
+    this.pending.clear();
+    this.closed = true;
+    this.state = "stale";
+    this.proc = null;
+  }
+  /** 当前 stderr 片段（用于错误文案）。 */
+  getErrOut() {
+    return this.errOut.substring(0, 300);
+  }
+};
+function extractErrorDetail(error) {
+  if (isObject(error)) {
+    const msg = error.message;
+    if (typeof msg === "string")
+      return msg;
+  }
+  return typeof error === "string" ? error : "ACP \u8BF7\u6C42\u5931\u8D25";
+}
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+// src/acp/events.ts
+function getContentText(update) {
+  const content = update.content;
+  if (!isObject(content))
+    return "";
+  const text = getString(content, "text");
+  return text != null ? text : "";
+}
+function parseToolCall(update) {
+  var _a, _b, _c;
+  const meta = isObject(update._meta) ? update._meta : {};
+  const toolCallId = (_a = getString(update, "toolCallId")) != null ? _a : "";
+  const toolName = (_b = getString(meta, "codebuddy.ai/toolName")) != null ? _b : "";
+  const title = (_c = getString(update, "title")) != null ? _c : "";
+  const rawInput = update.rawInput;
+  const rawInputObj = isObject(rawInput) ? rawInput : null;
+  const argsComplete = meta["codebuddy.ai/toolArgumentsComplete"] === true;
+  if (!toolCallId || !toolName)
+    return null;
+  const hasInput = rawInputObj !== null && Object.keys(rawInputObj).length > 0;
+  const hasDistinctTitle = title.length > 0 && title !== toolName;
+  if (!argsComplete && !hasInput && !hasDistinctTitle)
+    return null;
+  const distinctTitle = title && title !== toolName ? title : "";
+  const detail = distinctTitle || (rawInputObj ? JSON.stringify(rawInputObj) : "");
+  return { toolName, detail: detail || toolName, toolCallId };
+}
+function extractUsage(update) {
+  const used = getNumber(update, "used");
+  if (typeof used !== "number" || used < 0)
+    return void 0;
+  const meta = isObject(update._meta) ? update._meta : {};
+  const byCat = isObject(meta["codebuddy.ai/usageByCategory"]) ? meta["codebuddy.ai/usageByCategory"] : null;
+  const outputTokens = byCat !== null && typeof byCat.outputTokens === "number" ? byCat.outputTokens : 0;
+  return { inputTokens: used, outputTokens };
+}
+function mapAcpEvent(update) {
+  if (!isObject(update))
+    return null;
+  const type = getString(update, "sessionUpdate");
+  switch (type) {
+    case "agent_message_chunk": {
+      const text = getContentText(update);
+      return text ? { type: "text", content: text } : null;
+    }
+    case "agent_thought_chunk": {
+      const text = getContentText(update);
+      return text ? { type: "thinking", content: text } : null;
+    }
+    case "tool_call": {
+      const info = parseToolCall(update);
+      if (!info)
+        return null;
+      return { type: "tool", content: "", toolName: info.toolName, toolDetail: info.detail };
+    }
+    case "tool_call_update":
+      return null;
+    case "usage_update": {
+      const usage = extractUsage(update);
+      return usage ? { type: "text", content: "", usage } : null;
+    }
+    case "session_end":
+      return { type: "done", content: "" };
+    default:
+      return null;
+  }
+}
+
+// src/acp/manager.ts
+var IDLE_TIMEOUT_MS = 10 * 60 * 1e3;
+var AcpSessionManager = class {
+  constructor(options) {
+    this.handles = /* @__PURE__ */ new Map();
+    this.cancelHandlers = /* @__PURE__ */ new Map();
+    this.disposed = false;
+    this.options = options;
+    this.permissionMode = options.permissionMode;
+  }
+  /** 更新权限模式：影响之后建立的新 ACP 连接（老进程/存活会话不受影响）。 */
+  setPermissionMode(mode) {
+    this.permissionMode = mode;
+  }
+  /** 每会话并发/串行无关的外部取消入口（chat 停止按钮 → api.cancel → 此处）。 */
+  cancel(sessionId) {
+    var _a;
+    (_a = this.cancelHandlers.get(sessionId)) == null ? void 0 : _a();
+  }
+  /**
+   * 发送消息并流式返回（镜像 api.sendMessage 签名）。
+   * 同会话串行由视图层发送队列保证；此处加 busy 守卫防重入。
+   */
+  async *sendMessage(sessionId, text, vaultPath) {
+    var _a, _b;
+    if (this.disposed) {
+      yield { type: "error", content: "ACP \u4F20\u8F93\u5DF2\u5173\u95ED" };
+      return;
+    }
+    let cancelled = false;
+    let pendingResolve = null;
+    const chunkQueue = [];
+    let terminal = null;
+    const seenToolIds = /* @__PURE__ */ new Set();
+    const handle = await this.ensureHandle(sessionId, vaultPath);
+    await this.ensureLive(handle);
+    if (handle.activeRound) {
+      yield { type: "error", content: "\u8BE5\u4F1A\u8BDD\u5DF2\u6709\u8FDB\u884C\u4E2D\u7684\u8BF7\u6C42\uFF0C\u8BF7\u7B49\u5F85\u5B8C\u6210\u540E\u518D\u53D1\u9001" };
+      return;
+    }
+    if (handle.idleTimer) {
+      clearTimeout(handle.idleTimer);
+      handle.idleTimer = null;
+    }
+    const acpUuid = handle.acpUuid;
+    const isNewSession = handle.justCreated;
+    handle.justCreated = false;
+    const cancelHandler = () => {
+      cancelled = true;
+      if (handle.conn && acpUuid) {
+        handle.conn.notify("session/cancel", { sessionId: acpUuid });
+      }
+      if (pendingResolve) {
+        pendingResolve({ value: { type: "done", content: "" }, done: true });
+        pendingResolve = null;
+      }
+    };
+    this.cancelHandlers.set(sessionId, cancelHandler);
+    const enqueue = (chunk) => {
+      if (cancelled || terminal)
+        return;
+      if (pendingResolve) {
+        pendingResolve({ value: chunk, done: false });
+        pendingResolve = null;
+      } else {
+        chunkQueue.push(chunk);
+      }
+    };
+    handle.activeRound = {
+      sink: (update) => {
+        if (cancelled || terminal)
+          return;
+        if (isToolCallUpdate(update)) {
+          const info = parseToolCall(update);
+          if (info) {
+            if (seenToolIds.has(info.toolCallId))
+              return;
+            seenToolIds.add(info.toolCallId);
+          }
+        }
+        const chunk = mapAcpEvent(update);
+        if (chunk) {
+          if (isNewSession && chunk.type === "done") {
+            chunk.acpSessionId = acpUuid;
+          }
+          enqueue(chunk);
+        }
+      }
+    };
+    try {
+      const timeoutSeconds = Math.max(1, Math.round(this.options.timeoutMs / 1e3));
+      const timer = setTimeout(() => {
+        if (terminal)
+          return;
+        if (handle.conn && acpUuid)
+          handle.conn.notify("session/cancel", { sessionId: acpUuid });
+        const errChunk = {
+          type: "error",
+          content: `\u8BF7\u6C42\u8D85\u65F6\uFF08\u5DF2\u7B49\u5F85 ${timeoutSeconds} \u79D2\uFF09\uFF0C\u8BF7\u68C0\u67E5 CodeBuddy CLI \u662F\u5426\u6B63\u5E38\u8FD0\u884C\u6216\u5C1D\u8BD5\u91CD\u8BD5`
+        };
+        if (pendingResolve) {
+          pendingResolve({ value: errChunk, done: true });
+          pendingResolve = null;
+        } else {
+          terminal = errChunk;
+        }
+      }, this.options.timeoutMs);
+      (_a = timer.unref) == null ? void 0 : _a.call(timer);
+      const conn = handle.conn;
+      if (!conn)
+        throw new Error("ACP \u8FDB\u7A0B\u4E0D\u53EF\u7528");
+      const p = conn.request("session/prompt", {
+        sessionId: acpUuid,
+        prompt: [{ type: "text", text }]
+      });
+      p.then(() => {
+        const done = {
+          type: "done",
+          content: "",
+          ...isNewSession && acpUuid ? { acpSessionId: acpUuid } : {}
+        };
+        if (pendingResolve) {
+          pendingResolve({ value: done, done: true });
+          pendingResolve = null;
+        } else {
+          terminal = done;
+        }
+      }).catch((e) => {
+        const errChunk = { type: "error", content: getErrorMessage(e) };
+        if (pendingResolve) {
+          pendingResolve({ value: errChunk, done: true });
+          pendingResolve = null;
+        } else {
+          terminal = errChunk;
+        }
+      });
+      while (true) {
+        if (cancelled)
+          break;
+        if (chunkQueue.length > 0) {
+          const c = chunkQueue.shift();
+          if (c)
+            yield c;
+          continue;
+        }
+        if (terminal) {
+          clearTimeout(timer);
+          if (terminal.type === "error")
+            yield terminal;
+          break;
+        }
+        const next = await new Promise((r) => {
+          pendingResolve = r;
+        });
+        if (next.done) {
+          if (((_b = next.value) == null ? void 0 : _b.type) === "error")
+            yield next.value;
+          break;
+        }
+        yield next.value;
+      }
+      clearTimeout(timer);
+    } finally {
+      handle.activeRound = null;
+      this.cancelHandlers.delete(sessionId);
+      this.scheduleIdle(handle);
+    }
+  }
+  /** 关闭全部 ACP 进程（Obsidian unload）。 */
+  dispose() {
+    var _a;
+    this.disposed = true;
+    for (const [, handler] of this.cancelHandlers) {
+      handler();
+    }
+    this.cancelHandlers.clear();
+    for (const handle of this.handles.values()) {
+      if (handle.idleTimer)
+        clearTimeout(handle.idleTimer);
+      (_a = handle.conn) == null ? void 0 : _a.stop();
+      handle.conn = null;
+    }
+    this.handles.clear();
+  }
+  // ==================== 内部 ====================
+  /**
+   * 取/建会话句柄。key = 插件侧 sessionId（可能是 session/new 前的占位 UUID，
+   * 也可能是已写回的 ACP UUID）：按 key 直查 → 按 acpUuid 反查（别名）→ 新建。
+   */
+  async ensureHandle(key, vaultPath) {
+    var _a, _b;
+    let handle = this.handles.get(key);
+    if (handle)
+      return handle;
+    for (const [, h] of this.handles) {
+      if (h.acpUuid === key) {
+        this.handles.set(key, h);
+        return h;
+      }
+    }
+    handle = this.createHandle(key, vaultPath);
+    this.handles.set(key, handle);
+    try {
+      await ((_a = handle.conn) == null ? void 0 : _a.start());
+    } catch (e) {
+      this.handles.delete(key);
+      throw new Error(`ACP \u542F\u52A8\u5931\u8D25: ${getErrorMessage(e)}`);
+    }
+    const conn = handle.conn;
+    if (!conn)
+      throw new Error("ACP \u8FDB\u7A0B\u4E0D\u53EF\u7528");
+    const isUuid = /^[0-9a-fA-F-]{36}$/.test(key);
+    if (isUuid) {
+      try {
+        await conn.request("session/load", { sessionId: key, cwd: vaultPath != null ? vaultPath : "", mcpServers: [] });
+        handle.acpUuid = key;
+        return handle;
+      } catch (e) {
+      }
+    }
+    const res = await conn.request("session/new", { cwd: vaultPath != null ? vaultPath : "", mcpServers: [] });
+    handle.acpUuid = (_b = getString(isObject(res) ? res : {}, "sessionId")) != null ? _b : "";
+    if (!handle.acpUuid) {
+      this.handles.delete(key);
+      throw new Error("ACP \u4F1A\u8BDD\u521B\u5EFA\u5931\u8D25\uFF1A\u672A\u8FD4\u56DE sessionId");
+    }
+    handle.justCreated = true;
+    return handle;
+  }
+  /** 保证句柄的进程存活：已死 → 重生 + session/load 续接。 */
+  async ensureLive(handle) {
+    var _a, _b, _c;
+    if (handle.conn && handle.conn.isAlive())
+      return;
+    if (handle.conn) {
+      handle.conn.stop();
+    }
+    handle.conn = this.newConnection(handle);
+    await handle.conn.start();
+    if (handle.acpUuid) {
+      try {
+        await handle.conn.request("session/load", { sessionId: handle.acpUuid, cwd: (_a = handle.cwd) != null ? _a : "", mcpServers: [] });
+      } catch (e) {
+        const res = await handle.conn.request("session/new", { cwd: (_b = handle.cwd) != null ? _b : "", mcpServers: [] });
+        const fresh = (_c = getString(isObject(res) ? res : {}, "sessionId")) != null ? _c : "";
+        handle.acpUuid = fresh || handle.acpUuid;
+        handle.justCreated = Boolean(fresh);
+      }
+    }
+  }
+  createHandle(key, vaultPath) {
+    const handle = {
+      acpUuid: "",
+      conn: null,
+      justCreated: false,
+      activeRound: null,
+      idleTimer: null,
+      cwd: vaultPath
+    };
+    handle.conn = this.newConnection(handle);
+    return handle;
+  }
+  /** 每个进程绑定自己的 handle：事件/退出直接路由到该 handle，不做 cwd 匹配。 */
+  newConnection(handle) {
+    let conn;
+    conn = new AcpConnection({
+      scriptPath: this.options.scriptPath,
+      nodePath: this.options.nodePath,
+      permissionMode: this.permissionMode,
+      cwd: handle.cwd,
+      timeoutMs: this.options.timeoutMs,
+      onSessionUpdate: (update) => {
+        var _a;
+        (_a = handle.activeRound) == null ? void 0 : _a.sink(update);
+      },
+      onExit: () => {
+        if (handle.conn === conn)
+          handle.conn = null;
+      }
+    });
+    return conn;
+  }
+  scheduleIdle(handle) {
+    var _a, _b;
+    if (handle.idleTimer)
+      clearTimeout(handle.idleTimer);
+    handle.idleTimer = setTimeout(() => {
+      var _a2;
+      (_a2 = handle.conn) == null ? void 0 : _a2.stop();
+      handle.conn = null;
+      handle.idleTimer = null;
+    }, IDLE_TIMEOUT_MS);
+    (_b = (_a = handle.idleTimer).unref) == null ? void 0 : _b.call(_a);
+  }
+};
+function isToolCallUpdate(update) {
+  return isObject(update) && update.sessionUpdate === "tool_call";
 }
 
 // src/api.ts
@@ -353,7 +946,7 @@ function blockToChunk(block) {
     toolDetail: summarizeToolInput(block.input)
   };
 }
-function extractUsage(raw) {
+function extractUsage2(raw) {
   if (!isObject(raw))
     return void 0;
   const message = isObject(raw.message) ? raw.message : null;
@@ -402,7 +995,7 @@ function parseStreamLine(line) {
   try {
     const raw = JSON.parse(line);
     if (isObject(raw) && (raw.type === "assistant" || raw.type === "user")) {
-      const usage = extractUsage(raw);
+      const usage = extractUsage2(raw);
       const message = isObject(raw.message) ? raw.message : null;
       const content = Array.isArray(message == null ? void 0 : message.content) ? message.content : [];
       for (const item of content) {
@@ -476,6 +1069,12 @@ function escapeCmdArg(text) {
 var BuddyBridgeAPI = class {
   constructor(timeout = TIMEOUT) {
     this.nodePath = "";
+    /** P1 传输方式：'print'（默认，旧路径）| 'acp'（常驻 ACP 进程） */
+    this.transportMode = "print";
+    /** P1 ACP --permission-mode（新连接生效） */
+    this.acpPermissionMode = "acceptEdits";
+    /** P1 常驻 ACP 会话管理器（懒初始化；切回 print 即销毁） */
+    this.acp = null;
     /**
      * 在途流式请求的取消句柄表：sessionId → cancel 回调。
      * 传输层按会话并发：每个会话的流式各占一个独立进程（每条消息一个 spawn），
@@ -504,6 +1103,29 @@ var BuddyBridgeAPI = class {
   getTimeoutMs() {
     return this.timeout;
   }
+  /** 设置传输方式（print/acp）。切回 print 时销毁常驻 ACP 进程（进程自下次请求重生）。 */
+  setTransportMode(mode) {
+    this.transportMode = mode;
+    if (mode !== "acp" && this.acp) {
+      this.acp.dispose();
+      this.acp = null;
+    }
+  }
+  getTransportMode() {
+    return this.transportMode;
+  }
+  /** 设置 ACP 权限模式（新连接生效；已存活的连接保持旧值）。 */
+  setAcpPermissionMode(mode) {
+    var _a;
+    this.acpPermissionMode = mode || "acceptEdits";
+    (_a = this.acp) == null ? void 0 : _a.setPermissionMode(this.acpPermissionMode);
+  }
+  /** 销毁常驻 ACP 进程（Obsidian unload）。print 模式下为空操作。 */
+  disposeAcp() {
+    var _a;
+    (_a = this.acp) == null ? void 0 : _a.dispose();
+    this.acp = null;
+  }
   generateId() {
     return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
       const r = Math.random() * 16 | 0;
@@ -513,6 +1135,28 @@ var BuddyBridgeAPI = class {
   }
   async *sendMessage(sessionId, text, vaultPath) {
     var _a, _b;
+    if (this.transportMode === "acp") {
+      if (!this.acp) {
+        this.acp = new AcpSessionManager({
+          scriptPath: this.scriptPath,
+          nodePath: this.nodePath,
+          permissionMode: this.acpPermissionMode,
+          timeoutMs: this.timeout
+        });
+      }
+      const acpText = text.split(String.fromCharCode(8232)).join("\n");
+      const acpGen = this.acp.sendMessage(sessionId, acpText, vaultPath);
+      this.activeStreams.set(sessionId, () => {
+        var _a2;
+        return (_a2 = this.acp) == null ? void 0 : _a2.cancel(sessionId);
+      });
+      try {
+        yield* acpGen;
+      } finally {
+        this.activeStreams.delete(sessionId);
+      }
+      return;
+    }
     let cancelled = false;
     let pendingResolve = null;
     let currentProc = null;
@@ -531,10 +1175,10 @@ var BuddyBridgeAPI = class {
     }
     let proc;
     if (isWindowsWrapper(scriptPath) || isBareFallback(scriptPath)) {
-      proc = (0, import_child_process.spawn)(scriptPath, cliArgs, procOptions);
+      proc = (0, import_child_process2.spawn)(scriptPath, cliArgs, procOptions);
     } else {
       const nodeBin = this.nodePath || findNodeExecutable() || "node";
-      proc = (0, import_child_process.spawn)(nodeBin, [scriptPath, ...cliArgs], procOptions);
+      proc = (0, import_child_process2.spawn)(nodeBin, [scriptPath, ...cliArgs], procOptions);
     }
     currentProc = proc;
     const cancelHandler = () => {
@@ -546,7 +1190,7 @@ var BuddyBridgeAPI = class {
       if (currentProc) {
         try {
           if (process.platform === "win32" && currentProc.pid) {
-            (0, import_child_process.spawn)("taskkill", ["/pid", String(currentProc.pid), "/T", "/F"]);
+            (0, import_child_process2.spawn)("taskkill", ["/pid", String(currentProc.pid), "/T", "/F"]);
           } else {
             currentProc.kill();
           }
@@ -1075,6 +1719,17 @@ var ZH = {
   "settings.autoDetect": "\u81EA\u52A8\u68C0\u6D4B",
   "settings.timeoutName": "CLI \u8D85\u65F6\u65F6\u957F\uFF08\u79D2\uFF09",
   "settings.timeoutDesc": "\u8BF7\u6C42\u8D85\u8FC7\u8BE5\u65F6\u957F\u672A\u6536\u5230\u5B8C\u6574\u56DE\u590D\u65F6\u81EA\u52A8\u7EC8\u6B62\u5E76\u63D0\u793A\uFF08\u9ED8\u8BA4 300 \u79D2\uFF09",
+  "tab.heading.transport": "\u4F20\u8F93",
+  "settings.transportName": "\u4F20\u8F93\u65B9\u5F0F",
+  "settings.transportDesc": "ACP \u5E38\u9A7B\u8FDB\u7A0B\u652F\u6301\u6301\u4E45\u4F1A\u8BDD\u3001\u8FDB\u7A0B\u5185\u591A\u8F6E\u4E0A\u4E0B\u6587\u4E0E\u5DE5\u5177\u6388\u6743\u4EA4\u4E92\uFF1Bprint \u4E3A\u65E7\u8DEF\u5F84\uFF08\u6BCF\u6761\u6D88\u606F\u65B0\u8FDB\u7A0B\uFF09\u3002\u53D8\u66F4\u5BF9\u4E0B\u4E00\u8F6E\u751F\u6548\u3002",
+  "settings.transportPrint": "print\uFF08\u6BCF\u6761\u6D88\u606F\u65B0\u8FDB\u7A0B\uFF09",
+  "settings.transportAcp": "ACP \u5E38\u9A7B\u8FDB\u7A0B\uFF08\u6301\u4E45\u4F1A\u8BDD\uFF09",
+  "settings.permissionName": "ACP \u6743\u9650\u6A21\u5F0F",
+  "settings.permissionDesc": "acceptEdits\uFF1A\u6587\u4EF6\u7F16\u8F91\u514D\u786E\u8BA4\uFF0C\u9700\u6388\u6743\u7684\u5DE5\u5177\u8C03\u7528\u5728\u5BF9\u8BDD\u4E2D\u7B49\u5F85\u6388\u6743\uFF1BdontAsk\uFF1A\u81EA\u52A8\u6267\u884C\u5168\u90E8\u5DE5\u5177\uFF1BbypassPermissions\uFF1A\u7ED5\u8FC7\u6240\u6709\u6743\u9650\u3002",
+  "settings.permissionDefault": "default\uFF08\u8BF7\u6C42\u786E\u8BA4\uFF09",
+  "settings.permissionAcceptEdits": "acceptEdits\uFF08\u6587\u4EF6\u7F16\u8F91\u514D\u786E\u8BA4\uFF09",
+  "settings.permissionDontAsk": "dontAsk\uFF08\u81EA\u52A8\u6267\u884C\uFF09",
+  "settings.permissionBypass": "bypassPermissions\uFF08\u7ED5\u8FC7\u5168\u90E8\uFF09",
   "tab.heading.injection": "\u4E0A\u4E0B\u6587\u6CE8\u5165",
   "settings.noteLinkName": "\u6CE8\u5165\u5F53\u524D\u7B14\u8BB0\u94FE\u63A5",
   "settings.noteLinkDesc": "\u53D1\u9001\u6D88\u606F\u65F6\u81EA\u52A8\u5728\u6D88\u606F\u524D\u9644\u52A0 {marker}\uFF0C\u8BA9 AI \u77E5\u9053\u4F60\u5728\u770B\u54EA\u4E2A\u7B14\u8BB0\uFF08\u9ED8\u8BA4\u5F00\u542F\uFF09",
@@ -1210,6 +1865,17 @@ var EN = {
   "settings.autoDetect": "Auto-detect",
   "settings.timeoutName": "CLI timeout (seconds)",
   "settings.timeoutDesc": "Automatically abort a request that receives no complete reply within this time (default 300s)",
+  "tab.heading.transport": "Transport",
+  "settings.transportName": "Transport mode",
+  "settings.transportDesc": "ACP persistent process enables session continuity, in-process multi-turn context and tool approval UX; print keeps the legacy path (new process per message). Takes effect on the next turn.",
+  "settings.transportPrint": "print (new process per message)",
+  "settings.transportAcp": "ACP persistent process (persistent sessions)",
+  "settings.permissionName": "ACP permission mode",
+  "settings.permissionDesc": "acceptEdits: file edits auto-approved, authorized tool calls await in-chat approval; dontAsk: auto-run all tools; bypassPermissions: bypass all permissions.",
+  "settings.permissionDefault": "default (ask for confirmation)",
+  "settings.permissionAcceptEdits": "acceptEdits (file edits auto-approved)",
+  "settings.permissionDontAsk": "dontAsk (auto-run all)",
+  "settings.permissionBypass": "bypassPermissions (bypass all)",
   "tab.heading.injection": "Context injection",
   "settings.noteLinkName": "Inject current note link",
   "settings.noteLinkDesc": "Prepend {marker} to messages so the AI knows which note you are viewing (default on)",
@@ -2430,6 +3096,10 @@ ${base}` : base);
             const toolsBlock = this.renderToolsBlock(bubble);
             this.appendToolRow(toolsBlock, chunk.toolName || "", chunk.toolDetail || "");
           }
+        } else if (chunk.type === "done" && chunk.acpSessionId) {
+          if (conv.sessionId !== chunk.acpSessionId) {
+            this.manager.setSessionId(convId, chunk.acpSessionId);
+          }
         } else if (chunk.type === "text") {
           textContent += chunk.content;
           this.manager.updateMessage(convId, aiMsg.id, textContent, true);
@@ -2850,6 +3520,25 @@ var BuddyBridgeSettingTab = class extends import_obsidian3.PluginSettingTab {
         await plugin.saveSettings();
       }
     }));
+    new import_obsidian3.Setting(containerEl).setName(t("tab.heading.transport")).setHeading();
+    new import_obsidian3.Setting(containerEl).setName(t("settings.transportName")).setDesc(t("settings.transportDesc")).addDropdown((dd) => {
+      dd.addOption("print", t("settings.transportPrint"));
+      dd.addOption("acp", t("settings.transportAcp"));
+      dd.setValue(plugin.settings.transportMode).onChange(async (value) => {
+        plugin.settings.transportMode = value;
+        await plugin.saveSettings();
+      });
+    });
+    new import_obsidian3.Setting(containerEl).setName(t("settings.permissionName")).setDesc(t("settings.permissionDesc")).addDropdown((dd) => {
+      dd.addOption("default", t("settings.permissionDefault"));
+      dd.addOption("acceptEdits", t("settings.permissionAcceptEdits"));
+      dd.addOption("dontAsk", t("settings.permissionDontAsk"));
+      dd.addOption("bypassPermissions", t("settings.permissionBypass"));
+      dd.setValue(plugin.settings.acpPermissionMode).onChange(async (value) => {
+        plugin.settings.acpPermissionMode = value;
+        await plugin.saveSettings();
+      });
+    });
     new import_obsidian3.Setting(containerEl).setName(t("tab.heading.injection")).setHeading();
     const noteMarker = tF("marker.currentNote", { path: t("settings.pathExample") });
     const vaultMarker = tF("marker.vault", { path: t("settings.pathExample") });
@@ -3164,6 +3853,8 @@ var BuddyBridgePlugin = class extends import_obsidian4.Plugin {
       this.api.setCodebuddyPath(this.settings.codebuddyPath);
       this.api.setNodePath(this.settings.nodePath);
       this.api.setTimeoutMs(this.settings.timeoutSeconds * 1e3);
+      this.api.setTransportMode(this.settings.transportMode);
+      this.api.setAcpPermissionMode(this.settings.acpPermissionMode);
       this.registerView(
         VIEW_TYPE_CHAT,
         (leaf) => {
@@ -3221,6 +3912,7 @@ var BuddyBridgePlugin = class extends import_obsidian4.Plugin {
   }
   onunload() {
     this.api.cancel();
+    this.api.disposeAcp();
   }
   async activateView() {
     try {
@@ -3268,6 +3960,8 @@ var BuddyBridgePlugin = class extends import_obsidian4.Plugin {
     this.api.setCodebuddyPath(this.settings.codebuddyPath);
     this.api.setNodePath(this.settings.nodePath);
     this.api.setTimeoutMs(this.settings.timeoutSeconds * 1e3);
+    this.api.setTransportMode(this.settings.transportMode);
+    this.api.setAcpPermissionMode(this.settings.acpPermissionMode);
     if (this.chatView) {
       this.chatView.getManager().setMaxConversations(this.settings.maxConversations);
     }

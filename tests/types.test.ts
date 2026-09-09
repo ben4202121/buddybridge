@@ -131,6 +131,24 @@ describe('migrateSettings', () => {
     it('should fall back to empty when enabledSkills is not an array (P2.8)', () => {
         expect(migrateSettings({ enabledSkills: 'pdf' }).enabledSkills).toEqual([]);
     });
+
+    it('should default transportMode to print and acpPermissionMode to acceptEdits when missing (P1)', () => {
+        const r = migrateSettings({});
+        expect(r.transportMode).toBe('print');
+        expect(r.acpPermissionMode).toBe('acceptEdits');
+    });
+
+    it('should preserve transportMode when valid, fall back to print otherwise (P1)', () => {
+        expect(migrateSettings({ transportMode: 'acp' }).transportMode).toBe('acp');
+        expect(migrateSettings({ transportMode: 'print' }).transportMode).toBe('print');
+        expect(migrateSettings({ transportMode: 'weird' }).transportMode).toBe('print');
+        expect(migrateSettings({ transportMode: 1 }).transportMode).toBe('print');
+    });
+
+    it('should preserve acpPermissionMode when present (P1)', () => {
+        expect(migrateSettings({ acpPermissionMode: 'dontAsk' }).acpPermissionMode).toBe('dontAsk');
+        expect(migrateSettings({ acpPermissionMode: '' }).acpPermissionMode).toBe('acceptEdits');
+    });
 });
 
 describe('type helpers', () => {

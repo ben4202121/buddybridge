@@ -50,6 +50,10 @@ export interface BuddyBridgeSettings {
     vaultContextInjection: boolean;
     /** P2.8 已启用的官方技能名列表（发送时注入提示，引导模型优先使用） */
     enabledSkills: string[];
+    /** P1 传输方式：'print' 旧路径（每条消息 spawn 新进程）| 'acp' 常驻 ACP 进程（默认 print） */
+    transportMode: 'print' | 'acp';
+    /** P1 ACP 权限模式：--permission-mode 取值（default | acceptEdits | dontAsk | bypassPermissions，默认 acceptEdits） */
+    acpPermissionMode: string;
     version: number;
 }
 
@@ -66,8 +70,9 @@ export interface BuddyBridgeSettings {
  * - v8：v2.2.0 新增 fontSize（聊天区字体大小，px）
  * - v9：v2.3.0 新增 contextWindowSize（上下文窗口大小，token）
  * - v10：v2.4.0 新增 enabledSkills（已启用的官方技能名列表，P2.8）
+ * - v11：v2.5.0 新增 transportMode（print/acp 传输方式）+ acpPermissionMode（ACP 权限模式，P1）
  */
-const CURRENT_SETTINGS_VERSION = 10;
+const CURRENT_SETTINGS_VERSION = 11;
 
 /** 聊天区字体大小范围（px），与设置页滑块联动 */
 export const FONT_SIZE_MIN = 12;
@@ -95,6 +100,8 @@ export const DEFAULT_SETTINGS: BuddyBridgeSettings = {
     noteLinkInjection: true,
     vaultContextInjection: false,
     enabledSkills: [],
+    transportMode: 'print',
+    acpPermissionMode: 'acceptEdits',
     version: CURRENT_SETTINGS_VERSION
 };
 
@@ -160,6 +167,12 @@ export function migrateSettings(stored: unknown): BuddyBridgeSettings {
             .map((s) => s.trim())
         : [];
 
+    // P1 传输方式：只认 'print' | 'acp' 两值，其余回落到默认 print
+    const transportMode = stored.transportMode === 'acp' ? 'acp' : 'print';
+    // 权限模式：空串/缺失回落到默认（nullish 会放过空串，须用 || 兜底）
+    const acpPermissionMode = getString(stored, 'acpPermissionMode')
+        || DEFAULT_SETTINGS.acpPermissionMode;
+
     return {
         codebuddyPath: getString(stored, 'codebuddyPath') ?? DEFAULT_SETTINGS.codebuddyPath,
         maxConversations: typeof maxConversations === 'number' && maxConversations > 0
@@ -181,6 +194,8 @@ export function migrateSettings(stored: unknown): BuddyBridgeSettings {
         noteLinkInjection,
         vaultContextInjection,
         enabledSkills,
+        transportMode,
+        acpPermissionMode,
         version: CURRENT_SETTINGS_VERSION
     };
 }
