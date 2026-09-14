@@ -433,6 +433,8 @@ export class BuddyBridgeAPI {
     private transportMode: 'print' | 'acp' = 'print';
     /** P1 ACP --permission-mode（新连接生效） */
     private acpPermissionMode = 'acceptEdits';
+    /** P1 ACP --model（新连接生效；'auto' 不传，跟随 CLI 默认） */
+    private acpModel = 'auto';
     /** P1 常驻 ACP 会话管理器（懒初始化；切回 print 即销毁） */
     private acp: AcpSessionManager | null = null;
     /**
@@ -490,6 +492,12 @@ export class BuddyBridgeAPI {
         this.acp?.setPermissionMode(this.acpPermissionMode);
     }
 
+    /** 设置 ACP 默认模型（新连接生效；已存活的连接保持旧模型）。'auto' 不传 --model。 */
+    setAcpModel(model: string): void {
+        this.acpModel = model || 'auto';
+        this.acp?.setModel(this.acpModel);
+    }
+
     /** 销毁常驻 ACP 进程（Obsidian unload）。print 模式下为空操作。 */
     disposeAcp(): void {
         this.acp?.dispose();
@@ -513,6 +521,7 @@ export class BuddyBridgeAPI {
                     scriptPath: this.scriptPath,
                     nodePath: this.nodePath,
                     permissionMode: this.acpPermissionMode,
+                    model: this.acpModel,
                     timeoutMs: this.timeout,
                 });
             }

@@ -66,6 +66,56 @@ describe('BuddyBridgeAPI ACP 缝合（P1）', () => {
         api.disposeAcp();
     });
 
+    it('setAcpModel(hy3) → ACP spawn 参数含 --model hy3（端到端，v2.6.0）', async () => {
+        const { server, spawnMock } = createFakeAcp({
+            onRequest: (req, respond, emit) => {
+                switch (req.method) {
+                    case 'initialize': respond({ protocolVersion: 1 }); return;
+                    case 'session/new': respond({ sessionId: 'acp-model-uuid' }); return;
+                    case 'session/prompt': emit(sessionUpdate({ sessionUpdate: 'session_end' })); respond({}); return;
+                }
+            },
+        });
+        const api = new BuddyBridgeAPI(1000);
+        api.setCodebuddyPath('codebuddy');
+        api.setTransportMode('acp');
+        api.setAcpModel('hy3');
+        try {
+            for await (const _c of api.sendMessage('m-sess', 'hi', '/vault')) { /* drain */ }
+            const args = spawnMock.mock.calls[0][1] as string[];
+            expect(args[0]).toBe('--acp');
+            expect(args).toContain('--model');
+            expect(args[args.indexOf('--model') + 1]).toBe('hy3');
+        } finally {
+            api.disposeAcp();
+            server.restore();
+        }
+    });
+
+    it('setAcpModel("") → 回落 auto，spawn 不含 --model（端到端）', async () => {
+        const { server, spawnMock } = createFakeAcp({
+            onRequest: (req, respond, emit) => {
+                switch (req.method) {
+                    case 'initialize': respond({ protocolVersion: 1 }); return;
+                    case 'session/new': respond({ sessionId: 'acp-model-uuid' }); return;
+                    case 'session/prompt': emit(sessionUpdate({ sessionUpdate: 'session_end' })); respond({}); return;
+                }
+            },
+        });
+        const api = new BuddyBridgeAPI(1000);
+        api.setCodebuddyPath('codebuddy');
+        api.setTransportMode('acp');
+        api.setAcpModel('');
+        try {
+            for await (const _c of api.sendMessage('m-sess', 'hi', '/vault')) { /* drain */ }
+            const args = spawnMock.mock.calls[0][1] as string[];
+            expect(args).not.toContain('--model');
+        } finally {
+            api.disposeAcp();
+            server.restore();
+        }
+    });
+
     it('cancel(sessionId) 在 ACP 模式定向到 ACP 管理器（发 session/cancel，进程保留）', async () => {
         const { server } = acpServer();
         const api = new BuddyBridgeAPI(1000);

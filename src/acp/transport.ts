@@ -11,7 +11,7 @@
 
 import { spawn, type ChildProcess, type SpawnOptions } from 'child_process';
 import { getErrorMessage, isObject } from '../types';
-import { isBareFallback, isWindowsWrapper, needsWindowsShell } from '../api';
+import { isBareFallback, isWindowsWrapper, needsWindowsShell, escapeCmdArg } from '../api';
 
 export const INIT_TIMEOUT_MS = 10_000;
 export const INIT_MAX_ATTEMPTS = 3;
@@ -32,6 +32,8 @@ export interface AcpConnectionOptions {
     nodePath?: string;
     /** --permission-mode 取值：default | acceptEdits | dontAsk | bypassPermissions */
     permissionMode: string;
+    /** --model 取值：'auto'（不传，跟随 CLI 默认）| 具体模型 id */
+    model?: string;
     /** 工作目录（vault 根），作为会话 cwd 与文件操作基准 */
     cwd?: string;
     /** 单个请求超时（毫秒） */
@@ -73,16 +75,24 @@ export class AcpConnection {
     }
 
     private spawnProc(): void {
-        const { scriptPath, nodePath, permissionMode, cwd } = this.options;
+        const { scriptPath, nodePath, permissionMode, model, cwd } = this.options;
         const procOptions: SpawnOptions = { stdio: ['pipe', 'pipe', 'pipe'] };
         if (cwd) procOptions.cwd = cwd;
 
         const cliArgs = ['--acp', '--permission-mode', permissionMode];
+        // 模型切换（v2.6.0）：'auto' 不传 --model（跟随 CLI 默认）；显式 id 才加参数
+        if (model && model !== 'auto') cliArgs.push('--model', model);
         let proc: ChildProcess;
         if (isWindowsWrapper(scriptPath) || isBareFallback(scriptPath)) {
             if (needsWindowsShell(scriptPath)) {
-                // .cmd/.bat → cmd.exe 包装；参数为插件常量（无用户输入），无转义需求
+                // .cmd/.bat → cmd.exe 包装（shell:true）。permissionMode/model 是设置项
+                // 用户可控值（默认来自下拉的合法 id，但 settings 导入/手改 data.json 可注入
+                // cmd 元字符）——与 print 路径同款 P0.2 shell 转义，防 `&|><^"()%!` 注入。
+                // 值参数在 cliArgs 的奇数位（--permission-mode/--model 后的取值）。
                 procOptions.shell = true;
+                for (let i = 2; i < cliArgs.length; i += 2) {
+                    cliArgs[i] = escapeCmdArg(cliArgs[i]);
+                }
             }
             proc = spawn(scriptPath, cliArgs, procOptions);
         } else {

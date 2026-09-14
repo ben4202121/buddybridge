@@ -22,6 +22,7 @@ export default class BuddyBridgePlugin extends Plugin {
             this.api.setTimeoutMs(this.settings.timeoutSeconds * 1000);
             this.api.setTransportMode(this.settings.transportMode);
             this.api.setAcpPermissionMode(this.settings.acpPermissionMode);
+            this.api.setAcpModel(this.settings.defaultModel);
 
             // 注册聊天视图
             this.registerView(
@@ -156,9 +157,11 @@ export default class BuddyBridgePlugin extends Plugin {
         this.api.setTimeoutMs(this.settings.timeoutSeconds * 1000);
         this.api.setTransportMode(this.settings.transportMode);
         this.api.setAcpPermissionMode(this.settings.acpPermissionMode);
+        this.api.setAcpModel(this.settings.defaultModel);
         // 同步已打开的聊天面板（如最大对话数等即时生效的设置）
         if (this.chatView) {
             this.chatView.getManager().setMaxConversations(this.settings.maxConversations);
+            this.chatView.updateModelBar();
         }
         this.applyPrimaryColor();
         this.applyFontSize();
@@ -216,6 +219,9 @@ export default class BuddyBridgePlugin extends Plugin {
         this.api.setCodebuddyPath(this.settings.codebuddyPath);
         this.api.setNodePath(this.settings.nodePath);
         this.api.setTimeoutMs(this.settings.timeoutSeconds * 1000);
+        this.api.setTransportMode(this.settings.transportMode);
+        this.api.setAcpPermissionMode(this.settings.acpPermissionMode);
+        this.api.setAcpModel(this.settings.defaultModel);
         this.applyPrimaryColor();
         this.applyFontSize();
 

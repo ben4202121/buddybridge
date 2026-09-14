@@ -22,6 +22,8 @@ interface AcpHandle {
     acpUuid: string;
     /** 进程连接（exit 后置 null，由 ensureLive 重生） */
     conn: AcpConnection | null;
+    /** 该进程启动时用的 --model（newConnection 写入；模型变更后下轮据此重建进程） */
+    model?: string;
     /** 本轮是否通过 session/new 新建（done chunk 需写回 acpSessionId） */
     justCreated: boolean;
     /** 当前进行中的轮次事件接收槽（单会话单轮串行） */
@@ -39,6 +41,8 @@ export interface AcpSessionManagerOptions {
     nodePath?: string;
     /** --permission-mode：default | acceptEdits | dontAsk | bypassPermissions */
     permissionMode: string;
+    /** --model：'auto'（不传，跟随 CLI 默认）| 具体模型 id */
+    model?: string;
     /** 轮级请求超时（毫秒，沿用插件 timeoutSeconds） */
     timeoutMs: number;
 }
@@ -47,6 +51,8 @@ export class AcpSessionManager {
     private options: AcpSessionManagerOptions;
     /** 实时权限模式：设置项变更即时生效（新连接读取；已存活的连接保持旧值） */
     private permissionMode: string;
+    /** 实时默认模型：新连接读取；已存活的连接保持旧模型 */
+    private model: string;
     private handles = new Map<string, AcpHandle>();
     private cancelHandlers = new Map<string, () => void>();
     private disposed = false;
@@ -54,11 +60,17 @@ export class AcpSessionManager {
     constructor(options: AcpSessionManagerOptions) {
         this.options = options;
         this.permissionMode = options.permissionMode;
+        this.model = options.model ?? 'auto';
     }
 
     /** 更新权限模式：影响之后建立的新 ACP 连接（老进程/存活会话不受影响）。 */
     setPermissionMode(mode: string): void {
         this.permissionMode = mode;
+    }
+
+    /** 更新默认模型：下一条消息前生效（ensureLive 检测模型变更即重建进程 + session/load 续接）。 */
+    setModel(model: string): void {
+        this.model = model || 'auto';
     }
 
     /** 每会话并发/串行无关的外部取消入口（chat 停止按钮 → api.cancel → 此处）。 */
@@ -290,7 +302,9 @@ export class AcpSessionManager {
 
     /** 保证句柄的进程存活：已死 → 重生 + session/load 续接。 */
     private async ensureLive(handle: AcpHandle): Promise<void> {
-        if (handle.conn && handle.conn.isAlive()) return;
+        // 进程存活但模型已变 → 也重建（切换即全生效），session/load 续接不丢上下文。
+        const modelChanged = handle.model !== this.model;
+        if (handle.conn && handle.conn.isAlive() && !modelChanged) return;
 
         if (handle.conn) {
             handle.conn.stop();
@@ -326,11 +340,13 @@ export class AcpSessionManager {
 
     /** 每个进程绑定自己的 handle：事件/退出直接路由到该 handle，不做 cwd 匹配。 */
     private newConnection(handle: AcpHandle): AcpConnection {
+        handle.model = this.model;
         let conn: AcpConnection;
         conn = new AcpConnection({
             scriptPath: this.options.scriptPath,
             nodePath: this.options.nodePath,
             permissionMode: this.permissionMode,
+            model: this.model,
             cwd: handle.cwd,
             timeoutMs: this.options.timeoutMs,
             onSessionUpdate: (update: unknown) => {

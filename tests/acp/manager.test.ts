@@ -246,3 +246,135 @@ describe('AcpSessionManager 取消与自愈', () => {
         }
     });
 });
+
+describe('AcpSessionManager 模型传递（v2.6.0）', () => {
+    it('构造传 model → spawn 参数含 --model <id>', async () => {
+        const { server, spawnMock } = createFakeAcp({
+            onRequest: (req, respond) => {
+                switch (req.method) {
+                    case 'initialize': respond({ protocolVersion: 1 }); return;
+                    case 'session/new': respond({ sessionId: 'm-uuid' }); return;
+                    case 'session/prompt': emitEnd(server); respond({}); return;
+                }
+            },
+        });
+        const manager = new AcpSessionManager({
+            scriptPath: 'codebuddy',
+            permissionMode: 'acceptEdits',
+            model: 'hy3',
+            timeoutMs: 500,
+        });
+        try {
+            await drain(manager.sendMessage('sess-1', '你好', '/vault'));
+            const args = spawnMock.mock.calls[0][1] as string[];
+            expect(args).toContain('--model');
+            expect(args[args.indexOf('--model') + 1]).toBe('hy3');
+        } finally {
+            server.restore();
+            manager.dispose();
+        }
+    });
+
+    it('setModel 更新：下一条消息重建进程，用新模型 + session/load 续接（切换即全生效）', async () => {
+        const { server, spawnMock } = createFakeAcp({
+            onRequest: (req, respond) => {
+                switch (req.method) {
+                    case 'initialize': respond({ protocolVersion: 1 }); return;
+                    case 'session/new': respond({ sessionId: 'm-uuid' }); return;
+                    case 'session/load': respond({ sessionId: req.params.sessionId }); return;
+                    case 'session/prompt':
+                        emitEnd(server);
+                        respond({});
+                        return;
+                }
+            },
+        });
+        const manager = new AcpSessionManager({
+            scriptPath: 'codebuddy',
+            permissionMode: 'acceptEdits',
+            model: 'hy3',
+            timeoutMs: 500,
+        });
+        try {
+            // 第一轮：进程带 --model hy3，session/new 建会话
+            await drain(manager.sendMessage('sess-1', '第一轮', '/vault'));
+            const firstArgs = spawnMock.mock.calls[0][1] as string[];
+            expect(firstArgs[firstArgs.indexOf('--model') + 1]).toBe('hy3');
+
+            // 改模型：同会话下一条消息 → 进程重建，带新模型
+            manager.setModel('glm-5.3');
+            const spawnsBefore = spawnMock.mock.calls.length;
+            const chunks = await drain(manager.sendMessage('m-uuid', '第二轮', '/vault'));
+
+            // 重建：spawn 次数 +1，新 args 带新模型
+            expect(spawnMock.mock.calls.length).toBe(spawnsBefore + 1);
+            const lastArgs = spawnMock.mock.calls[spawnMock.mock.calls.length - 1][1] as string[];
+            expect(lastArgs[lastArgs.indexOf('--model') + 1]).toBe('glm-5.3');
+
+            // session/load 续接（非新建）→ done 不带 acpSessionId，load 带原 UUID
+            const done = chunks.find((c) => c.type === 'done');
+            expect(done && done.acpSessionId).toBeUndefined();
+            const loads = server.requests.filter((r) => r.method === 'session/load');
+            expect(loads.length).toBe(1);
+            expect((loads[0] as any).params.sessionId).toBe('m-uuid');
+        } finally {
+            server.restore();
+            manager.dispose();
+        }
+    });
+
+    it("setModel('') / setModel(undefined) → 回落 auto，spawn 不含 --model", async () => {
+        const { server, spawnMock } = createFakeAcp({
+            onRequest: (req, respond) => {
+                switch (req.method) {
+                    case 'initialize': respond({ protocolVersion: 1 }); return;
+                    case 'session/new': respond({ sessionId: 'm-uuid' }); return;
+                    case 'session/prompt': emitEnd(server); respond({}); return;
+                }
+            },
+        });
+        const manager = new AcpSessionManager({
+            scriptPath: 'codebuddy',
+            permissionMode: 'acceptEdits',
+            timeoutMs: 500,
+        });
+        try {
+            await drain(manager.sendMessage('sess-1', '你好', '/vault'));
+            expect((spawnMock.mock.calls[0][1] as string[])).not.toContain('--model');
+
+            // 设空 → 回落 auto，进程死后重生仍不带 --model
+            manager.setModel('');
+            server.exit(1);
+            await drain(manager.sendMessage('m-uuid', '再来', '/vault'));
+            expect((spawnMock.mock.calls[spawnMock.mock.calls.length - 1][1] as string[])).not.toContain('--model');
+        } finally {
+            server.restore();
+            manager.dispose();
+        }
+    });
+
+    it("model 未传 → spawn 参数不含 --model（跟随 CLI 默认）", async () => {
+        const { server, spawnMock } = createFakeAcp({
+            onRequest: (req, respond) => {
+                switch (req.method) {
+                    case 'initialize': respond({ protocolVersion: 1 }); return;
+                    case 'session/new': respond({ sessionId: 'm-uuid' }); return;
+                    case 'session/prompt': emitEnd(server); respond({}); return;
+                }
+            },
+        });
+        const manager = new AcpSessionManager({
+            scriptPath: 'codebuddy',
+            permissionMode: 'acceptEdits',
+            timeoutMs: 500,
+        });
+        try {
+            await drain(manager.sendMessage('sess-1', '你好', '/vault'));
+            const args = spawnMock.mock.calls[0][1] as string[];
+            expect(args).not.toContain('--model');
+        } finally {
+            server.restore();
+            manager.dispose();
+        }
+    });
+});

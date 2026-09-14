@@ -1,10 +1,11 @@
-import { App, PluginSettingTab, Setting, Notice } from 'obsidian';
+import { App, PluginSettingTab, Setting, Notice, DropdownComponent } from 'obsidian';
 import type BuddyBridgePlugin from '../main';
 import { DEFAULT_SETTINGS, FONT_SIZE_MIN, FONT_SIZE_MAX, CONTEXT_WINDOW_MIN, CONTEXT_WINDOW_MAX, getErrorMessage } from '../types';
 import { parseExport, downloadJSONFile, pickAndReadJSONFile } from '../io';
 import { ConfirmModal } from './confirm';
 import { t, tF } from '../i18n';
 import { detectInstalledSkills, readOfficialMarketplace, type OfficialPlugin, type InstalledSkill } from '../skills';
+import { getModelCatalog, type ModelInfo } from '../models';
 
 export class BuddyBridgeSettingTab extends PluginSettingTab {
     plugin: BuddyBridgePlugin;
@@ -91,6 +92,20 @@ export class BuddyBridgeSettingTab extends PluginSettingTab {
                         plugin.settings.acpPermissionMode = value;
                         await plugin.saveSettings();
                     });
+            });
+
+        // 默认模型（v2.6.0 模型切换）：选项异步填充（免费模型自动识别）
+        new Setting(containerEl)
+            .setName(t('settings.modelName'))
+            .setDesc(t('settings.modelDesc'))
+            .addDropdown((dd) => {
+                dd.addOption('auto', t('settings.modelAuto'));
+                dd.setValue(plugin.settings.defaultModel || 'auto')
+                    .onChange(async (value) => {
+                        plugin.settings.defaultModel = value;
+                        await plugin.saveSettings();
+                    });
+                void this.renderModelOptions(dd, plugin);
             });
 
         // ==================== 上下文注入 ====================
@@ -250,6 +265,25 @@ export class BuddyBridgeSettingTab extends PluginSettingTab {
                         }
                     ).open();
                 }));
+    }
+
+    /**
+     * 默认模型下拉：异步填充模型目录（免费模型加「免费」标注）。
+     * getModelCatalog 内部已保证不抛（读取失败回退静态清单），故无需 try/catch。
+     */
+    private async renderModelOptions(dd: DropdownComponent, plugin: BuddyBridgePlugin): Promise<void> {
+        const models = await getModelCatalog();
+        for (const m of models) {
+            const label = m.free ? `${m.name} · ${t('settings.modelFree')}` : m.name;
+            dd.addOption(m.id, label);
+        }
+        // 已保存值可能落在延迟填充的选项上（如默认即某个模型 id）：
+        // 异步填充完成后重设选中，避免下拉显示空白。若保存值不在目录中
+        // （例如手改 data.json / 导入的旧值），下拉保持当前选中不变、设置不被动。
+        const saved = plugin.settings.defaultModel || 'auto';
+        if (models.some((m) => m.id === saved) || saved === 'auto') {
+            dd.setValue(saved);
+        }
     }
 
     /** 已安装技能列表：刷新探测 + 勾选启用（P2.8）。 */

@@ -149,6 +149,22 @@ describe('migrateSettings', () => {
         expect(migrateSettings({ acpPermissionMode: 'dontAsk' }).acpPermissionMode).toBe('dontAsk');
         expect(migrateSettings({ acpPermissionMode: '' }).acpPermissionMode).toBe('acceptEdits');
     });
+
+    it('should default defaultModel to auto when missing (v2.6.0)', () => {
+        expect(migrateSettings({}).defaultModel).toBe('auto');
+        expect(migrateSettings({ transportMode: 'acp' }).defaultModel).toBe('auto');
+    });
+
+    it('should preserve defaultModel when valid string', () => {
+        expect(migrateSettings({ defaultModel: 'hy3' }).defaultModel).toBe('hy3');
+        expect(migrateSettings({ defaultModel: 'deepseek-v4-flash' }).defaultModel).toBe('deepseek-v4-flash');
+    });
+
+    it('should fall back to auto when defaultModel is blank / invalid', () => {
+        expect(migrateSettings({ defaultModel: '' }).defaultModel).toBe('auto');
+        expect(migrateSettings({ defaultModel: '   ' }).defaultModel).toBe('auto');
+        expect(migrateSettings({ defaultModel: 42 }).defaultModel).toBe('auto');
+    });
 });
 
 describe('type helpers', () => {

@@ -45,7 +45,7 @@ var path = __toESM(require("path"));
 var fs = __toESM(require("fs"));
 
 // src/types.ts
-var CURRENT_SETTINGS_VERSION = 11;
+var CURRENT_SETTINGS_VERSION = 12;
 var FONT_SIZE_MIN = 12;
 var FONT_SIZE_MAX = 18;
 var CONTEXT_WINDOW_MIN = 1e3;
@@ -64,6 +64,7 @@ var DEFAULT_SETTINGS = {
   enabledSkills: [],
   transportMode: "print",
   acpPermissionMode: "acceptEdits",
+  defaultModel: "auto",
   version: CURRENT_SETTINGS_VERSION
 };
 function isObject(value) {
@@ -87,7 +88,7 @@ function getErrorMessage(error) {
   return "\u672A\u77E5\u9519\u8BEF";
 }
 function migrateSettings(stored) {
-  var _a;
+  var _a, _b;
   if (!isObject(stored)) {
     return { ...DEFAULT_SETTINGS };
   }
@@ -102,8 +103,9 @@ function migrateSettings(stored) {
   const enabledSkills = Array.isArray(stored.enabledSkills) ? stored.enabledSkills.filter((s) => typeof s === "string" && s.trim().length > 0).map((s) => s.trim()) : [];
   const transportMode = stored.transportMode === "acp" ? "acp" : "print";
   const acpPermissionMode = getString(stored, "acpPermissionMode") || DEFAULT_SETTINGS.acpPermissionMode;
+  const defaultModel = ((_a = getString(stored, "defaultModel")) == null ? void 0 : _a.trim()) || DEFAULT_SETTINGS.defaultModel;
   return {
-    codebuddyPath: (_a = getString(stored, "codebuddyPath")) != null ? _a : DEFAULT_SETTINGS.codebuddyPath,
+    codebuddyPath: (_b = getString(stored, "codebuddyPath")) != null ? _b : DEFAULT_SETTINGS.codebuddyPath,
     maxConversations: typeof maxConversations === "number" && maxConversations > 0 ? maxConversations : DEFAULT_SETTINGS.maxConversations,
     primaryColor: primaryColor != null ? primaryColor : DEFAULT_SETTINGS.primaryColor,
     fontSize: typeof fontSize === "number" && fontSize >= FONT_SIZE_MIN && fontSize <= FONT_SIZE_MAX ? fontSize : DEFAULT_SETTINGS.fontSize,
@@ -115,6 +117,7 @@ function migrateSettings(stored) {
     enabledSkills,
     transportMode,
     acpPermissionMode,
+    defaultModel,
     version: CURRENT_SETTINGS_VERSION
   };
 }
@@ -194,15 +197,20 @@ var AcpConnection = class {
   }
   spawnProc() {
     var _a, _b;
-    const { scriptPath, nodePath, permissionMode, cwd } = this.options;
+    const { scriptPath, nodePath, permissionMode, model, cwd } = this.options;
     const procOptions = { stdio: ["pipe", "pipe", "pipe"] };
     if (cwd)
       procOptions.cwd = cwd;
     const cliArgs = ["--acp", "--permission-mode", permissionMode];
+    if (model && model !== "auto")
+      cliArgs.push("--model", model);
     let proc;
     if (isWindowsWrapper(scriptPath) || isBareFallback(scriptPath)) {
       if (needsWindowsShell(scriptPath)) {
         procOptions.shell = true;
+        for (let i = 2; i < cliArgs.length; i += 2) {
+          cliArgs[i] = escapeCmdArg(cliArgs[i]);
+        }
       }
       proc = (0, import_child_process.spawn)(scriptPath, cliArgs, procOptions);
     } else {
@@ -457,12 +465,18 @@ var AcpSessionManager = class {
     this.handles = /* @__PURE__ */ new Map();
     this.cancelHandlers = /* @__PURE__ */ new Map();
     this.disposed = false;
+    var _a;
     this.options = options;
     this.permissionMode = options.permissionMode;
+    this.model = (_a = options.model) != null ? _a : "auto";
   }
   /** 更新权限模式：影响之后建立的新 ACP 连接（老进程/存活会话不受影响）。 */
   setPermissionMode(mode) {
     this.permissionMode = mode;
+  }
+  /** 更新默认模型：下一条消息前生效（ensureLive 检测模型变更即重建进程 + session/load 续接）。 */
+  setModel(model) {
+    this.model = model || "auto";
   }
   /** 每会话并发/串行无关的外部取消入口（chat 停止按钮 → api.cancel → 此处）。 */
   cancel(sessionId) {
@@ -682,7 +696,8 @@ var AcpSessionManager = class {
   /** 保证句柄的进程存活：已死 → 重生 + session/load 续接。 */
   async ensureLive(handle) {
     var _a, _b, _c;
-    if (handle.conn && handle.conn.isAlive())
+    const modelChanged = handle.model !== this.model;
+    if (handle.conn && handle.conn.isAlive() && !modelChanged)
       return;
     if (handle.conn) {
       handle.conn.stop();
@@ -714,11 +729,13 @@ var AcpSessionManager = class {
   }
   /** 每个进程绑定自己的 handle：事件/退出直接路由到该 handle，不做 cwd 匹配。 */
   newConnection(handle) {
+    handle.model = this.model;
     let conn;
     conn = new AcpConnection({
       scriptPath: this.options.scriptPath,
       nodePath: this.options.nodePath,
       permissionMode: this.permissionMode,
+      model: this.model,
       cwd: handle.cwd,
       timeoutMs: this.options.timeoutMs,
       onSessionUpdate: (update) => {
@@ -1073,6 +1090,8 @@ var BuddyBridgeAPI = class {
     this.transportMode = "print";
     /** P1 ACP --permission-mode（新连接生效） */
     this.acpPermissionMode = "acceptEdits";
+    /** P1 ACP --model（新连接生效；'auto' 不传，跟随 CLI 默认） */
+    this.acpModel = "auto";
     /** P1 常驻 ACP 会话管理器（懒初始化；切回 print 即销毁） */
     this.acp = null;
     /**
@@ -1120,6 +1139,12 @@ var BuddyBridgeAPI = class {
     this.acpPermissionMode = mode || "acceptEdits";
     (_a = this.acp) == null ? void 0 : _a.setPermissionMode(this.acpPermissionMode);
   }
+  /** 设置 ACP 默认模型（新连接生效；已存活的连接保持旧模型）。'auto' 不传 --model。 */
+  setAcpModel(model) {
+    var _a;
+    this.acpModel = model || "auto";
+    (_a = this.acp) == null ? void 0 : _a.setModel(this.acpModel);
+  }
   /** 销毁常驻 ACP 进程（Obsidian unload）。print 模式下为空操作。 */
   disposeAcp() {
     var _a;
@@ -1141,6 +1166,7 @@ var BuddyBridgeAPI = class {
           scriptPath: this.scriptPath,
           nodePath: this.nodePath,
           permissionMode: this.acpPermissionMode,
+          model: this.acpModel,
           timeoutMs: this.timeout
         });
       }
@@ -1730,6 +1756,10 @@ var ZH = {
   "settings.permissionAcceptEdits": "acceptEdits\uFF08\u6587\u4EF6\u7F16\u8F91\u514D\u786E\u8BA4\uFF09",
   "settings.permissionDontAsk": "dontAsk\uFF08\u81EA\u52A8\u6267\u884C\uFF09",
   "settings.permissionBypass": "bypassPermissions\uFF08\u7ED5\u8FC7\u5168\u90E8\uFF09",
+  "settings.modelName": "\u9ED8\u8BA4\u6A21\u578B",
+  "settings.modelDesc": "\u4EC5 ACP \u4F20\u8F93\u751F\u6548\uFF0C\u4E0B\u4E00\u6761\u6D88\u606F\u524D\u81EA\u52A8\u5207\u6362\uFF08\u91CD\u5EFA\u8FDB\u7A0B\u5E76\u7EED\u63A5\u4E0A\u4E0B\u6587\uFF0C\u4E0D\u4E22\u5386\u53F2\uFF09\uFF1B\u514D\u8D39\u6A21\u578B\u81EA\u52A8\u8BC6\u522B\uFF08\u5982 hy3 / hy4\uFF09\u3002\u300C\u8DDF\u968F CLI \u9ED8\u8BA4\u300D\u5219\u4E0D\u4F20 --model\u3002",
+  "settings.modelAuto": "\u8DDF\u968F CLI \u9ED8\u8BA4",
+  "settings.modelFree": "\u514D\u8D39",
   "tab.heading.injection": "\u4E0A\u4E0B\u6587\u6CE8\u5165",
   "settings.noteLinkName": "\u6CE8\u5165\u5F53\u524D\u7B14\u8BB0\u94FE\u63A5",
   "settings.noteLinkDesc": "\u53D1\u9001\u6D88\u606F\u65F6\u81EA\u52A8\u5728\u6D88\u606F\u524D\u9644\u52A0 {marker}\uFF0C\u8BA9 AI \u77E5\u9053\u4F60\u5728\u770B\u54EA\u4E2A\u7B14\u8BB0\uFF08\u9ED8\u8BA4\u5F00\u542F\uFF09",
@@ -1876,6 +1906,10 @@ var EN = {
   "settings.permissionAcceptEdits": "acceptEdits (file edits auto-approved)",
   "settings.permissionDontAsk": "dontAsk (auto-run all)",
   "settings.permissionBypass": "bypassPermissions (bypass all)",
+  "settings.modelName": "Default model",
+  "settings.modelDesc": 'Applies to ACP only; takes effect before your next message (the process restarts and resumes context, no history lost). Free models auto-detected (e.g. hy3 / hy4); "Follow CLI default" passes no --model.',
+  "settings.modelAuto": "Follow CLI default",
+  "settings.modelFree": "Free",
   "tab.heading.injection": "Context injection",
   "settings.noteLinkName": "Inject current note link",
   "settings.noteLinkDesc": "Prepend {marker} to messages so the AI knows which note you are viewing (default on)",
@@ -2123,6 +2157,108 @@ function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+// src/models.ts
+var import_os2 = require("os");
+var import_path2 = require("path");
+var import_promises2 = require("fs/promises");
+var STATIC_MODEL_IDS = [
+  "hy4-preview",
+  "hy3",
+  "hy3-x",
+  "glm-5.3",
+  "glm-5.3-flash",
+  "glm-5.2",
+  "glm-5.1",
+  "glm-5v-turbo",
+  "minimax-m3",
+  "minimax-m2.7",
+  "kimi-k3-1",
+  "kimi-k2.7",
+  "kimi-k2.6",
+  "deepseek-v4-pro",
+  "deepseek-v4-flash"
+];
+function localStorageDir(homeDir = (0, import_os2.homedir)()) {
+  return (0, import_path2.join)(homeDir, ".codebuddy", "local_storage");
+}
+async function getModelCatalog(homeDir = (0, import_os2.homedir)()) {
+  try {
+    const dir = localStorageDir(homeDir);
+    const entries = await (0, import_promises2.readdir)(dir, { withFileTypes: true });
+    const files = entries.filter((e) => e.isFile() && e.name.startsWith("entry_") && e.name.endsWith(".info")).map((e) => e.name).sort();
+    for (const name of files) {
+      const catalog = await parseCatalogFile((0, import_path2.join)(dir, name));
+      if (catalog)
+        return catalog;
+    }
+  } catch (e) {
+  }
+  return staticCatalog();
+}
+async function parseCatalogFile(filePath) {
+  let raw;
+  try {
+    const text = await (0, import_promises2.readFile)(filePath, "utf-8");
+    raw = JSON.parse(text);
+  } catch (e) {
+    return null;
+  }
+  if (!Array.isArray(raw) || raw.length === 0 || !isRecord2(raw[0]))
+    return null;
+  const data = raw[0]["data"];
+  if (!isRecord2(data))
+    return null;
+  const agents = data["agents"];
+  let agentIds = [];
+  if (Array.isArray(agents)) {
+    for (const a of agents) {
+      if (isRecord2(a) && Array.isArray(a["models"]) && a["models"].length > 0) {
+        agentIds = a["models"].filter((m) => typeof m === "string");
+        break;
+      }
+    }
+  }
+  if (agentIds.length === 0)
+    return null;
+  const meta = /* @__PURE__ */ new Map();
+  const models = data["models"];
+  if (Array.isArray(models)) {
+    for (const m of models) {
+      if (!isRecord2(m) || typeof m["id"] !== "string")
+        continue;
+      meta.set(m["id"], {
+        name: typeof m["name"] === "string" ? m["name"] : void 0,
+        credits: typeof m["credits"] === "string" ? m["credits"] : void 0
+      });
+    }
+  }
+  const out = agentIds.map((id) => {
+    const info = meta.get(id);
+    const free = parseCredits(info == null ? void 0 : info.credits) === 0;
+    return { id, name: (info == null ? void 0 : info.name) || id, free };
+  });
+  return out.length > 0 ? out : null;
+}
+function parseCredits(credits) {
+  if (!credits)
+    return void 0;
+  const m = /([\d.]+)/.exec(credits);
+  if (!m)
+    return void 0;
+  const n = parseFloat(m[1]);
+  return Number.isFinite(n) ? n : void 0;
+}
+function modelDisplayName(model, catalog) {
+  const info = catalog.find((m) => m.id === model);
+  return info ? { name: info.name || info.id, free: info.free } : { name: model, free: false };
+}
+function staticCatalog() {
+  return STATIC_MODEL_IDS.map((id) => ({ id, name: id, free: false }));
+}
+function isRecord2(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 // src/chat/queue.ts
 var SendQueue = class {
   constructor() {
@@ -2245,6 +2381,8 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
     super(leaf);
     /** 最近一轮的 token 用量（P2.5 上下文用量显示）；由流式 assistant 信封的 message.usage 实时更新。 */
     this.currentUsage = null;
+    /** 模型目录缓存（懒加载一次；面板重开时重置刷新）。 */
+    this.modelCatalog = null;
     /** 各会话当前流式中的 assistant 消息 id（convId → msgId）；多会话各自一条流，互不串窗。 */
     this.streamingMsgIds = /* @__PURE__ */ new Map();
     /** 各会话的停止请求（convId）：只影响该会话当前这条流，队列保留继续。 */
@@ -2378,6 +2516,9 @@ ${final.slice(final.length - MAX_CMD_PROMPT_CHARS)}`;
     (0, import_obsidian.setIcon)(newBtn, "plus");
     newBtn.onclick = () => this.createNewChat();
     this.attachBar = container.createDiv({ cls: "buddybridge-attach-bar buddybridge-hidden" });
+    this.modelCatalog = null;
+    this.modelBar = container.createDiv({ cls: "buddybridge-model-bar" });
+    this.updateModelBar();
     this.currentFileBar = container.createDiv({ cls: "buddybridge-current-file" });
     this.currentFilePath = this.getCurrentFilePath();
     this.updateCurrentFileBar();
@@ -2530,6 +2671,7 @@ ${final.slice(final.length - MAX_CMD_PROMPT_CHARS)}`;
     }
   }
   async renderMessages() {
+    this.updateModelBar();
     this.messageContainer.empty();
     this.renderAttachBar();
     const conv = this.manager.getActive();
@@ -3456,6 +3598,29 @@ ${base}` : base);
       this.currentFileBar.setText("");
     }
   }
+  /** 刷新「当前模型」指示器（v2.6.0，public 供 main.ts 设置保存后调用）。 */
+  updateModelBar() {
+    var _a;
+    if (!this.modelBar)
+      return;
+    const model = ((_a = this.pluginSettings) == null ? void 0 : _a.defaultModel) || "auto";
+    void this.renderModelBar(model);
+  }
+  /** 渲染模型名：auto → 跟随 CLI 默认；具体 id → 目录名 + 免费标注。 */
+  async renderModelBar(model) {
+    if (model === "auto") {
+      this.modelBar.setText(`\u{1F916} ${t("settings.modelAuto")}`);
+      this.modelBar.setAttr("aria-label", t("settings.modelAuto"));
+      return;
+    }
+    if (!this.modelCatalog) {
+      this.modelCatalog = await getModelCatalog();
+    }
+    const { name, free } = modelDisplayName(model, this.modelCatalog);
+    const label = free ? `\u{1F916} ${name} \xB7 ${t("settings.modelFree")}` : `\u{1F916} ${name}`;
+    this.modelBar.setText(label);
+    this.modelBar.setAttr("aria-label", free ? `${name}\uFF08${t("settings.modelFree")}\uFF09` : name);
+  }
   scrollToBottom() {
     this.messageContainer.scrollTop = this.messageContainer.scrollHeight;
   }
@@ -3539,6 +3704,14 @@ var BuddyBridgeSettingTab = class extends import_obsidian3.PluginSettingTab {
         await plugin.saveSettings();
       });
     });
+    new import_obsidian3.Setting(containerEl).setName(t("settings.modelName")).setDesc(t("settings.modelDesc")).addDropdown((dd) => {
+      dd.addOption("auto", t("settings.modelAuto"));
+      dd.setValue(plugin.settings.defaultModel || "auto").onChange(async (value) => {
+        plugin.settings.defaultModel = value;
+        await plugin.saveSettings();
+      });
+      void this.renderModelOptions(dd, plugin);
+    });
     new import_obsidian3.Setting(containerEl).setName(t("tab.heading.injection")).setHeading();
     const noteMarker = tF("marker.currentNote", { path: t("settings.pathExample") });
     const vaultMarker = tF("marker.vault", { path: t("settings.pathExample") });
@@ -3613,6 +3786,21 @@ var BuddyBridgeSettingTab = class extends import_obsidian3.PluginSettingTab {
         }
       ).open();
     }));
+  }
+  /**
+   * 默认模型下拉：异步填充模型目录（免费模型加「免费」标注）。
+   * getModelCatalog 内部已保证不抛（读取失败回退静态清单），故无需 try/catch。
+   */
+  async renderModelOptions(dd, plugin) {
+    const models = await getModelCatalog();
+    for (const m of models) {
+      const label = m.free ? `${m.name} \xB7 ${t("settings.modelFree")}` : m.name;
+      dd.addOption(m.id, label);
+    }
+    const saved = plugin.settings.defaultModel || "auto";
+    if (models.some((m) => m.id === saved) || saved === "auto") {
+      dd.setValue(saved);
+    }
   }
   /** 已安装技能列表：刷新探测 + 勾选启用（P2.8）。 */
   async renderInstalledSkills(container, plugin) {
@@ -3855,6 +4043,7 @@ var BuddyBridgePlugin = class extends import_obsidian4.Plugin {
       this.api.setTimeoutMs(this.settings.timeoutSeconds * 1e3);
       this.api.setTransportMode(this.settings.transportMode);
       this.api.setAcpPermissionMode(this.settings.acpPermissionMode);
+      this.api.setAcpModel(this.settings.defaultModel);
       this.registerView(
         VIEW_TYPE_CHAT,
         (leaf) => {
@@ -3962,8 +4151,10 @@ var BuddyBridgePlugin = class extends import_obsidian4.Plugin {
     this.api.setTimeoutMs(this.settings.timeoutSeconds * 1e3);
     this.api.setTransportMode(this.settings.transportMode);
     this.api.setAcpPermissionMode(this.settings.acpPermissionMode);
+    this.api.setAcpModel(this.settings.defaultModel);
     if (this.chatView) {
       this.chatView.getManager().setMaxConversations(this.settings.maxConversations);
+      this.chatView.updateModelBar();
     }
     this.applyPrimaryColor();
     this.applyFontSize();
@@ -4018,6 +4209,9 @@ var BuddyBridgePlugin = class extends import_obsidian4.Plugin {
     this.api.setCodebuddyPath(this.settings.codebuddyPath);
     this.api.setNodePath(this.settings.nodePath);
     this.api.setTimeoutMs(this.settings.timeoutSeconds * 1e3);
+    this.api.setTransportMode(this.settings.transportMode);
+    this.api.setAcpPermissionMode(this.settings.acpPermissionMode);
+    this.api.setAcpModel(this.settings.defaultModel);
     this.applyPrimaryColor();
     this.applyFontSize();
     if (this.chatView) {

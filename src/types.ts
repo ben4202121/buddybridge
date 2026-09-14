@@ -54,6 +54,8 @@ export interface BuddyBridgeSettings {
     transportMode: 'print' | 'acp';
     /** P1 ACP 权限模式：--permission-mode 取值（default | acceptEdits | dontAsk | bypassPermissions，默认 acceptEdits） */
     acpPermissionMode: string;
+    /** P1 默认模型：'auto' 跟随 CLI 默认（不传 --model）| 具体模型 id（仅 ACP 传输生效，新连接应用） */
+    defaultModel: string;
     version: number;
 }
 
@@ -71,8 +73,9 @@ export interface BuddyBridgeSettings {
  * - v9：v2.3.0 新增 contextWindowSize（上下文窗口大小，token）
  * - v10：v2.4.0 新增 enabledSkills（已启用的官方技能名列表，P2.8）
  * - v11：v2.5.0 新增 transportMode（print/acp 传输方式）+ acpPermissionMode（ACP 权限模式，P1）
+ * - v12：v2.6.0 新增 defaultModel（默认模型，ACP 模式生效，模型切换）
  */
-const CURRENT_SETTINGS_VERSION = 11;
+const CURRENT_SETTINGS_VERSION = 12;
 
 /** 聊天区字体大小范围（px），与设置页滑块联动 */
 export const FONT_SIZE_MIN = 12;
@@ -102,6 +105,7 @@ export const DEFAULT_SETTINGS: BuddyBridgeSettings = {
     enabledSkills: [],
     transportMode: 'print',
     acpPermissionMode: 'acceptEdits',
+    defaultModel: 'auto',
     version: CURRENT_SETTINGS_VERSION
 };
 
@@ -172,6 +176,9 @@ export function migrateSettings(stored: unknown): BuddyBridgeSettings {
     // 权限模式：空串/缺失回落到默认（nullish 会放过空串，须用 || 兜底）
     const acpPermissionMode = getString(stored, 'acpPermissionMode')
         || DEFAULT_SETTINGS.acpPermissionMode;
+    // P1 默认模型：非空字符串保留，否则回落 'auto'（跟随 CLI 默认）
+    const defaultModel = getString(stored, 'defaultModel')?.trim()
+        || DEFAULT_SETTINGS.defaultModel;
 
     return {
         codebuddyPath: getString(stored, 'codebuddyPath') ?? DEFAULT_SETTINGS.codebuddyPath,
@@ -196,6 +203,7 @@ export function migrateSettings(stored: unknown): BuddyBridgeSettings {
         enabledSkills,
         transportMode,
         acpPermissionMode,
+        defaultModel,
         version: CURRENT_SETTINGS_VERSION
     };
 }

@@ -6,6 +6,7 @@ import { getErrorMessage, DEFAULT_SETTINGS, type Conversation, ChatMessage, Mess
 import { buildPromptContext, buildDedupedPrompt, encodeLineSeparators, type PromptContextState, type AttachedFile } from '../context';
 import { buildSkillInjection } from '../skills';
 import { t, tF } from '../i18n';
+import { getModelCatalog, modelDisplayName, type ModelInfo } from '../models';
 import { SendQueue, type QueueItem } from '../chat/queue';
 import { isGatewayEmptyStream } from '../chat/failure';
 
@@ -59,6 +60,10 @@ export class BuddyBridgeChatView extends ItemView {
     private usageLabel!: HTMLElement;
     private tabBar!: HTMLElement;
     private currentFileBar!: HTMLElement;
+    /** 顶部「当前模型」指示器（v2.6.0）：从设置 defaultModel 读，不靠模型自报。 */
+    private modelBar!: HTMLElement;
+    /** 模型目录缓存（懒加载一次；面板重开时重置刷新）。 */
+    private modelCatalog: ModelInfo[] | null = null;
     /** P2.4 当前会话附加文件 chip 条 */
     private attachBar!: HTMLElement;
     private commandDropdown!: HTMLElement | null;
@@ -208,6 +213,11 @@ export class BuddyBridgeChatView extends ItemView {
 
         // P2.4 附加文件 chip 条（当前会话；renderAttachBar 按需显示/隐藏）
         this.attachBar = container.createDiv({ cls: 'buddybridge-attach-bar buddybridge-hidden' });
+
+        // 当前模型指示器（v2.6.0）：从 --model 参数读，不靠模型自报
+        this.modelCatalog = null;
+        this.modelBar = container.createDiv({ cls: 'buddybridge-model-bar' });
+        this.updateModelBar();
 
         // 当前文件指示器
         this.currentFileBar = container.createDiv({ cls: 'buddybridge-current-file' });
@@ -401,6 +411,8 @@ export class BuddyBridgeChatView extends ItemView {
     }
 
     async renderMessages() {
+        // 兜底刷新模型指示器（覆盖切换会话 / 加载 / 导入等渲染路径；改设置由 main.ts 立即触发）
+        this.updateModelBar();
         this.messageContainer.empty();
         // P2.4 随消息渲染刷新附加文件 chip 条（覆盖加载 / 新建 / 切换 / 删除会话各入口）
         this.renderAttachBar();
@@ -1420,6 +1432,29 @@ export class BuddyBridgeChatView extends ItemView {
         } else {
             this.currentFileBar.setText('');
         }
+    }
+
+    /** 刷新「当前模型」指示器（v2.6.0，public 供 main.ts 设置保存后调用）。 */
+    updateModelBar(): void {
+        if (!this.modelBar) return;
+        const model = this.pluginSettings?.defaultModel || 'auto';
+        void this.renderModelBar(model);
+    }
+
+    /** 渲染模型名：auto → 跟随 CLI 默认；具体 id → 目录名 + 免费标注。 */
+    private async renderModelBar(model: string): Promise<void> {
+        if (model === 'auto') {
+            this.modelBar.setText(`🤖 ${t('settings.modelAuto')}`);
+            this.modelBar.setAttr('aria-label', t('settings.modelAuto'));
+            return;
+        }
+        if (!this.modelCatalog) {
+            this.modelCatalog = await getModelCatalog();
+        }
+        const { name, free } = modelDisplayName(model, this.modelCatalog);
+        const label = free ? `🤖 ${name} · ${t('settings.modelFree')}` : `🤖 ${name}`;
+        this.modelBar.setText(label);
+        this.modelBar.setAttr('aria-label', free ? `${name}（${t('settings.modelFree')}）` : name);
     }
 
     private scrollToBottom() {
