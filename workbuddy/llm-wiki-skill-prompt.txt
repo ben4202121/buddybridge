@@ -1,6 +1,6 @@
 # LLM Wiki 知识库技能
 # 授权完成后，将此文档内容发送给 WorkBuddy / CodeBuddy。
-# 之后在 Obsidian 的 BuddyBridge 中直接使用 /init /ingest /query /lint 命令。
+# 之后在 Obsidian 的 BuddyBridge 中直接使用 /wiki-init /wiki-ingest /wiki-query /wiki-lint 命令。
 
 ---
 
@@ -17,7 +17,7 @@
 
 ## 命令
 
-### /init
+### /wiki-init
 
 初始化 wiki 目录结构。
 
@@ -74,12 +74,12 @@
 >
 > 目录结构已创建。接下来：
 > 1. 将待摄入的 .md 文件放入 raw/01-articles/（或 02-papers/、03-transcripts/）
-> 2. 发送 /ingest 开始摄入
-> 3. 随时用 /query <问题> 查询知识库
+> 2. 发送 /wiki-ingest 开始摄入
+> 3. 随时用 /wiki-query <问题> 查询知识库
 
 ---
 
-### /ingest [路径]
+### /wiki-ingest [路径]
 
 将 raw/ 中的原始资料摄入为 wiki 页面。
 
@@ -127,7 +127,7 @@ last_updated: 2026-06-16
 
 ---
 
-### /query <问题>
+### /wiki-query <问题>
 
 用知识库回答问题。
 
@@ -144,7 +144,7 @@ last_updated: 2026-06-16
 
 ---
 
-### /lint
+### /wiki-lint
 
 知识库健康检查。
 

@@ -165,6 +165,20 @@ describe('migrateSettings', () => {
         expect(migrateSettings({ defaultModel: '   ' }).defaultModel).toBe('auto');
         expect(migrateSettings({ defaultModel: 42 }).defaultModel).toBe('auto');
     });
+
+    it('should default llmWikiEnabled to false when missing (P3)', () => {
+        expect(migrateSettings({}).llmWikiEnabled).toBe(false);
+    });
+
+    it('should preserve llmWikiEnabled boolean (P3)', () => {
+        expect(migrateSettings({ llmWikiEnabled: true }).llmWikiEnabled).toBe(true);
+        expect(migrateSettings({ llmWikiEnabled: false }).llmWikiEnabled).toBe(false);
+    });
+
+    it('should treat non-boolean llmWikiEnabled as default false (P3)', () => {
+        expect(migrateSettings({ llmWikiEnabled: 'yes' }).llmWikiEnabled).toBe(false);
+        expect(migrateSettings({ llmWikiEnabled: 1 }).llmWikiEnabled).toBe(false);
+    });
 });
 
 describe('type helpers', () => {

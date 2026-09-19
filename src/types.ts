@@ -56,6 +56,8 @@ export interface BuddyBridgeSettings {
     acpPermissionMode: string;
     /** P1 默认模型：'auto' 跟随 CLI 默认（不传 --model）| 具体模型 id（仅 ACP 传输生效，新连接应用） */
     defaultModel: string;
+    /** P3 LLM Wiki：开启后把 LLM Wiki 规则注入每条消息（在 Vault 上用 /wiki-init /wiki-ingest /wiki-query /wiki-lint 管理知识库） */
+    llmWikiEnabled: boolean;
     version: number;
 }
 
@@ -74,8 +76,9 @@ export interface BuddyBridgeSettings {
  * - v10：v2.4.0 新增 enabledSkills（已启用的官方技能名列表，P2.8）
  * - v11：v2.5.0 新增 transportMode（print/acp 传输方式）+ acpPermissionMode（ACP 权限模式，P1）
  * - v12：v2.6.0 新增 defaultModel（默认模型，ACP 模式生效，模型切换）
+ * - v13：v2.7.0 新增 llmWikiEnabled（LLM Wiki 内置技能开关，P3）
  */
-const CURRENT_SETTINGS_VERSION = 12;
+const CURRENT_SETTINGS_VERSION = 13;
 
 /** 聊天区字体大小范围（px），与设置页滑块联动 */
 export const FONT_SIZE_MIN = 12;
@@ -106,6 +109,7 @@ export const DEFAULT_SETTINGS: BuddyBridgeSettings = {
     transportMode: 'print',
     acpPermissionMode: 'acceptEdits',
     defaultModel: 'auto',
+    llmWikiEnabled: false,
     version: CURRENT_SETTINGS_VERSION
 };
 
@@ -179,6 +183,10 @@ export function migrateSettings(stored: unknown): BuddyBridgeSettings {
     // P1 默认模型：非空字符串保留，否则回落 'auto'（跟随 CLI 默认）
     const defaultModel = getString(stored, 'defaultModel')?.trim()
         || DEFAULT_SETTINGS.defaultModel;
+    // P3 LLM Wiki：布尔开关，缺失回落关闭
+    const llmWikiEnabled = typeof stored.llmWikiEnabled === 'boolean'
+        ? stored.llmWikiEnabled
+        : DEFAULT_SETTINGS.llmWikiEnabled;
 
     return {
         codebuddyPath: getString(stored, 'codebuddyPath') ?? DEFAULT_SETTINGS.codebuddyPath,
@@ -204,6 +212,7 @@ export function migrateSettings(stored: unknown): BuddyBridgeSettings {
         transportMode,
         acpPermissionMode,
         defaultModel,
+        llmWikiEnabled,
         version: CURRENT_SETTINGS_VERSION
     };
 }

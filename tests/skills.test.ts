@@ -96,6 +96,35 @@ describe('readOfficialMarketplace (官方市场注册表读取)', () => {
         expect(await readOfficialMarketplace(dir)).toEqual([]);
     });
 
+    it('reads the new marketplace.json format (installLocation + .codebuddy-plugin/marketplace.json)', async () => {
+        const installDir = join(dir, '.codebuddy', 'plugins', 'marketplaces', 'codebuddy-plugins-official');
+        mkdirSync(join(installDir, '.codebuddy-plugin'), { recursive: true });
+        writeFileSync(join(installDir, '.codebuddy-plugin', 'marketplace.json'), JSON.stringify({
+            name: 'codebuddy-plugins-official',
+            plugins: [
+                { name: 'atuin', description: '腾讯玄武实验室安全插件', description_en: 'Security plugin from Tencent Xuanwu Lab.' },
+                { name: 'pdf', description: '', description_en: 'PDF handling' },
+            ],
+        }), 'utf-8');
+        writeRegistry({ 'codebuddy-plugins-official': { installLocation: installDir } });
+        const list = await readOfficialMarketplace(dir);
+        expect(list).toEqual([
+            { name: 'atuin', description: '腾讯玄武实验室安全插件' },
+            { name: 'pdf', description: 'PDF handling' },
+        ]);
+    });
+
+    it('falls back to inline manifest when marketplace.json is missing', async () => {
+        writeRegistry({
+            'codebuddy-plugins-official': {
+                installLocation: join(dir, 'nonexistent'),
+                manifest: { plugins: [{ name: 'old', description: '旧格式' }] },
+            },
+        });
+        const list = await readOfficialMarketplace(dir);
+        expect(list).toEqual([{ name: 'old', description: '旧格式' }]);
+    });
+
     it('throws when registry file is missing', async () => {
         await expect(readOfficialMarketplace(dir)).rejects.toThrow('未找到官方市场注册表');
     });

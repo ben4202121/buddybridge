@@ -60,7 +60,7 @@ Read 一次配置文件，验证写入正确，然后回复用户：
 > 下一步：
 > 1. **重启** WorkBuddy / CodeBuddy
 > 2. 将第二个文档（llm-wiki-skill-prompt.txt）内容发送给我
-> 3. 发送 /init 开始搭建 LLM Wiki
+> 3. 发送 /wiki-init 开始搭建 LLM Wiki
 
 ### 6. 异常处理
 

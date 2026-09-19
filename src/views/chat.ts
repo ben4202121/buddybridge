@@ -5,6 +5,7 @@ import { BuddyBridgeAPI, isStartupBanner, usagePercent, usageLevel, type UsageIn
 import { getErrorMessage, DEFAULT_SETTINGS, type Conversation, ChatMessage, MessagePart, BuddyBridgeSettings } from '../types';
 import { buildPromptContext, buildDedupedPrompt, encodeLineSeparators, type PromptContextState, type AttachedFile } from '../context';
 import { buildSkillInjection } from '../skills';
+import { buildLlmWikiInjection } from '../llm-wiki';
 import { t, tF } from '../i18n';
 import { getModelCatalog, modelDisplayName, type ModelInfo } from '../models';
 import { SendQueue, type QueueItem } from '../chat/queue';
@@ -13,32 +14,17 @@ import { isGatewayEmptyStream } from '../chat/failure';
 export const VIEW_TYPE_CHAT = "buddybridge-panel";
 
 const COMMANDS: Record<string, string> = {
-    '/clear': t('cmd.clear'),
-    '/help': t('cmd.help'),
-    '/status': t('cmd.status'),
-    '/doctor': t('cmd.doctor'),
-    '/compact': t('cmd.compact'),
-    '/summarize': t('cmd.summarize'),
-    '/context': t('cmd.context'),
-    '/cost': t('cmd.cost'),
-    '/model': t('cmd.model'),
-    '/permissions': t('cmd.permissions'),
-    '/config': t('cmd.config'),
-    '/export': t('cmd.export'),
-    '/resume': t('cmd.resume'),
-    '/rewind': t('cmd.rewind'),
     '/init': t('cmd.init'),
-    '/plan': t('cmd.plan'),
-    '/fork': t('cmd.fork'),
-    '/memory': t('cmd.memory'),
-    '/mcp': t('cmd.mcp'),
-    '/todos': t('cmd.todos'),
-    '/stats': t('cmd.stats'),
-    '/cr': t('cmd.cr'),
+    '/summarize': t('cmd.summarize'),
+    '/rules': t('cmd.rules'),
+    '/explain': t('cmd.explain'),
     '/fix': t('cmd.fix'),
     '/tests': t('cmd.tests'),
-    '/explain': t('cmd.explain'),
-    '/rules': t('cmd.rules'),
+    '/cr': t('cmd.cr'),
+    '/wiki-init': t('cmd.wikiInit'),
+    '/wiki-ingest': t('cmd.wikiIngest'),
+    '/wiki-query': t('cmd.wikiQuery'),
+    '/wiki-lint': t('cmd.wikiLint'),
 };
 
 /** P2.4 附加 md 读全文的体积上限（超出只注入路径，避免撑爆上下文）。 */
@@ -142,10 +128,13 @@ export class BuddyBridgeChatView extends ItemView {
         const attached = conv ? await this.resolveAttachedFiles(conv.attachedFiles) : [];
         // P2.8 已启用技能：全局设置，每轮注入引导模型优先使用（CLI 原生可调 Skill 工具）
         const skillHint = buildSkillInjection(settings?.enabledSkills ?? []);
+        // P3 LLM Wiki：开启后每轮注入规则全文（内置技能，非官方市场技能，全文由插件持有）
+        const llmWikiHint = buildLlmWikiInjection(settings?.llmWikiEnabled === true, this.vaultPath);
+        const combinedHint = [skillHint, llmWikiHint].filter(Boolean).join('\n\n');
         const { text: out, state } = buildDedupedPrompt(prev, current, text, {
             noteLinkInjection: noteLink,
             vaultContextInjection: vaultCtx,
-        }, attached, skillHint);
+        }, attached, combinedHint);
         this.contextStates.set(convId, state);
         // cmd.exe 命令行 8191 字符硬限制：整条 prompt 超限时裁掉注入内容（前缀），保住用户原文
         let final = out;
@@ -832,7 +821,11 @@ export class BuddyBridgeChatView extends ItemView {
                 const parent = this.inputEl.parentElement;
                 if (!parent) return;
                 this.commandDropdown = parent.createDiv({ cls: 'buddybridge-command-dropdown' });
+                // /wiki-* 是插件自定义命令，须 LLM Wiki 开关开启才有效；关了就不列出，
+                // 避免用户点到「规则未注入」的死命令（模型会自由发挥）
+                const wikiEnabled = this.pluginSettings?.llmWikiEnabled === true;
                 for (const [cmd, desc] of Object.entries(COMMANDS)) {
+                    if (cmd.startsWith('/wiki-') && !wikiEnabled) continue;
                     const item = this.commandDropdown.createDiv({ cls: 'buddybridge-command-item' });
                     item.createSpan({ cls: 'buddybridge-command-name', text: cmd });
                     item.createSpan({ cls: 'buddybridge-command-desc', text: desc });
@@ -992,9 +985,11 @@ export class BuddyBridgeChatView extends ItemView {
                 bubble = streamingBubble;
             }
 
-            // 上下文在入队时已随项快照（当时的笔记 + 会话内去重）；斜杠命令原样透传，
-            // 不注入上下文。注入文本不进对话历史，聊天仍显示原文。
-            const base = item.text.startsWith('/')
+            // 上下文在入队时已随项快照（当时的笔记 + 会话内去重）；CodeBuddy 内置斜杠命令
+            // 原样透传、不注入上下文（CLI 自处理）；/wiki-* 是插件自定义命令，须走
+            // buildContextText 注入 LLM Wiki 规则，模型才知道语义。注入文本不进对话历史，聊天仍显示原文。
+            const isWikiCmd = /^\/wiki-(init|ingest|query|lint)\b/.test(item.text.trim());
+            const base = item.text.startsWith('/') && !isWikiCmd
                 ? item.text
                 : await this.buildContextText(convId, item.text, item.notePath);
             // 分支会话：首条发送时前置注入截至分叉点的对话转写（一次性），让新 session 了解此前对话

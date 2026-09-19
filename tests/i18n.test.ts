@@ -9,10 +9,8 @@ import { detectLanguage, translate, tf, t } from '../src/i18n';
 /** 从 i18n.ts 词典取全部 key（透过 translate 的 key→缺省回退行为探测存在性）。 */
 const ALL_KEYS = [
     'view.title',
-    'cmd.clear', 'cmd.help', 'cmd.status', 'cmd.doctor', 'cmd.compact', 'cmd.summarize',
-    'cmd.context', 'cmd.cost', 'cmd.model', 'cmd.permissions', 'cmd.config', 'cmd.export',
-    'cmd.resume', 'cmd.rewind', 'cmd.init', 'cmd.plan', 'cmd.fork', 'cmd.memory', 'cmd.mcp',
-    'cmd.todos', 'cmd.stats', 'cmd.cr', 'cmd.fix', 'cmd.tests', 'cmd.explain', 'cmd.rules',
+    'cmd.init', 'cmd.summarize', 'cmd.rules', 'cmd.explain', 'cmd.fix', 'cmd.tests', 'cmd.cr',
+    'cmd.wikiInit', 'cmd.wikiIngest', 'cmd.wikiQuery', 'cmd.wikiLint',
     'tab.close', 'tab.branch', 'conv.new', 'conv.branchSuffix',
     'input.placeholder', 'input.send', 'input.stop',
     'empty.title', 'empty.subtitle', 'empty.tips', 'tip.enter', 'tip.commands', 'tip.context',

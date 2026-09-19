@@ -6,6 +6,7 @@ import { ConfirmModal } from './confirm';
 import { t, tF } from '../i18n';
 import { detectInstalledSkills, readOfficialMarketplace, type OfficialPlugin, type InstalledSkill } from '../skills';
 import { getModelCatalog, type ModelInfo } from '../models';
+import { readCliSettings, isVaultAuthorized, applyVaultAuth } from '../auth-assist';
 
 export class BuddyBridgeSettingTab extends PluginSettingTab {
     plugin: BuddyBridgePlugin;
@@ -162,6 +163,25 @@ export class BuddyBridgeSettingTab extends PluginSettingTab {
                 .onChange((q) => void this.renderMarketList(marketListEl, q, marketHeader)));
         void this.renderMarketList(marketListEl, '', marketHeader);
 
+        // ==================== LLM Wiki（P3 内置技能） ====================
+        new Setting(containerEl).setName(t('settings.llmWikiName')).setHeading();
+
+        new Setting(containerEl)
+            .setDesc(t('settings.llmWikiDesc'))
+            .addToggle(toggle => toggle
+                .setValue(plugin.settings.llmWikiEnabled)
+                .onChange(async (value) => {
+                    plugin.settings.llmWikiEnabled = value;
+                    await plugin.saveSettings();
+                }));
+
+        new Setting(containerEl)
+            .setName(t('settings.llmWikiAuthName'))
+            .setDesc(t('settings.llmWikiAuthDesc'))
+            .addButton(btn => btn
+                .setButtonText(t('settings.llmWikiAuthBtn'))
+                .onClick(() => void this.authorizeLlmWiki()));
+
         // ==================== 外观 ====================
         new Setting(containerEl).setName(t('tab.heading.appearance')).setHeading();
 
@@ -265,6 +285,35 @@ export class BuddyBridgeSettingTab extends PluginSettingTab {
                         }
                     ).open();
                 }));
+    }
+
+    /** P3 授权：pre-check 是否已授权，未授权则二次确认后写 ~/.codebuddy/settings.json。 */
+    private async authorizeLlmWiki(): Promise<void> {
+        const vaultPath = (this.app.vault.adapter as { basePath?: string }).basePath;
+        if (!vaultPath) return;
+        try {
+            const existing = await readCliSettings();
+            if (isVaultAuthorized(existing, vaultPath)) {
+                new Notice(t('settings.llmWikiAuthAlready'));
+                return;
+            }
+        } catch {
+            // 读取失败则继续走授权补丁流程（applyVaultAuth 内部幂等）
+        }
+        new ConfirmModal(
+            this.app,
+            tF('settings.llmWikiAuthConfirm', { path: vaultPath }),
+            async () => {
+                try {
+                    const res = await applyVaultAuth(vaultPath);
+                    new Notice(res.status === 'already'
+                        ? t('settings.llmWikiAuthAlready')
+                        : tF('settings.llmWikiAuthDone', { path: res.path }));
+                } catch (e) {
+                    new Notice(tF('settings.llmWikiAuthFail', { msg: getErrorMessage(e) }));
+                }
+            }
+        ).open();
     }
 
     /**

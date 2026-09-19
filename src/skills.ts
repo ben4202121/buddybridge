@@ -11,7 +11,7 @@
 import { homedir } from 'os';
 import { join } from 'path';
 import { readFile, readdir } from 'fs/promises';
-import { tF } from './i18n';
+import { detectLanguage, tF } from './i18n';
 
 export interface OfficialPlugin {
     name: string;
@@ -48,15 +48,53 @@ export async function readOfficialMarketplace(homeDir: string = homedir()): Prom
     }
     if (!isRecord(registry)) return [];
     const market = registry['codebuddy-plugins-official'];
+
+    // 新版格式（2026-09 起）：known_marketplaces.json 只存市场元信息，插件清单独立在
+    // <installLocation>/.codebuddy-plugin/marketplace.json（.plugins[]，含 name/description/description_en）。
+    if (isRecord(market) && typeof market.installLocation === 'string' && market.installLocation.length > 0) {
+        const plugins = await readMarketplaceManifest(join(market.installLocation, '.codebuddy-plugin', 'marketplace.json'));
+        if (plugins.length > 0) return plugins;
+    }
+
+    // 旧版格式兜底：registry 内嵌 manifest.plugins
     const manifest = isRecord(market) ? market.manifest : undefined;
-    const plugins = isRecord(manifest) && Array.isArray(manifest.plugins) ? manifest.plugins : [];
+    const inline = isRecord(manifest) && Array.isArray(manifest.plugins) ? manifest.plugins : [];
     const out: OfficialPlugin[] = [];
-    for (const p of plugins) {
+    for (const p of inline) {
         if (!isRecord(p) || typeof p.name !== 'string' || p.name.length === 0) continue;
         out.push({
             name: p.name,
             description: typeof p.description === 'string' ? p.description : '',
         });
+    }
+    return out;
+}
+
+/**
+ * 读新版市场清单文件 <installLocation>/.codebuddy-plugin/marketplace.json，解析 plugins[]。
+ * 描述跟随界面语言（zh 取 description、en 取 description_en，缺省互 fallback）。文件缺失/损坏返回空数组。
+ */
+async function readMarketplaceManifest(manifestPath: string): Promise<OfficialPlugin[]> {
+    let text: string;
+    try {
+        text = await readFile(manifestPath, 'utf-8');
+    } catch {
+        return [];
+    }
+    let manifest: unknown;
+    try {
+        manifest = JSON.parse(text);
+    } catch {
+        return [];
+    }
+    if (!isRecord(manifest) || !Array.isArray(manifest.plugins)) return [];
+    const zh = detectLanguage() === 'zh';
+    const out: OfficialPlugin[] = [];
+    for (const p of manifest.plugins) {
+        if (!isRecord(p) || typeof p.name !== 'string' || p.name.length === 0) continue;
+        const descZh = typeof p.description === 'string' ? p.description : '';
+        const descEn = typeof p.description_en === 'string' ? p.description_en : '';
+        out.push({ name: p.name, description: zh ? descZh || descEn : descEn || descZh });
     }
     return out;
 }

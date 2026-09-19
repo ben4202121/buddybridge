@@ -45,7 +45,7 @@ var path = __toESM(require("path"));
 var fs = __toESM(require("fs"));
 
 // src/types.ts
-var CURRENT_SETTINGS_VERSION = 12;
+var CURRENT_SETTINGS_VERSION = 13;
 var FONT_SIZE_MIN = 12;
 var FONT_SIZE_MAX = 18;
 var CONTEXT_WINDOW_MIN = 1e3;
@@ -65,6 +65,7 @@ var DEFAULT_SETTINGS = {
   transportMode: "print",
   acpPermissionMode: "acceptEdits",
   defaultModel: "auto",
+  llmWikiEnabled: false,
   version: CURRENT_SETTINGS_VERSION
 };
 function isObject(value) {
@@ -104,6 +105,7 @@ function migrateSettings(stored) {
   const transportMode = stored.transportMode === "acp" ? "acp" : "print";
   const acpPermissionMode = getString(stored, "acpPermissionMode") || DEFAULT_SETTINGS.acpPermissionMode;
   const defaultModel = ((_a = getString(stored, "defaultModel")) == null ? void 0 : _a.trim()) || DEFAULT_SETTINGS.defaultModel;
+  const llmWikiEnabled = typeof stored.llmWikiEnabled === "boolean" ? stored.llmWikiEnabled : DEFAULT_SETTINGS.llmWikiEnabled;
   return {
     codebuddyPath: (_b = getString(stored, "codebuddyPath")) != null ? _b : DEFAULT_SETTINGS.codebuddyPath,
     maxConversations: typeof maxConversations === "number" && maxConversations > 0 ? maxConversations : DEFAULT_SETTINGS.maxConversations,
@@ -118,6 +120,7 @@ function migrateSettings(stored) {
     transportMode,
     acpPermissionMode,
     defaultModel,
+    llmWikiEnabled,
     version: CURRENT_SETTINGS_VERSION
   };
 }
@@ -1630,33 +1633,18 @@ function detectLanguage() {
 var ZH = {
   // 视图标题
   "view.title": "BuddyBridge \u804A\u5929",
-  // 命令描述（/command 下拉）
-  "cmd.clear": "\u6E05\u7A7A\u5BF9\u8BDD\uFF0C\u91CD\u65B0\u5F00\u59CB",
-  "cmd.help": "\u663E\u793A CodeBuddy \u5E2E\u52A9\u4FE1\u606F",
-  "cmd.status": "\u663E\u793A\u5F53\u524D\u4ED3\u5E93\u548C\u4F1A\u8BDD\u72B6\u6001",
-  "cmd.doctor": "\u68C0\u67E5 CodeBuddy \u73AF\u5883\u72B6\u6001",
-  "cmd.compact": "\u538B\u7F29\u4E0A\u4E0B\u6587\u4EE5\u8282\u7701\u7A7A\u95F4",
-  "cmd.summarize": "\u603B\u7ED3\u5E76\u538B\u7F29\u5BF9\u8BDD\u4E0A\u4E0B\u6587",
-  "cmd.context": "\u8BA1\u7B97\u5F53\u524D\u4F1A\u8BDD token \u5206\u5E03",
-  "cmd.cost": "\u663E\u793A\u4F1A\u8BDD\u6210\u672C\u548C token \u7528\u91CF",
-  "cmd.model": "\u67E5\u770B\u6216\u5207\u6362 AI \u6A21\u578B",
-  "cmd.permissions": "\u7BA1\u7406\u5DE5\u5177\u548C\u76EE\u5F55\u8BBF\u95EE\u6743\u9650",
-  "cmd.config": "\u67E5\u770B\u6216\u4FEE\u6539\u672C\u5730\u914D\u7F6E",
-  "cmd.export": "\u5BFC\u51FA\u5F53\u524D\u5BF9\u8BDD",
-  "cmd.resume": "\u6062\u590D\u4E4B\u524D\u7684\u4F1A\u8BDD",
-  "cmd.rewind": "\u56DE\u9000\u5230\u4E4B\u524D\u7684\u6D88\u606F\u70B9",
+  // 命令描述（/command 下拉：仅 CodeBuddy 有效命令 + LLM Wiki 内置命令）
   "cmd.init": "\u521D\u59CB\u5316 CodeBuddy \u4ED3\u5E93",
-  "cmd.plan": "\u9884\u89C8\u8BA1\u5212\u6A21\u5F0F\u4E0B\u7684\u8BA1\u5212\u6587\u4EF6",
-  "cmd.fork": "\u5728\u5F53\u524D\u5BF9\u8BDD\u4F4D\u7F6E\u521B\u5EFA\u5206\u652F",
-  "cmd.memory": "\u7BA1\u7406\u957F\u671F\u8BB0\u5FC6",
-  "cmd.mcp": "\u7BA1\u7406 MCP \u8FDE\u63A5",
-  "cmd.todos": "\u663E\u793A\u5F85\u529E\u4E8B\u9879\u5217\u8868",
-  "cmd.stats": "\u663E\u793A\u4F7F\u7528\u7EDF\u8BA1\u4FE1\u606F",
-  "cmd.cr": "\u5BA1\u67E5\u4EE3\u7801\u8D28\u91CF",
+  "cmd.summarize": "\u603B\u7ED3\u5E76\u538B\u7F29\u5BF9\u8BDD\u4E0A\u4E0B\u6587",
+  "cmd.rules": "\u751F\u6210\u4EE3\u7801\u89C4\u8303\u89C4\u5219",
+  "cmd.explain": "\u89E3\u91CA\u4EE3\u7801\u5DE5\u4F5C\u539F\u7406",
   "cmd.fix": "\u81EA\u52A8\u4FEE\u590D\u4EE3\u7801\u95EE\u9898",
   "cmd.tests": "\u751F\u6210\u5355\u5143\u6D4B\u8BD5",
-  "cmd.explain": "\u89E3\u91CA\u4EE3\u7801\u5DE5\u4F5C\u539F\u7406",
-  "cmd.rules": "\u751F\u6210\u4EE3\u7801\u89C4\u8303\u89C4\u5219",
+  "cmd.cr": "\u5BA1\u67E5\u4EE3\u7801\u8D28\u91CF",
+  "cmd.wikiInit": "\u521D\u59CB\u5316 LLM Wiki \u77E5\u8BC6\u5E93",
+  "cmd.wikiIngest": "\u6444\u5165\u8D44\u6599\u5230 LLM Wiki",
+  "cmd.wikiQuery": "\u67E5\u8BE2 LLM Wiki \u77E5\u8BC6\u5E93",
+  "cmd.wikiLint": "\u68C0\u67E5 LLM Wiki \u5065\u5EB7",
   "cmd.attachCurrentNote": "\u9644\u52A0\u5F53\u524D\u7B14\u8BB0\u5230\u4F1A\u8BDD",
   // P2.4 附加文件
   "attach.title": "\u9644\u52A0\u6587\u4EF6",
@@ -1686,6 +1674,17 @@ var ZH = {
   "settings.copyInstallFail": "\u590D\u5236\u5931\u8D25\uFF0C\u8BF7\u624B\u52A8\u6267\u884C\uFF1A{cmd}",
   "settings.restartHint": "\u{1F4A1} \u5B89\u88C5\u6280\u80FD\u540E\u9700\u5B8C\u5168\u9000\u51FA\u5E76\u91CD\u5F00 CodeBuddy/WorkBuddy\uFF08\u6216\u91CD\u542F Obsidian\uFF09\uFF0C\u6280\u80FD\u624D\u4F1A\u51FA\u73B0\u5728 available_skills\u3002",
   "marker.skill": "[\u7CFB\u7EDF\u6CE8\u5165\xB7\u6280\u80FD: {name}]",
+  // P3 LLM Wiki
+  "marker.llmWiki": "[\u7CFB\u7EDF\u6CE8\u5165\xB7LLM Wiki]",
+  "settings.llmWikiName": "LLM Wiki \u77E5\u8BC6\u5E93\uFF08\u5185\u7F6E\u6280\u80FD\uFF09",
+  "settings.llmWikiDesc": "\u5F00\u542F\u540E\u628A LLM Wiki \u7BA1\u7406\u89C4\u5219\u6CE8\u5165\u6BCF\u6761\u6D88\u606F\uFF0C\u53EF\u5728\u804A\u5929\u4E2D\u76F4\u63A5\u53D1 /wiki-init \u521D\u59CB\u5316\u3001/wiki-ingest \u6444\u5165\u8D44\u6599\u3001/wiki-query \u67E5\u8BE2\u3001/wiki-lint \u5065\u5EB7\u68C0\u67E5\uFF08\u6A21\u578B\u4F1A\u8BFB\u5199 Vault \u5185\u7684 raw/ \u4E0E wiki/ \u76EE\u5F55\uFF09\u3002",
+  "settings.llmWikiAuthName": "\u6587\u4EF6\u8BBF\u95EE\u6388\u6743",
+  "settings.llmWikiAuthDesc": "\u628A Vault \u8DEF\u5F84\u5199\u5165 ~/.codebuddy/settings.json \u7684 trustedDirectories \u4E0E permissions.allow\uFF0C\u8BA9\u6A21\u578B\u6709\u6743\u9650\u8BFB\u5199 Vault\uFF08\u4EC5\u8865\u5145\uFF0C\u4E0D\u8986\u76D6\u65E2\u6709\u914D\u7F6E\uFF09\u3002",
+  "settings.llmWikiAuthBtn": "\u4E00\u952E\u6388\u6743",
+  "settings.llmWikiAuthConfirm": "\u5C06\u628A Vault \u8DEF\u5F84\uFF08{path}\uFF09\u5199\u5165 CodeBuddy \u5168\u5C40\u914D\u7F6E ~/.codebuddy/settings.json\uFF0C\u6388\u6743\u6A21\u578B\u8BFB\u5199 Vault \u7684 raw/ \u4E0E wiki/ \u76EE\u5F55\u3002\u662F\u5426\u7EE7\u7EED\uFF1F",
+  "settings.llmWikiAuthDone": "\u6388\u6743\u5B8C\u6210\uFF1A{path}\uFF08\u5EFA\u8BAE\u91CD\u542F CodeBuddy \u540E\u751F\u6548\uFF09",
+  "settings.llmWikiAuthAlready": "\u5DF2\u6388\u6743\uFF0C\u65E0\u9700\u6539\u52A8",
+  "settings.llmWikiAuthFail": "\u6388\u6743\u5931\u8D25\uFF1A{msg}",
   // 标签页 / 新建对话
   "tab.close": "\u5173\u95ED\u5BF9\u8BDD",
   "tab.branch": "\u4ECE\u8FD9\u91CC\u7EE7\u7EED\u65B0\u5BF9\u8BDD",
@@ -1791,32 +1790,17 @@ var ZH = {
 };
 var EN = {
   "view.title": "BuddyBridge Chat",
-  "cmd.clear": "Clear conversation and start fresh",
-  "cmd.help": "Show CodeBuddy help",
-  "cmd.status": "Show current repo and session status",
-  "cmd.doctor": "Check CodeBuddy environment",
-  "cmd.compact": "Compact context to save space",
-  "cmd.summarize": "Summarize and compact conversation context",
-  "cmd.context": "Compute token distribution of current session",
-  "cmd.cost": "Show session cost and token usage",
-  "cmd.model": "View or switch AI model",
-  "cmd.permissions": "Manage tool and directory access permissions",
-  "cmd.config": "View or modify local config",
-  "cmd.export": "Export current conversation",
-  "cmd.resume": "Resume a previous session",
-  "cmd.rewind": "Rewind to an earlier message point",
   "cmd.init": "Initialize CodeBuddy repo",
-  "cmd.plan": "Preview plan-mode plan files",
-  "cmd.fork": "Create a branch at the current position",
-  "cmd.memory": "Manage long-term memory",
-  "cmd.mcp": "Manage MCP connections",
-  "cmd.todos": "Show todo list",
-  "cmd.stats": "Show usage statistics",
-  "cmd.cr": "Review code quality",
+  "cmd.summarize": "Summarize and compact conversation context",
+  "cmd.rules": "Generate coding rules",
+  "cmd.explain": "Explain how the code works",
   "cmd.fix": "Auto-fix code issues",
   "cmd.tests": "Generate unit tests",
-  "cmd.explain": "Explain how the code works",
-  "cmd.rules": "Generate coding rules",
+  "cmd.cr": "Review code quality",
+  "cmd.wikiInit": "Initialize the LLM Wiki knowledge base",
+  "cmd.wikiIngest": "Ingest material into the LLM Wiki",
+  "cmd.wikiQuery": "Query the LLM Wiki knowledge base",
+  "cmd.wikiLint": "Health-check the LLM Wiki",
   "cmd.attachCurrentNote": "Attach current note to conversation",
   // P2.4 Attached files
   "attach.title": "Attached files",
@@ -1846,6 +1830,17 @@ var EN = {
   "settings.copyInstallFail": "Copy failed, run manually: {cmd}",
   "settings.restartHint": "\u{1F4A1} After installing, fully quit and reopen CodeBuddy/WorkBuddy (or restart Obsidian) for the skill to appear in available_skills.",
   "marker.skill": "[System injection\xB7Skill: {name}]",
+  // P3 LLM Wiki
+  "marker.llmWiki": "[System injection\xB7LLM Wiki]",
+  "settings.llmWikiName": "LLM Wiki knowledge base (built-in skill)",
+  "settings.llmWikiDesc": "Enable to inject the LLM Wiki rules into every message: send /wiki-init to initialize, /wiki-ingest to ingest raw material, /wiki-query to ask, /wiki-lint to health-check (the model reads/writes the raw/ and wiki/ folders in your vault).",
+  "settings.llmWikiAuthName": "File access authorization",
+  "settings.llmWikiAuthDesc": "Writes the vault path into ~/.codebuddy/settings.json (trustedDirectories + permissions.allow) so the model can read/write the vault. Only adds missing entries \u2014 never overwrites existing config.",
+  "settings.llmWikiAuthBtn": "Authorize",
+  "settings.llmWikiAuthConfirm": "This writes the vault path ({path}) into the CodeBuddy global config ~/.codebuddy/settings.json, authorizing the model to read/write the raw/ and wiki/ folders. Continue?",
+  "settings.llmWikiAuthDone": "Authorized: {path} (restart CodeBuddy to apply)",
+  "settings.llmWikiAuthAlready": "Already authorized, no change needed",
+  "settings.llmWikiAuthFail": "Authorization failed: {msg}",
   "tab.close": "Close conversation",
   "tab.branch": "Continue as new conversation from here",
   "conv.new": "New conversation",
@@ -2062,16 +2057,47 @@ async function readOfficialMarketplace(homeDir = (0, import_os.homedir)()) {
   if (!isRecord(registry))
     return [];
   const market = registry["codebuddy-plugins-official"];
+  if (isRecord(market) && typeof market.installLocation === "string" && market.installLocation.length > 0) {
+    const plugins = await readMarketplaceManifest((0, import_path.join)(market.installLocation, ".codebuddy-plugin", "marketplace.json"));
+    if (plugins.length > 0)
+      return plugins;
+  }
   const manifest = isRecord(market) ? market.manifest : void 0;
-  const plugins = isRecord(manifest) && Array.isArray(manifest.plugins) ? manifest.plugins : [];
+  const inline = isRecord(manifest) && Array.isArray(manifest.plugins) ? manifest.plugins : [];
   const out = [];
-  for (const p of plugins) {
+  for (const p of inline) {
     if (!isRecord(p) || typeof p.name !== "string" || p.name.length === 0)
       continue;
     out.push({
       name: p.name,
       description: typeof p.description === "string" ? p.description : ""
     });
+  }
+  return out;
+}
+async function readMarketplaceManifest(manifestPath) {
+  let text;
+  try {
+    text = await (0, import_promises.readFile)(manifestPath, "utf-8");
+  } catch (e) {
+    return [];
+  }
+  let manifest;
+  try {
+    manifest = JSON.parse(text);
+  } catch (e) {
+    return [];
+  }
+  if (!isRecord(manifest) || !Array.isArray(manifest.plugins))
+    return [];
+  const zh = detectLanguage() === "zh";
+  const out = [];
+  for (const p of manifest.plugins) {
+    if (!isRecord(p) || typeof p.name !== "string" || p.name.length === 0)
+      continue;
+    const descZh = typeof p.description === "string" ? p.description : "";
+    const descEn = typeof p.description_en === "string" ? p.description_en : "";
+    out.push({ name: p.name, description: zh ? descZh || descEn : descEn || descZh });
   }
   return out;
 }
@@ -2155,6 +2181,50 @@ function buildSkillInjection(enabledSkills) {
 }
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// src/llm-wiki.ts
+var LLM_WIKI_PERMISSIONS = ["Write", "Edit", "Glob", "Grep", "Read", "Bash"];
+var LLM_WIKI_SKILL_PROMPT = [
+  "\u4F60\u73B0\u5728\u662F LLM Wiki \u77E5\u8BC6\u5E93\u7BA1\u7406\u7CFB\u7EDF\uFF0C\u5DE5\u4F5C\u5728 Obsidian Vault\uFF1A{vault}",
+  "",
+  "## \u547D\u4EE4",
+  "",
+  "/wiki-init \u2014 \u521D\u59CB\u5316\u3002\u5728 Vault \u6839\u4E0B\u521B\u5EFA\u76EE\u5F55\u7ED3\u6784\u5E76\u5199\u5165\u521D\u59CB\u6587\u4EF6\uFF1A",
+  "- raw/01-articles\u3001raw/02-papers\u3001raw/03-transcripts\u3001raw/09-archive",
+  "- wiki/concepts\u3001wiki/entities\u3001wiki/sources\u3001wiki/syntheses",
+  "- assets/",
+  "- wiki/index.md\uFF08\u300C## \u6982\u5FF5 / \u5B9E\u4F53 / \u6765\u6E90 / \u7EFC\u5408\u300D\u56DB\u4E2A\u5206\u7C7B\uFF0C\u5404\u6CE8\u300C\uFF08\u5F85\u6444\u5165\uFF09\u300D\uFF09",
+  "- wiki/log.md\uFF08\u8BB0\u5F55\u672C\u6B21 init\uFF09",
+  "\u5B8C\u6210\u540E\u56DE\u590D\u76EE\u5F55\u6E05\u5355\u4E0E\u4E0B\u4E00\u6B65\u5F15\u5BFC\u3002",
+  "",
+  "/wiki-ingest [\u8DEF\u5F84] \u2014 \u6444\u5165\u539F\u59CB\u8D44\u6599\u3002\u672A\u6307\u5B9A\u8DEF\u5F84\u5219\u626B\u63CF raw/ \u4E0B\u5168\u90E8 .md\uFF08raw/09-archive/ \u89C6\u4E3A\u5DF2\u5904\u7406\uFF0C\u8DF3\u8FC7\uFF09\u3002\u5BF9\u6BCF\u4E2A\u5F85\u5904\u7406\u6587\u4EF6\uFF1A",
+  "1. Read \u8BFB\u53D6 raw \u6E90\u6587\u4EF6\uFF0C\u7EDD\u4E0D\u4FEE\u6539 raw/ \u4E0B\u4EFB\u4F55\u6587\u4EF6\u5185\u5BB9\u3002",
+  "2. \u5206\u6790\u540E\u4EA7\u51FA wiki \u9875\u9762\uFF1A\u65B0\u6982\u5FF5/\u65B9\u6CD5\u8BBA \u2192 wiki/concepts/\uFF0C\u5DE5\u5177/\u4EA7\u54C1/\u670D\u52A1 \u2192 wiki/entities/\uFF0C\u6BCF\u4E2A\u6E90\u6587\u4EF6\u81F3\u5C11\u4EA7\u51FA\u4E00\u4E2A wiki/sources/ \u6458\u8981\u9875\uFF0C\u8DE8\u6587\u4EF6\u7EFC\u5408\u7406\u89E3 \u2192 wiki/syntheses/\u3002",
+  "3. \u6BCF\u9875\u5FC5\u987B\u542B frontmatter\uFF1Atitle\u3001type\uFF08concept/entity/source/synthesis\uFF09\u3001tags\u3001sources\uFF08[[wikilink]]\uFF09\u3001last_updated\uFF1B\u6B63\u6587\u7B80\u4F53\u4E2D\u6587\uFF1B\u5FC5\u987B\u542B\u300C## \u5173\u8054\u300D\u6BB5\u843D\uFF0C\u81F3\u5C11\u4E00\u4E2A [[wikilink]]\u3002",
+  "4. \u66F4\u65B0 wiki/index.md \u767B\u8BB0\u65B0\u9875\u9762\u3002",
+  "5. \u8FFD\u52A0 wiki/log.md\uFF08\u8BB0\u5F55\u53D8\u66F4\u4E0E\u5F52\u6863\uFF09\u3002",
+  "6. \u5C06\u5DF2\u5904\u7406\u6E90\u6587\u4EF6\u79FB\u5165 raw/09-archive/\u3002",
+  "\u94C1\u5F8B\uFF1A\u4E0D\u6539 raw \u5185\u5BB9\u3001\u6BCF\u9875\u6709\u5165\u94FE\u51FA\u94FE\uFF08\u65E0\u5B64\u5C9B\uFF09\u3001\u4E0E\u65B0\u9875\u9762\u77DB\u76FE\u65F6\u5728\u5DF2\u6709\u9875\u9762\u8FFD\u52A0\u300C## \u77E5\u8BC6\u51B2\u7A81\u300D\u533A\u5757\u800C\u4E0D\u8986\u76D6\u539F\u6587\u3002",
+  "",
+  "/wiki-query <\u95EE\u9898> \u2014 \u7528\u77E5\u8BC6\u5E93\u56DE\u7B54\u3002\u5148\u8BFB wiki/index.md \u5B9A\u4F4D\uFF0C\u518D\u6DF1\u8BFB\u5019\u9009\u9875\u9762\uFF0C\u7EFC\u5408\u56DE\u7B54\u4E14\u6BCF\u4E2A\u4E8B\u5B9E\u65AD\u8A00\u540E\u6807\u6CE8\u51FA\u5904 [[\u9875\u9762\u540D]]\uFF0C\u8FFD\u52A0 wiki/log.md\uFF1B\u82E5\u4EA7\u751F\u65B0\u7EFC\u5408\u7406\u89E3\u5219\u5199\u5165 wiki/syntheses/\uFF08\u5E26 wikilink\uFF09\u3002",
+  "",
+  "/wiki-lint \u2014 \u5065\u5EB7\u68C0\u67E5\u3002\u626B\u63CF wiki/ \u4E0B .md\uFF08\u6392\u9664 index.md \u4E0E log.md\uFF09\uFF0C\u68C0\u67E5\uFF1A\u7D22\u5F15\u767B\u8BB0\u3001wikilink \u6709\u6548\u6027\u3001frontmatter \u5B8C\u6574\uFF08title+type\uFF09\u3001\u5B64\u5C9B\uFF08\u5165\u94FE 0\uFF09\u3001\u534A\u5B64\u5C9B\uFF08\u51FA\u94FE 0\uFF09\u3001\u672A\u89E3\u51B3\u51B2\u7A81\uFF08\u542B\u300C## \u77E5\u8BC6\u51B2\u7A81\u300D\uFF09\u3001sources \u6709\u6548\u6027\u3002\u8F93\u51FA\u95EE\u9898\u6E05\u5355\u5E76\u8FFD\u52A0 wiki/log.md\u3002",
+  "",
+  "## \u547D\u540D\u89C4\u8303",
+  "concepts/ \u7528 TitleCase\uFF08\u7A7A\u683C\u7528 _\uFF09\uFF1Bentities/ \u4FDD\u7559\u539F\u6587\u5927\u5C0F\u5199\uFF1Bsources/ \u7528 kebab-case \u524D\u7F00 summary-\uFF1Bsyntheses/ \u7528 kebab-case\u3002\u6B63\u6587\u4E00\u5F8B\u7B80\u4F53\u4E2D\u6587\u3002",
+  "",
+  "## \u7981\u6B62\u4E8B\u9879",
+  "\u7981\u6B62\u4FEE\u6539 raw/ \u4E0B\u4EFB\u4F55\u6587\u4EF6\uFF1B\u7981\u6B62\u8DF3\u8FC7 index.md \u66F4\u65B0\uFF1B\u7981\u6B62\u8DF3\u8FC7 log.md \u8BB0\u5F55\uFF1B\u7981\u6B62\u8986\u76D6\u5DF2\u6709\u77E5\u8BC6\uFF08\u77DB\u76FE\u65F6\u8FFD\u52A0\u300C\u77E5\u8BC6\u51B2\u7A81\u300D\u533A\u5757\uFF09\u3002"
+].join("\n");
+function buildLlmWikiInjection(enabled, vaultPath) {
+  if (!enabled)
+    return "";
+  const vault = vaultPath ? vaultPath.replace(/\\/g, "/") : "";
+  const body = vault ? LLM_WIKI_SKILL_PROMPT.split("{vault}").join(vault) : LLM_WIKI_SKILL_PROMPT;
+  return `${tF("marker.llmWiki")}
+
+${body}`;
 }
 
 // src/models.ts
@@ -2346,32 +2416,17 @@ function isGatewayEmptyStream(text, thinkingLen = 0, partsLen = 0) {
 // src/views/chat.ts
 var VIEW_TYPE_CHAT = "buddybridge-panel";
 var COMMANDS = {
-  "/clear": t("cmd.clear"),
-  "/help": t("cmd.help"),
-  "/status": t("cmd.status"),
-  "/doctor": t("cmd.doctor"),
-  "/compact": t("cmd.compact"),
-  "/summarize": t("cmd.summarize"),
-  "/context": t("cmd.context"),
-  "/cost": t("cmd.cost"),
-  "/model": t("cmd.model"),
-  "/permissions": t("cmd.permissions"),
-  "/config": t("cmd.config"),
-  "/export": t("cmd.export"),
-  "/resume": t("cmd.resume"),
-  "/rewind": t("cmd.rewind"),
   "/init": t("cmd.init"),
-  "/plan": t("cmd.plan"),
-  "/fork": t("cmd.fork"),
-  "/memory": t("cmd.memory"),
-  "/mcp": t("cmd.mcp"),
-  "/todos": t("cmd.todos"),
-  "/stats": t("cmd.stats"),
-  "/cr": t("cmd.cr"),
+  "/summarize": t("cmd.summarize"),
+  "/rules": t("cmd.rules"),
+  "/explain": t("cmd.explain"),
   "/fix": t("cmd.fix"),
   "/tests": t("cmd.tests"),
-  "/explain": t("cmd.explain"),
-  "/rules": t("cmd.rules")
+  "/cr": t("cmd.cr"),
+  "/wiki-init": t("cmd.wikiInit"),
+  "/wiki-ingest": t("cmd.wikiIngest"),
+  "/wiki-query": t("cmd.wikiQuery"),
+  "/wiki-lint": t("cmd.wikiLint")
 };
 var ATTACH_MAX_READ_BYTES = 512 * 1024;
 var ATTACH_MAX_FILE_CHARS = 4e3;
@@ -2459,10 +2514,12 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
     const conv = this.manager.getConversation(convId);
     const attached = conv ? await this.resolveAttachedFiles(conv.attachedFiles) : [];
     const skillHint = buildSkillInjection((_c = settings == null ? void 0 : settings.enabledSkills) != null ? _c : []);
+    const llmWikiHint = buildLlmWikiInjection((settings == null ? void 0 : settings.llmWikiEnabled) === true, this.vaultPath);
+    const combinedHint = [skillHint, llmWikiHint].filter(Boolean).join("\n\n");
     const { text: out, state } = buildDedupedPrompt(prev, current, text, {
       noteLinkInjection: noteLink,
       vaultContextInjection: vaultCtx
-    }, attached, skillHint);
+    }, attached, combinedHint);
     this.contextStates.set(convId, state);
     let final = out;
     if (final.length > MAX_CMD_PROMPT_CHARS) {
@@ -3044,6 +3101,7 @@ ${final.slice(final.length - MAX_CMD_PROMPT_CHARS)}`;
     this.api.cancel(conv.sessionId);
   }
   updateCommandDropdown() {
+    var _a;
     const val = this.inputEl.value;
     if (val === "/") {
       if (!this.commandDropdown) {
@@ -3051,7 +3109,10 @@ ${final.slice(final.length - MAX_CMD_PROMPT_CHARS)}`;
         if (!parent)
           return;
         this.commandDropdown = parent.createDiv({ cls: "buddybridge-command-dropdown" });
+        const wikiEnabled = ((_a = this.pluginSettings) == null ? void 0 : _a.llmWikiEnabled) === true;
         for (const [cmd, desc] of Object.entries(COMMANDS)) {
+          if (cmd.startsWith("/wiki-") && !wikiEnabled)
+            continue;
           const item = this.commandDropdown.createDiv({ cls: "buddybridge-command-item" });
           item.createSpan({ cls: "buddybridge-command-name", text: cmd });
           item.createSpan({ cls: "buddybridge-command-desc", text: desc });
@@ -3189,7 +3250,8 @@ ${final.slice(final.length - MAX_CMD_PROMPT_CHARS)}`;
         }
         bubble = streamingBubble;
       }
-      const base = item.text.startsWith("/") ? item.text : await this.buildContextText(convId, item.text, item.notePath);
+      const isWikiCmd = /^\/wiki-(init|ingest|query|lint)\b/.test(item.text.trim());
+      const base = item.text.startsWith("/") && !isWikiCmd ? item.text : await this.buildContextText(convId, item.text, item.notePath);
       const transcript = this.forkTranscripts.get(convId);
       if (transcript) {
         this.forkTranscripts.delete(convId);
@@ -3655,6 +3717,92 @@ var ConfirmModal = class extends import_obsidian2.Modal {
   }
 };
 
+// src/auth-assist.ts
+var import_os3 = require("os");
+var import_path3 = require("path");
+var import_promises3 = require("fs/promises");
+function cliSettingsPath(homeDir = (0, import_os3.homedir)()) {
+  return (0, import_path3.join)(homeDir, ".codebuddy", "settings.json");
+}
+function normalizeVaultPath(vaultPath) {
+  return vaultPath.replace(/\\/g, "/");
+}
+function isRecord3(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function stringArray(value) {
+  return Array.isArray(value) ? value.filter((v) => typeof v === "string") : [];
+}
+function trustedDirs(settings) {
+  return stringArray(settings["trustedDirectories"]).map(normalizeVaultPath);
+}
+function allowedPerms(settings) {
+  const permissions = settings["permissions"];
+  if (!isRecord3(permissions))
+    return [];
+  return stringArray(permissions["allow"]);
+}
+function isVaultAuthorized(settings, vaultPath) {
+  if (!isRecord3(settings))
+    return false;
+  const vault = normalizeVaultPath(vaultPath);
+  const dirs = new Set(trustedDirs(settings));
+  const allow = new Set(allowedPerms(settings));
+  if (!dirs.has(vault))
+    return false;
+  return LLM_WIKI_PERMISSIONS.every((p) => allow.has(p));
+}
+function buildAuthorizedSettings(settings, vaultPath) {
+  const vault = normalizeVaultPath(vaultPath);
+  if (!isRecord3(settings)) {
+    return {
+      trustedDirectories: [vault],
+      permissions: { allow: [...LLM_WIKI_PERMISSIONS] }
+    };
+  }
+  const dirs = trustedDirs(settings);
+  const allow = allowedPerms(settings);
+  const needDirs = !dirs.includes(vault);
+  const missingPerms = LLM_WIKI_PERMISSIONS.filter((p) => !allow.includes(p));
+  if (!needDirs && missingPerms.length === 0)
+    return null;
+  const nextDirs = needDirs ? [...dirs, vault] : dirs;
+  const nextAllow = missingPerms.length > 0 ? [...allow, ...missingPerms] : allow;
+  const permissions = isRecord3(settings["permissions"]) ? settings["permissions"] : {};
+  return {
+    ...settings,
+    trustedDirectories: nextDirs,
+    permissions: { ...permissions, allow: nextAllow }
+  };
+}
+async function readCliSettings(homeDir = (0, import_os3.homedir)()) {
+  let raw;
+  try {
+    raw = await (0, import_promises3.readFile)(cliSettingsPath(homeDir), "utf-8");
+  } catch (e) {
+    return null;
+  }
+  if (!raw.trim())
+    return null;
+  try {
+    return JSON.parse(raw);
+  } catch (e) {
+    return null;
+  }
+}
+async function applyVaultAuth(vaultPath, homeDir = (0, import_os3.homedir)()) {
+  const path2 = cliSettingsPath(homeDir);
+  const settings = await readCliSettings(homeDir);
+  const existed = isRecord3(settings);
+  const patched = buildAuthorizedSettings(settings, vaultPath);
+  if (patched === null) {
+    return { status: "already", path: path2 };
+  }
+  await (0, import_promises3.mkdir)((0, import_path3.join)(homeDir, ".codebuddy"), { recursive: true });
+  await (0, import_promises3.writeFile)(path2, JSON.stringify(patched, null, 2) + "\n", "utf-8");
+  return { status: existed ? "added" : "created", path: path2 };
+}
+
 // src/settings/tab.ts
 var BuddyBridgeSettingTab = class extends import_obsidian3.PluginSettingTab {
   constructor(app, plugin) {
@@ -3732,6 +3880,12 @@ var BuddyBridgeSettingTab = class extends import_obsidian3.PluginSettingTab {
     const marketHeader = new import_obsidian3.Setting(containerEl).setName(t("settings.marketTitle")).setDesc(t("settings.restartHint"));
     new import_obsidian3.Setting(containerEl).addText((text) => text.setPlaceholder(t("settings.marketSearch")).onChange((q) => void this.renderMarketList(marketListEl, q, marketHeader)));
     void this.renderMarketList(marketListEl, "", marketHeader);
+    new import_obsidian3.Setting(containerEl).setName(t("settings.llmWikiName")).setHeading();
+    new import_obsidian3.Setting(containerEl).setDesc(t("settings.llmWikiDesc")).addToggle((toggle) => toggle.setValue(plugin.settings.llmWikiEnabled).onChange(async (value) => {
+      plugin.settings.llmWikiEnabled = value;
+      await plugin.saveSettings();
+    }));
+    new import_obsidian3.Setting(containerEl).setName(t("settings.llmWikiAuthName")).setDesc(t("settings.llmWikiAuthDesc")).addButton((btn) => btn.setButtonText(t("settings.llmWikiAuthBtn")).onClick(() => void this.authorizeLlmWiki()));
     new import_obsidian3.Setting(containerEl).setName(t("tab.heading.appearance")).setHeading();
     new import_obsidian3.Setting(containerEl).setName(t("settings.colorName")).setDesc(t("settings.colorDesc")).addText((text) => {
       text.inputEl.type = "color";
@@ -3786,6 +3940,32 @@ var BuddyBridgeSettingTab = class extends import_obsidian3.PluginSettingTab {
         }
       ).open();
     }));
+  }
+  /** P3 授权：pre-check 是否已授权，未授权则二次确认后写 ~/.codebuddy/settings.json。 */
+  async authorizeLlmWiki() {
+    const vaultPath = this.app.vault.adapter.basePath;
+    if (!vaultPath)
+      return;
+    try {
+      const existing = await readCliSettings();
+      if (isVaultAuthorized(existing, vaultPath)) {
+        new import_obsidian3.Notice(t("settings.llmWikiAuthAlready"));
+        return;
+      }
+    } catch (e) {
+    }
+    new ConfirmModal(
+      this.app,
+      tF("settings.llmWikiAuthConfirm", { path: vaultPath }),
+      async () => {
+        try {
+          const res = await applyVaultAuth(vaultPath);
+          new import_obsidian3.Notice(res.status === "already" ? t("settings.llmWikiAuthAlready") : tF("settings.llmWikiAuthDone", { path: res.path }));
+        } catch (e) {
+          new import_obsidian3.Notice(tF("settings.llmWikiAuthFail", { msg: getErrorMessage(e) }));
+        }
+      }
+    ).open();
   }
   /**
    * 默认模型下拉：异步填充模型目录（免费模型加「免费」标注）。
