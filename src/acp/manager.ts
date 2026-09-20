@@ -122,9 +122,33 @@ export class AcpSessionManager {
         };
         this.cancelHandlers.set(sessionId, cancelHandler);
 
+        // v2.7.1 空闲超时：连续无事件输出即判定卡死（替代固定总超时）。每次 enqueue 都刷新。
+        const timeoutSeconds = Math.max(1, Math.round(this.options.timeoutMs / 1000));
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        const armIdleTimer = () => {
+            if (terminal) return;
+            if (timer) clearTimeout(timer);
+            timer = setTimeout(() => {
+                if (terminal) return;
+                if (handle.conn && acpUuid) handle.conn.notify('session/cancel', { sessionId: acpUuid });
+                const errChunk: StreamChunk = {
+                    type: 'error',
+                    content: `请求超时（连续 ${timeoutSeconds} 秒无响应），请检查 CodeBuddy CLI 是否正常运行或尝试重试`,
+                };
+                if (pendingResolve) {
+                    pendingResolve({ value: errChunk, done: true });
+                    pendingResolve = null;
+                } else {
+                    terminal = errChunk;
+                }
+            }, this.options.timeoutMs);
+            timer.unref?.();
+        };
+
         // 事件 → chunk 分发（映射 + 工具卡按 toolCallId 去重）。
         const enqueue = (chunk: StreamChunk) => {
             if (cancelled || terminal) return;
+            armIdleTimer(); // 有事件产出即活跃，重置空闲计时
             if (pendingResolve) {
                 pendingResolve({ value: chunk, done: false });
                 pendingResolve = null;
@@ -156,23 +180,8 @@ export class AcpSessionManager {
         };
 
         try {
-            // 轮级超时：超时 → session/cancel + 错误卡（与 api.ts P0.3 同款文案）
-            const timeoutSeconds = Math.max(1, Math.round(this.options.timeoutMs / 1000));
-            const timer = setTimeout(() => {
-                if (terminal) return;
-                if (handle.conn && acpUuid) handle.conn.notify('session/cancel', { sessionId: acpUuid });
-                const errChunk: StreamChunk = {
-                    type: 'error',
-                    content: `请求超时（已等待 ${timeoutSeconds} 秒），请检查 CodeBuddy CLI 是否正常运行或尝试重试`,
-                };
-                if (pendingResolve) {
-                    pendingResolve({ value: errChunk, done: true });
-                    pendingResolve = null;
-                } else {
-                    terminal = errChunk;
-                }
-            }, this.options.timeoutMs);
-            timer.unref?.();
+            // 发送前武装空闲计时（之后每次事件产出都在 enqueue 里刷新）
+            armIdleTimer();
 
             // 发 prompt；完成后置 terminal（done / error）
             const conn = handle.conn;

@@ -40,7 +40,7 @@ export interface BuddyBridgeSettings {
     fontSize: number;
     /** 上下文窗口大小（token），用量显示的分母，默认 200000 */
     contextWindowSize: number;
-    /** CLI 请求超时（秒），默认 300 */
+    /** CLI 空闲超时（秒）：连续该时长无任何输出即判定卡死并终止，默认 60 */
     timeoutSeconds: number;
     /** Node.js 可执行文件路径（留空自动检测，仅裸脚本启动时使用） */
     nodePath: string;
@@ -101,7 +101,7 @@ export const DEFAULT_SETTINGS: BuddyBridgeSettings = {
     primaryColor: '',
     fontSize: 14,
     contextWindowSize: 200000,
-    timeoutSeconds: 300,
+    timeoutSeconds: 60,
     nodePath: '',
     noteLinkInjection: true,
     vaultContextInjection: false,

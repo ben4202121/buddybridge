@@ -7,8 +7,8 @@ describe('DEFAULT_SETTINGS', () => {
     it('should have sensible maxConversations', () => {
         expect(DEFAULT_SETTINGS.maxConversations).toBeGreaterThan(0);
     });
-    it('should default timeoutSeconds to 300', () => {
-        expect(DEFAULT_SETTINGS.timeoutSeconds).toBe(300);
+    it('should default timeoutSeconds to 60', () => {
+        expect(DEFAULT_SETTINGS.timeoutSeconds).toBe(60);
     });
     it('should default fontSize to 14', () => {
         expect(DEFAULT_SETTINGS.fontSize).toBe(14);
@@ -59,16 +59,16 @@ describe('migrateSettings', () => {
         expect(r.codebuddyPath).toBe('C:\\old\\codebuddy');
         expect(r.maxConversations).toBe(7);
         expect(r.primaryColor).toBe('#ff0000');
-        expect(r.timeoutSeconds).toBe(300); // 新字段回落默认
+        expect(r.timeoutSeconds).toBe(60); // 新字段回落默认
         expect(r.fontSize).toBe(14); // v8 新增字段回落默认
         expect(r.version).toBe(DEFAULT_SETTINGS.version);
     });
 
     it('should preserve timeoutSeconds when present and valid', () => {
         expect(migrateSettings({ timeoutSeconds: 60 }).timeoutSeconds).toBe(60);
-        expect(migrateSettings({ timeoutSeconds: 0 }).timeoutSeconds).toBe(300);
-        expect(migrateSettings({ timeoutSeconds: -1 }).timeoutSeconds).toBe(300);
-        expect(migrateSettings({ timeoutSeconds: '300' }).timeoutSeconds).toBe(300);
+        expect(migrateSettings({ timeoutSeconds: 0 }).timeoutSeconds).toBe(60);
+        expect(migrateSettings({ timeoutSeconds: -1 }).timeoutSeconds).toBe(60);
+        expect(migrateSettings({ timeoutSeconds: '300' }).timeoutSeconds).toBe(60);
     });
 
     it('should preserve fontSize when present and within bounds', () => {

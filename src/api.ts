@@ -4,7 +4,23 @@ import * as fs from 'fs';
 import { getErrorMessage, getNumber, getString, isObject } from './types';
 import { AcpSessionManager } from './acp/manager';
 
-const TIMEOUT = 300_000; // 5 分钟
+const TIMEOUT = 60_000; // 60 秒空闲超时：连续无输出即判卡死（v2.7.1 由固定总超时改为空闲超时）
+
+/**
+ * 终止 CLI 进程（含子进程树）。Windows 上 spawn .cmd/.exe wrapper 时 proc.kill() 只杀 shell，
+ * 真正的 codebuddy 子进程仍存活（= 幽灵进程，前端报错后仍在后台继续执行），故用 taskkill /T /F 杀整棵树。
+ */
+function killProcTree(proc: ReturnType<typeof spawn>): void {
+    try {
+        if (process.platform === 'win32' && proc.pid) {
+            spawn('taskkill', ['/pid', String(proc.pid), '/T', '/F']);
+        } else {
+            proc.kill();
+        }
+    } catch (e) {
+        console.error('[BB] 终止进程失败:', e);
+    }
+}
 
 // ===== 流式事件类型 =====
 
@@ -586,51 +602,50 @@ export class BuddyBridgeAPI {
                 pendingResolve = null;
             }
             if (currentProc) {
-                try {
-                    if (process.platform === 'win32' && currentProc.pid) {
-                        // Windows 上 kill() 对 .cmd/.exe wrapper 常杀不干净（子树仍持有 stdout 管道）
-                        spawn('taskkill', ['/pid', String(currentProc.pid), '/T', '/F']);
-                    } else {
-                        currentProc.kill();
-                    }
-                    console.log('[BB] 已终止 CLI 进程');
-                } catch (e) {
-                    console.error('[BB] 终止进程失败:', e);
-                }
+                killProcTree(currentProc);
+                console.log('[BB] 已终止 CLI 进程');
                 currentProc = null;
             }
         };
         this.activeStreams.set(sessionId, cancelHandler);
 
         try {
-            // P0.3 插件侧计时：超时主动产出明确错误卡（不再依赖 spawn 的静默 timeout kill）
+            // v2.7.1 空闲超时：从「固定总超时」改为「连续无输出即判卡死」。每次 CLI 有输出
+            // （stdout data）就重置计时器——长任务（如 LLM Wiki 摄入）只要还在持续产出就不会被
+            // 误杀；只有连续 timeoutSeconds 秒完全无输出才判超时并终止。
             let timedOut = false;
             const timeoutSeconds = Math.max(1, Math.round(this.timeout / 1000));
-            const timer = setTimeout(() => {
-                if (closed) return;
-                timedOut = true;
-                try { proc.kill(); } catch { /* ignore */ }
-                const errChunk: StreamChunk = {
-                    type: 'error',
-                    content: `请求超时（已等待 ${timeoutSeconds} 秒），请检查 CodeBuddy CLI 是否正常运行或尝试重试`,
-                };
-                if (pendingResolve) {
-                    pendingResolve({ value: errChunk, done: false });
-                    pendingResolve = null;
-                } else {
-                    chunkQueue.push(errChunk);
-                }
-            }, this.timeout);
-            timer.unref?.();
-
             let buffer = '';
             let errOut = '';
             let hasOutput = false;
             const chunkQueue: StreamChunk[] = [];
             let closed = false;
+            let timer: ReturnType<typeof setTimeout> | null = null;
+            const armIdleTimer = () => {
+                if (closed || timedOut) return;
+                if (timer) clearTimeout(timer);
+                timer = setTimeout(() => {
+                    timedOut = true;
+                    // 与 cancel 一致：杀整个进程树，避免报错后 CLI 幽灵进程继续执行
+                    killProcTree(proc);
+                    const errChunk: StreamChunk = {
+                        type: 'error',
+                        content: `请求超时（连续 ${timeoutSeconds} 秒无响应），请检查 CodeBuddy CLI 是否正常运行或尝试重试`,
+                    };
+                    if (pendingResolve) {
+                        pendingResolve({ value: errChunk, done: false });
+                        pendingResolve = null;
+                    } else {
+                        chunkQueue.push(errChunk);
+                    }
+                }, this.timeout);
+                timer.unref?.();
+            };
+            armIdleTimer();
 
             proc.stdout.on('data', (d: Buffer) => {
                 buffer += d.toString();
+                armIdleTimer(); // 有输出即活跃，重置空闲计时
                 const lines = buffer.split('\n');
                 buffer = lines.pop() || '';
                 for (const line of lines) {

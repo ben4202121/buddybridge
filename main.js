@@ -57,7 +57,7 @@ var DEFAULT_SETTINGS = {
   primaryColor: "",
   fontSize: 14,
   contextWindowSize: 2e5,
-  timeoutSeconds: 300,
+  timeoutSeconds: 60,
   nodePath: "",
   noteLinkInjection: true,
   vaultContextInjection: false,
@@ -491,7 +491,7 @@ var AcpSessionManager = class {
    * 同会话串行由视图层发送队列保证；此处加 busy 守卫防重入。
    */
   async *sendMessage(sessionId, text, vaultPath) {
-    var _a, _b;
+    var _a;
     if (this.disposed) {
       yield { type: "error", content: "ACP \u4F20\u8F93\u5DF2\u5173\u95ED" };
       return;
@@ -525,9 +525,36 @@ var AcpSessionManager = class {
       }
     };
     this.cancelHandlers.set(sessionId, cancelHandler);
+    const timeoutSeconds = Math.max(1, Math.round(this.options.timeoutMs / 1e3));
+    let timer = null;
+    const armIdleTimer = () => {
+      var _a2;
+      if (terminal)
+        return;
+      if (timer)
+        clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (terminal)
+          return;
+        if (handle.conn && acpUuid)
+          handle.conn.notify("session/cancel", { sessionId: acpUuid });
+        const errChunk = {
+          type: "error",
+          content: `\u8BF7\u6C42\u8D85\u65F6\uFF08\u8FDE\u7EED ${timeoutSeconds} \u79D2\u65E0\u54CD\u5E94\uFF09\uFF0C\u8BF7\u68C0\u67E5 CodeBuddy CLI \u662F\u5426\u6B63\u5E38\u8FD0\u884C\u6216\u5C1D\u8BD5\u91CD\u8BD5`
+        };
+        if (pendingResolve) {
+          pendingResolve({ value: errChunk, done: true });
+          pendingResolve = null;
+        } else {
+          terminal = errChunk;
+        }
+      }, this.options.timeoutMs);
+      (_a2 = timer.unref) == null ? void 0 : _a2.call(timer);
+    };
     const enqueue = (chunk) => {
       if (cancelled || terminal)
         return;
+      armIdleTimer();
       if (pendingResolve) {
         pendingResolve({ value: chunk, done: false });
         pendingResolve = null;
@@ -557,24 +584,7 @@ var AcpSessionManager = class {
       }
     };
     try {
-      const timeoutSeconds = Math.max(1, Math.round(this.options.timeoutMs / 1e3));
-      const timer = setTimeout(() => {
-        if (terminal)
-          return;
-        if (handle.conn && acpUuid)
-          handle.conn.notify("session/cancel", { sessionId: acpUuid });
-        const errChunk = {
-          type: "error",
-          content: `\u8BF7\u6C42\u8D85\u65F6\uFF08\u5DF2\u7B49\u5F85 ${timeoutSeconds} \u79D2\uFF09\uFF0C\u8BF7\u68C0\u67E5 CodeBuddy CLI \u662F\u5426\u6B63\u5E38\u8FD0\u884C\u6216\u5C1D\u8BD5\u91CD\u8BD5`
-        };
-        if (pendingResolve) {
-          pendingResolve({ value: errChunk, done: true });
-          pendingResolve = null;
-        } else {
-          terminal = errChunk;
-        }
-      }, this.options.timeoutMs);
-      (_a = timer.unref) == null ? void 0 : _a.call(timer);
+      armIdleTimer();
       const conn = handle.conn;
       if (!conn)
         throw new Error("ACP \u8FDB\u7A0B\u4E0D\u53EF\u7528");
@@ -622,7 +632,7 @@ var AcpSessionManager = class {
           pendingResolve = r;
         });
         if (next.done) {
-          if (((_b = next.value) == null ? void 0 : _b.type) === "error")
+          if (((_a = next.value) == null ? void 0 : _a.type) === "error")
             yield next.value;
           break;
         }
@@ -770,7 +780,18 @@ function isToolCallUpdate(update) {
 }
 
 // src/api.ts
-var TIMEOUT = 3e5;
+var TIMEOUT = 6e4;
+function killProcTree(proc) {
+  try {
+    if (process.platform === "win32" && proc.pid) {
+      (0, import_child_process2.spawn)("taskkill", ["/pid", String(proc.pid), "/T", "/F"]);
+    } else {
+      proc.kill();
+    }
+  } catch (e) {
+    console.error("[BB] \u7EC8\u6B62\u8FDB\u7A0B\u5931\u8D25:", e);
+  }
+}
 var NODE_EXECUTABLE = process.platform === "win32" ? "node.exe" : "node";
 function findNodeExecutable() {
   const home = process.env.HOME || process.env.USERPROFILE || "";
@@ -1162,7 +1183,7 @@ var BuddyBridgeAPI = class {
     });
   }
   async *sendMessage(sessionId, text, vaultPath) {
-    var _a, _b;
+    var _a;
     if (this.transportMode === "acp") {
       if (!this.acp) {
         this.acp = new AcpSessionManager({
@@ -1217,16 +1238,8 @@ var BuddyBridgeAPI = class {
         pendingResolve = null;
       }
       if (currentProc) {
-        try {
-          if (process.platform === "win32" && currentProc.pid) {
-            (0, import_child_process2.spawn)("taskkill", ["/pid", String(currentProc.pid), "/T", "/F"]);
-          } else {
-            currentProc.kill();
-          }
-          console.log("[BB] \u5DF2\u7EC8\u6B62 CLI \u8FDB\u7A0B");
-        } catch (e) {
-          console.error("[BB] \u7EC8\u6B62\u8FDB\u7A0B\u5931\u8D25:", e);
-        }
+        killProcTree(currentProc);
+        console.log("[BB] \u5DF2\u7EC8\u6B62 CLI \u8FDB\u7A0B");
         currentProc = null;
       }
     };
@@ -1234,33 +1247,38 @@ var BuddyBridgeAPI = class {
     try {
       let timedOut = false;
       const timeoutSeconds = Math.max(1, Math.round(this.timeout / 1e3));
-      const timer = setTimeout(() => {
-        if (closed)
-          return;
-        timedOut = true;
-        try {
-          proc.kill();
-        } catch (e) {
-        }
-        const errChunk = {
-          type: "error",
-          content: `\u8BF7\u6C42\u8D85\u65F6\uFF08\u5DF2\u7B49\u5F85 ${timeoutSeconds} \u79D2\uFF09\uFF0C\u8BF7\u68C0\u67E5 CodeBuddy CLI \u662F\u5426\u6B63\u5E38\u8FD0\u884C\u6216\u5C1D\u8BD5\u91CD\u8BD5`
-        };
-        if (pendingResolve) {
-          pendingResolve({ value: errChunk, done: false });
-          pendingResolve = null;
-        } else {
-          chunkQueue.push(errChunk);
-        }
-      }, this.timeout);
-      (_a = timer.unref) == null ? void 0 : _a.call(timer);
       let buffer = "";
       let errOut = "";
       let hasOutput = false;
       const chunkQueue = [];
       let closed = false;
+      let timer = null;
+      const armIdleTimer = () => {
+        var _a2;
+        if (closed || timedOut)
+          return;
+        if (timer)
+          clearTimeout(timer);
+        timer = setTimeout(() => {
+          timedOut = true;
+          killProcTree(proc);
+          const errChunk = {
+            type: "error",
+            content: `\u8BF7\u6C42\u8D85\u65F6\uFF08\u8FDE\u7EED ${timeoutSeconds} \u79D2\u65E0\u54CD\u5E94\uFF09\uFF0C\u8BF7\u68C0\u67E5 CodeBuddy CLI \u662F\u5426\u6B63\u5E38\u8FD0\u884C\u6216\u5C1D\u8BD5\u91CD\u8BD5`
+          };
+          if (pendingResolve) {
+            pendingResolve({ value: errChunk, done: false });
+            pendingResolve = null;
+          } else {
+            chunkQueue.push(errChunk);
+          }
+        }, this.timeout);
+        (_a2 = timer.unref) == null ? void 0 : _a2.call(timer);
+      };
+      armIdleTimer();
       proc.stdout.on("data", (d) => {
         buffer += d.toString();
+        armIdleTimer();
         const lines = buffer.split("\n");
         buffer = lines.pop() || "";
         for (const line of lines) {
@@ -1344,7 +1362,7 @@ var BuddyBridgeAPI = class {
           pendingResolve = r;
         });
         if (next.done) {
-          if (((_b = next.value) == null ? void 0 : _b.type) === "error")
+          if (((_a = next.value) == null ? void 0 : _a.type) === "error")
             throw new Error(next.value.content);
           break;
         }
@@ -1742,8 +1760,8 @@ var ZH = {
   "settings.nodeName": "Node \u8DEF\u5F84\uFF08\u53EF\u9009\uFF09",
   "settings.nodeDesc": "\u7559\u7A7A\u81EA\u52A8\u68C0\u6D4B\u3002\u4EC5\u5F53\u4EE5\u7EAF\u811A\u672C\u65B9\u5F0F\u542F\u52A8 codebuddy\uFF08\u975E .exe/.cmd\uFF09\u65F6\u4F7F\u7528\u3002",
   "settings.autoDetect": "\u81EA\u52A8\u68C0\u6D4B",
-  "settings.timeoutName": "CLI \u8D85\u65F6\u65F6\u957F\uFF08\u79D2\uFF09",
-  "settings.timeoutDesc": "\u8BF7\u6C42\u8D85\u8FC7\u8BE5\u65F6\u957F\u672A\u6536\u5230\u5B8C\u6574\u56DE\u590D\u65F6\u81EA\u52A8\u7EC8\u6B62\u5E76\u63D0\u793A\uFF08\u9ED8\u8BA4 300 \u79D2\uFF09",
+  "settings.timeoutName": "CLI \u7A7A\u95F2\u8D85\u65F6\uFF08\u79D2\uFF09",
+  "settings.timeoutDesc": "\u8FDE\u7EED\u8BE5\u65F6\u957F\u65E0\u4EFB\u4F55\u8F93\u51FA\u5373\u5224\u5B9A\u5361\u6B7B\u5E76\u7EC8\u6B62\uFF08\u9ED8\u8BA4 60 \u79D2\uFF09",
   "tab.heading.transport": "\u4F20\u8F93",
   "settings.transportName": "\u4F20\u8F93\u65B9\u5F0F",
   "settings.transportDesc": "ACP \u5E38\u9A7B\u8FDB\u7A0B\u652F\u6301\u6301\u4E45\u4F1A\u8BDD\u3001\u8FDB\u7A0B\u5185\u591A\u8F6E\u4E0A\u4E0B\u6587\u4E0E\u5DE5\u5177\u6388\u6743\u4EA4\u4E92\uFF1Bprint \u4E3A\u65E7\u8DEF\u5F84\uFF08\u6BCF\u6761\u6D88\u606F\u65B0\u8FDB\u7A0B\uFF09\u3002\u53D8\u66F4\u5BF9\u4E0B\u4E00\u8F6E\u751F\u6548\u3002",
@@ -1888,8 +1906,8 @@ var EN = {
   "settings.nodeName": "Node path (optional)",
   "settings.nodeDesc": "Leave empty for auto-detection. Only used when codebuddy is launched as a bare script (not .exe/.cmd).",
   "settings.autoDetect": "Auto-detect",
-  "settings.timeoutName": "CLI timeout (seconds)",
-  "settings.timeoutDesc": "Automatically abort a request that receives no complete reply within this time (default 300s)",
+  "settings.timeoutName": "CLI idle timeout (seconds)",
+  "settings.timeoutDesc": "Abort a request that produces no output for this long (default 60s)",
   "tab.heading.transport": "Transport",
   "settings.transportName": "Transport mode",
   "settings.transportDesc": "ACP persistent process enables session continuity, in-process multi-turn context and tool approval UX; print keeps the legacy path (new process per message). Takes effect on the next turn.",
