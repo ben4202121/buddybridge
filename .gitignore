@@ -21,3 +21,5 @@ PATCH-*.md
 buddybridge-v2.0.2-*/
 # 抓包复现产物（不入库）
 .repro/
+# 发布打包产物（含中文测试清单，不入库）
+release/
