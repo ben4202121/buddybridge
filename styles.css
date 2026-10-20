@@ -1070,6 +1070,12 @@
 .buddybridge-chat-container .buddybridge-hidden { display: none; }
 /* 桌面端辅助元素（下载锚点 / 文件选择 input）：需保留在 DOM 中可编程点击，仅不可见（无作用域，挂于 body） */
 .buddybridge-helper-hidden { display: none; }
+/* 剪贴板 fallback textarea：固定到视口外但不移除 DOM，避免触发滚动条；用 CSS 类而非 el.style 直赋（nocallback no-static-styles-assignment 要求） */
+.buddybridge-clipboard-helper {
+    position: fixed;
+    left: -9999px;
+    top: 0;
+}
 
 /* ==================== Reduced motion ==================== */
 @media (prefers-reduced-motion: reduce) {

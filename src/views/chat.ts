@@ -727,8 +727,7 @@ export class BuddyBridgeChatView extends ItemView {
                 // 非安全上下文 fallback：textarea + execCommand（Obsidian 桌面大概率走这条据 Obsidian 规格）
                 const ta = document.createElement('textarea');
                 ta.value = BUILTIN_INIT_PROMPT;
-                ta.style.position = 'fixed';
-                ta.style.left = '-9999px';
+                ta.addClass('buddybridge-clipboard-helper');
                 document.body.appendChild(ta);
                 ta.select();
                 const ok = document.execCommand('copy');

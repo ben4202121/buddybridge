@@ -3254,8 +3254,7 @@ ${final.slice(final.length - MAX_CMD_PROMPT_CHARS)}`;
       } else {
         const ta = document.createElement("textarea");
         ta.value = BUILTIN_INIT_PROMPT;
-        ta.style.position = "fixed";
-        ta.style.left = "-9999px";
+        ta.addClass("buddybridge-clipboard-helper");
         document.body.appendChild(ta);
         ta.select();
         const ok = document.execCommand("copy");
