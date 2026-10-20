@@ -10,6 +10,8 @@ import { t, tF } from '../i18n';
 import { getModelCatalog, modelDisplayName, type ModelInfo } from '../models';
 import { SendQueue, type QueueItem } from '../chat/queue';
 import { isGatewayEmptyStream } from '../chat/failure';
+import { BUILTIN_INIT_PROMPT, shouldShowInitBanner } from '../init-prompt';
+import { hasCliLoginTraces, readCliSettings, isVaultAuthorized, applyVaultAuth } from '../auth-assist';
 
 export const VIEW_TYPE_CHAT = "buddybridge-panel";
 
@@ -52,6 +54,8 @@ export class BuddyBridgeChatView extends ItemView {
     private modelCatalog: ModelInfo[] | null = null;
     /** P2.4 当前会话附加文件 chip 条 */
     private attachBar!: HTMLElement;
+    /** 档 1 无感初始化：未就绪引导条（被动触发，见 showInitBanner）。 */
+    private initBanner!: HTMLElement;
     private commandDropdown!: HTMLElement | null;
     /** 各会话当前流式中的 assistant 消息 id（convId → msgId）；多会话各自一条流，互不串窗。 */
     private streamingMsgIds = new Map<string, string>();
@@ -225,6 +229,54 @@ export class BuddyBridgeChatView extends ItemView {
                 this.updateCurrentFileBar();
             })
         );
+
+        // 档 1 无感初始化：未就绪引导条（默认隐藏，被动触发显示）
+        this.initBanner = container.createDiv({ cls: 'buddybridge-init-banner buddybridge-hidden' });
+        this.initBanner.createDiv({ cls: 'buddybridge-init-banner-title', text: t('init.bannerTitle') });
+        this.initBanner.createDiv({ cls: 'buddybridge-init-banner-desc', text: t('init.bannerDesc') });
+        const initActions = this.initBanner.createDiv({ cls: 'buddybridge-init-banner-actions' });
+
+        const copyBtn = initActions.createEl('button', {
+            text: t('init.copyBtn'),
+            cls: 'mod-cta buddybridge-init-copy-btn',
+        });
+        copyBtn.onclick = async (e: MouseEvent) => {
+            e.preventDefault();
+            e.stopPropagation();
+            await this.copyInitPrompt();
+        };
+
+        const openBtn = initActions.createEl('button', {
+            text: t('init.openWorkbuddy'),
+            cls: 'buddybridge-init-open-btn',
+        });
+        openBtn.onclick = (e: MouseEvent) => {
+            e.preventDefault();
+            e.stopPropagation();
+            void this.openWorkbuddy();
+        };
+
+        const retestBtn = initActions.createEl('button', {
+            text: t('init.retestBtn'),
+            cls: 'buddybridge-init-retest-btn',
+        });
+        retestBtn.onclick = async (e: MouseEvent) => {
+            e.preventDefault();
+            e.stopPropagation();
+            await this.retestInit();
+        };
+
+        // P3 授权按钮：把 Vault 写入 ~/.codebuddy/settings.json（trustedDirectories + Bash 权限），
+        // 解决「登录检测通过但一输内容就报错：Vault 未授权」的常见卡点。授权后自动再检测收起引导条。
+        const authBtn = initActions.createEl('button', {
+            text: t('init.authBtn'),
+            cls: 'buddybridge-init-auth-btn',
+        });
+        authBtn.onclick = async (e: MouseEvent) => {
+            e.preventDefault();
+            e.stopPropagation();
+            await this.authorizeVault();
+        };
 
         // 消息区域
         this.messageContainer = container.createDiv({ cls: 'buddybridge-messages' });
@@ -629,6 +681,11 @@ export class BuddyBridgeChatView extends ItemView {
     }
 
     private getErrorHint(errorMsg: string): string | null {
+        // 档 1 无感初始化：未就绪类错误（未登录 / lite 构建缺变量 / .cmd shim 找不到 node）优先指向初始化引导
+        if (shouldShowInitBanner(errorMsg)) {
+            this.showInitBanner();
+            return t('error.hintInit');
+        }
         if (errorMsg.includes('找不到 codebuddy') || errorMsg.includes('ENOENT') || errorMsg.includes('codebuddy')) {
             return t('error.hintPath');
         }
@@ -639,6 +696,130 @@ export class BuddyBridgeChatView extends ItemView {
             return t('error.hintTimeout');
         }
         return null;
+    }
+
+    /** 显示「无感初始化」引导条（幂等：以 DOM 的 hidden 类为唯一真源，不靠布尔状态，避免漂移后按钮失效）。 */
+    private showInitBanner(): void {
+        if (this.initBanner && !this.isInitBannerVisible) {
+            this.initBanner.removeClass('buddybridge-hidden');
+        }
+    }
+
+    /** 收起「无感初始化」引导条（幂等）。CLI 真正就绪（收到真实文本回复）时自动触发。 */
+    private hideInitBanner(): void {
+        // 只以 DOM 状态为准：即使布尔/引用漂移，只要元素还在，就把它真正隐藏。
+        if (this.initBanner && this.isInitBannerVisible) {
+            this.initBanner.addClass('buddybridge-hidden');
+        }
+    }
+
+    /** 引导条当前是否可见（以元素实际 hidden 类为准，不用成员变量，杜绝「按钮点了没反应」）。 */
+    private get isInitBannerVisible(): boolean {
+        return !!this.initBanner && !this.initBanner.hasClass('buddybridge-hidden');
+    }
+
+    /** 复制内置初始化提示词到剪贴板（用户点按钮触发）。 */
+    private async copyInitPrompt(): Promise<void> {
+        try {
+            if (navigator.clipboard && window.isSecureContext) {
+                await navigator.clipboard.writeText(BUILTIN_INIT_PROMPT);
+            } else {
+                // 非安全上下文 fallback：textarea + execCommand（Obsidian 桌面大概率走这条据 Obsidian 规格）
+                const ta = document.createElement('textarea');
+                ta.value = BUILTIN_INIT_PROMPT;
+                ta.style.position = 'fixed';
+                ta.style.left = '-9999px';
+                document.body.appendChild(ta);
+                ta.select();
+                const ok = document.execCommand('copy');
+                document.body.removeChild(ta);
+                if (!ok) throw new Error('execCommand copy failed');
+            }
+            new Notice(t('init.copied'));
+        } catch (e) {
+            console.error('[BB] 复制初始化提示词失败:', e);
+            new Notice(t('init.copyFail'));
+        }
+    }
+
+    /** 打开 WorkBuddy：优先用 Electron shell.openPath 打开安装 exe（常见路径），找不到再 fallback 到可辨识的 URL。 */
+    private async openWorkbuddy(): Promise<void> {
+        try {
+            const w = window as unknown as { require?: (m: string) => any };
+            const appData = (globalThis as any).process?.env?.LOCALAPPDATA || '';
+            const candidates = [
+                appData && `${appData}\\Programs\\WorkBuddy\\WorkBuddy.exe`,
+                'C:\\Program Files\\WorkBuddy\\WorkBuddy.exe',
+                'D:\\Program Files\\WorkBuddy\\WorkBuddy.exe',
+            ].filter(Boolean);
+            const electron = (typeof w.require === 'function') ? w.require('electron') : null;
+            const shell = electron?.shell;
+            if (shell?.openPath) {
+                for (const p of candidates) {
+                    const err = await shell.openPath(p);
+                    if (!err) return; // 成功打开即返回
+                }
+                // 找不到 exe → 打开安装目录所在盘符根目录，至少给用户一个可操作窗口
+                const base = appData || 'C:\\Users';
+                await shell.openPath(base);
+                return;
+            }
+            // 无 Electron shell（极端）：fallback 到外部链接
+            await (this.app as any).openExternal?.('https://github.com/ben4202121/buddybridge');
+        } catch (e) {
+            console.error('[BB] 打开 WorkBuddy 失败:', e);
+        }
+    }
+
+    /** 「一键授权」：把 Vault 写入 ~/.codebuddy/settings.json（幂等），授权后自动重检。 */
+    private async authorizeVault(): Promise<void> {
+        const vaultPath = (this.app.vault.adapter as { basePath?: string }).basePath;
+        if (!vaultPath) {
+            new Notice(t('init.authVaultMissing'));
+            return;
+        }
+        try {
+            const res = await applyVaultAuth(vaultPath);
+            new Notice(
+                res.status === 'already'
+                    ? t('init.authAlready')
+                    : tF('init.authDone', { path: res.path })
+            );
+        } catch (e) {
+            new Notice(tF('init.authFail', { msg: getErrorMessage(e) }));
+            return;
+        }
+        // 授权成功后再「重新检测」一次：若登录也已就绪则收起引导条
+        await this.retestInit();
+    }
+
+    /**
+     * 「重新检测」：环境是否真正就绪 = ① CLI 已登录（存在登录迹象）② Vault 已授权（写入了权限）。
+     * 只探测存在性/读配置，不 spawn、不读账号内容，守安全边界。
+     * 登录态在 ~/.codebuddy 的 local_storage/sessions/user-state.json；授权在 ~/.codebuddy/settings.json。
+     * 二者任一不满足都不算「就绪」，引导条保留并给出对应提示——避免「检测通过但一输入就报错」的误导。
+     */
+    private async retestInit(): Promise<void> {
+        if (!hasCliLoginTraces()) {
+            this.showInitBanner();
+            new Notice(t('init.retestFail'));
+        } else {
+            // 已登录 → 再看 Vault 授权是否也满足
+            const vaultPath = (this.app.vault.adapter as { basePath?: string }).basePath;
+            const authorized = vaultPath
+                ? isVaultAuthorized(await readCliSettings(), vaultPath)
+                : false;
+            if (authorized) {
+                this.hideInitBanner();
+                new Notice(t('init.retestOk'));
+            } else {
+                this.showInitBanner();
+                new Notice(t('init.retestAuthMissing'));
+            }
+        }
+        // 重新检测后重排当前会话消息（空态/历史），让用户就地重试
+        if (this.messageContainer) this.messageContainer.empty();
+        await this.renderMessages();
     }
 
     private renderThinkingIndicator(bubble: HTMLElement) {
@@ -1060,6 +1241,8 @@ export class BuddyBridgeChatView extends ItemView {
                         this.manager.setSessionId(convId, chunk.acpSessionId);
                     }
                 } else if (chunk.type === 'text') {
+                    // 收到真实文本回复 = CLI 已就绪的强信号 → 自动收起「配置 CodeBuddy CLI」引导条
+                    this.hideInitBanner();
                     textContent += chunk.content;
                     this.manager.updateMessage(convId, aiMsg.id, textContent, true);
                     if (isActive && bubble) {

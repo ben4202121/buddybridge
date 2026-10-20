@@ -2,9 +2,9 @@
   "id": "buddybridge",
   "name": "BuddyBridge",
   "minAppVersion": "1.7.2",
-  "description": "An unofficial bridge for WorkBuddy and CodeBuddy, featuring multi-turn chat and streaming responses.",
+  "description": "Unofficial Obsidian plugin bridging your vault with the local WorkBuddy/CodeBuddy CLI — multi-turn AI chat, real-time streaming, thinking blocks, tool-call cards and conversation history. 第三方 Obsidian 插件：把 AI 聊天接入笔记库与本地 CodeBuddy/WorkBuddy CLI，支持多轮对话、流式回复、思考过程与工具调用。",
   "author": "ben4202121",
   "authorUrl": "https://github.com/ben4202121",
   "isDesktopOnly": true,
-  "version": "2.7.1"
+  "version": "2.7.2"
 }

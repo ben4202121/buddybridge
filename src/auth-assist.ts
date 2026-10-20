@@ -12,6 +12,7 @@
 
 import { homedir } from 'os';
 import { join } from 'path';
+import { statSync } from 'fs';
 import { readFile, mkdir, writeFile } from 'fs/promises';
 import { LLM_WIKI_PERMISSIONS } from './llm-wiki';
 
@@ -117,6 +118,26 @@ export async function readCliSettings(homeDir: string = homedir()): Promise<unkn
     } catch {
         return null;
     }
+}
+
+/**
+ * 是否存在「CodeBuddy CLI 已登录/已初始化的迹象」（只探测存在性，不读内容，守安全边界）。
+ * settings.json 只是配置，登录态真正落在 ~/.codebuddy 下的 local_storage / sessions / user-state.json。
+ * 有的机器 settings.json 缺失或空，但登录早已完成——只凭 settings.json 判「未就绪」会误报（引导条无法收起）。
+ * 任一登录迹象存在即视为已初始化，用于「重新检测」引导条的收起判定。
+ */
+export function hasCliLoginTraces(homeDir: string = homedir()): boolean {
+    const base = join(homeDir, '.codebuddy');
+    const markers = ['local_storage', 'sessions', 'user-state.json', 'settings.json'];
+    for (const m of markers) {
+        try {
+            const st = statSync(join(base, m));
+            if (st) return true;
+        } catch {
+            /* 该标记不存在，继续看下一个 */
+        }
+    }
+    return false;
 }
 
 export async function applyVaultAuth(
