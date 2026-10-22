@@ -108,6 +108,92 @@ BuddyBridge 以「LLM Wiki」技能为核心用途，该技能需要 Bash 权限
 - 无法自动解决的报错 → 原样回报报错文本，并提示可联系 BuddyBridge 作者协助排查。`;
 
 /**
+ * macOS / Linux 版内置初始化提示词（P5，2026-10-21）。
+ * Windows 版是给「WorkBuddy GUI 自带 node」的场景写的（%USERPROFILE%\.workbuddy、环境污染陷阱、
+ * setx、.cmd shim…）；macOS/Linux 没有 WorkBuddy 自带 node、也没有 GUI 注入的 CODEBUDDY_CONFIG_DIR，
+ * 走的是「系统 node + 独立 CLI」路线。除平台差异外，与 Windows 版保持同一套结构（执行原则/陷阱/7 步）。
+ */
+export const BUILTIN_INIT_PROMPT_MAC = `请为这台电脑的 Obsidian BuddyBridge 插件完成环境初始化。BuddyBridge 依赖官方独立的 CodeBuddy CLI。请按以下步骤执行并实际验证，不要跳过验证。
+
+## ⚠️ 执行原则（先读这条，全流程都要遵守）
+
+1. **交付物前置。** 你的首要交付物是**两条绝对路径**：CodeBuddy 路径（真实 JS 入口）与 Node 路径。每完成一步，**立刻把该步产出贴给用户**，不要憋到最后才给。用户要的是能直接复制粘贴的东西。
+2. **验证要真、不要假。** 下方的「已知陷阱」列了几个会让你**得出错误结论**的坑。在判断"登录失败了/被阻塞了"之前，先确认自己不是被环境骗了。**验证登录优先读日志，别反复跑 CLI 实测。**
+3. **不要越权。** \`/login\` 必须用户本人在浏览器完成，你无法代劳，也不要尝试绕开。
+
+## 已知陷阱（会导致错误结论，先读完再动手）
+
+- **陷阱 A：不要用 grep 找 token 判断登录。** CLI 不把 accessToken 以明文落盘在 \`~/.codebuddy\`，\`grep token\`/\`grep eyJ\` 必然是空（又一次假阴性）。**认日志里的 \`userId changed\`。**
+- **陷阱 B：残留 CLI 进程占默认端口 51773。** 旧 CLI 进程不关就一直占着，报 \`EADDRINUSE\`。所有 CLI 命令显式带 \`--port <空闲端口>\`。
+- **陷阱 C：\`/login\` 浏览器授权有 5 分钟窗口。** 用户慢一点就超时，登录作废得重来。务必提醒用户尽快完成授权。
+- **陷阱 D：不要预填插件 \`data.json\`。** 运行中的插件会用内存空值覆写回文件，你预填会被冲掉。**引导用户在 UI 手工粘贴**最可靠。
+- **陷阱 E：若你所在执行环境注入了 \`CODEBUDDY_CONFIG_DIR\` 等环境变量（某些 IDE/内置终端会），CLI 会去错误目录读登录态。** 对策同样是：验证登录一律读日志，不要因 CLI 报没登录就以为是失败。
+
+---
+
+第 1 步：定位系统 Node.js
+依次检查（找到即停）：
+- \`command -v node\`（若系统 PATH 里已有 node）
+- /opt/homebrew/bin/node（Apple Silicon 的 Homebrew）
+- /usr/local/bin/node（Intel 的 Homebrew / 官方安装包）
+- ~/.nvm/versions/node/*/bin/node（nvm 管理）
+记下刚找到的 node 绝对路径为 <NODE>（插件可直接用，无需进系统 PATH）。运行 "<NODE>" --version 确认 ≥ 18.20.8。
+> 若以上都没有 → 用户需先装 Node（如 \`brew install node\` 或 nodejs.org 官方安装包），装好后再回到本步骤。
+> ➡️ **立刻回报 <NODE> 完整路径给用户。** 这是要填进插件的两个地址之一。
+
+第 2 步：确认 npm 可用
+优先用 <NODE> 同目录下的 npm："$(dirname "<NODE>")/npm" --version 确认版本号；若不在，用 \`command -v npm\` 找系统 npm。记 <NPM> 为找到的 npm 命令。
+⚠️ 不要用 "<NODE>" -e "console.log(require('npm/package.json').version)" —— 会因模块路径解析失败误报 npm 不可用（假阴性）。
+
+第 3 步：安装官方独立 CodeBuddy CLI，并定位真实 JS 入口
+用 <NPM> 全局安装："<NPM>" install -g @tencent-ai/codebuddy-code
+安装耗时可能几分钟，建议后台执行并把日志写到临时文件。
+**然后，不要假设路径——动态取全局前缀：**
+"<NPM>" prefix -g
+记输出为 <PREFIX>，则 <CLI_JS> = <PREFIX>/lib/node_modules/@tencent-ai/codebuddy-code/bin/codebuddy
+⚠️ 不要硬编码 /usr/local：Apple Silicon 上全局前缀常是 /opt/homebrew，用 prefix -g 拿到的才是真实路径。
+⚠️ <CLI_JS> 是**带 shebang 的 JS 入口脚本**，不是编译产物。
+验证："<NODE>" "<CLI_JS>" --version，应输出版本号（如 2.167.x）。
+> ➡️ **立刻把 <CLI_JS> 完整路径贴给用户。到这一刻，最终要填的两个地址都已齐备，请明确告诉用户现在就可以去 Obsidian 填了。**
+
+第 4 步：完成 CLI 登录（必须用户本人）
+运行 "<NODE>" "<CLI_JS>" /login，引导用户用腾讯云账号完成登录（会弹浏览器或给设备码）。**必须在独立终端里跑**（Terminal.app / iTerm），不要用注入环境变量的内置终端。
+⚠️ 关键约束，原样告知用户：
+1. 浏览器授权必须在 **5 分钟**内完成，否则 CLI 报 TimeoutError 并作废本次登录；
+2. 授权后**不要关终端**，等它自己打印成功；
+3. 若报 EADDRINUSE ... 51773，改用 /login --port <空闲端口>。
+（若用户已有 API Key，可改用 \`export CODEBUDDY_API_KEY="<key>"\`，此方式你能代劳；注意它是会话级环境变量，用户重启 shell 后需重新 export。）
+**验证登录（重要）：优先用日志，比跑 CLI 可靠。** 查看 ~/.codebuddy/logs/<日期>/<用户>__*.log，搜 \`userId changed:  -> <uuid>\`。出现有效 uuid = 登录成功。**不要跑 CLI 实测去验证登录（可能被环境骗成假阴性）。**
+
+第 5 步：给 Vault 配置读写权限（优先用插件自带「一键授权」）
+优先提示用户：Obsidian → 设置 → BuddyBridge → 文件访问授权 → 一键授权 → 确认（插件会把 Vault 写入 ~/.codebuddy/settings.json 的 trustedDirectories 与 permissions.allow，只补充不覆盖）。
+BuddyBridge 以「LLM Wiki」技能为核心用途，该技能需要 Bash 权限，因此一键授权写入的权限集包含 Bash 是正常且必需的——请放心授权，不要收紧。
+仅当插件按钮不可用时才手工写入，要求：编码无 BOM 的 UTF-8；保留已有字段只补缺失；只信任 Vault 路径。参考 JSON（allow 须含 Bash 以匹配 LLM Wiki 需求）：{ "trustedDirectories": ["<VAULT_PATH>"], "permissions": { "allow": ["Read", "Write", "Edit", "Glob", "Grep", "Bash"] } }，其中 <VAULT_PATH> 用正斜杠。不要把整个用户家目录加入 trustedDirectories。
+> 注：若用户曾在家目录手动跑过 CLI，trustedDirectories 里会被 CLI 自动加上家目录（cwd 自动信任）。那是 CLI 加的，不是插件，清理掉即可。
+
+第 6 步：协助用户把两个地址填进插件设置
+**明确回报这两条，引导填入 Obsidian → 设置 → BuddyBridge：**
+- CodeBuddy 路径 → <CLI_JS>
+- Node 路径（可选，推荐填）→ <NODE>
+⚠️ 不要填 \`codebuddy\` 可执行文件本身（它是 symlink 壳，插件需要 JS 入口 + 独立 Node 直连）。
+⚠️ 不要尝试写插件 data.json 预填：运行中的插件会用内存空值覆写，预填会被冲掉。**引导用户在 UI 手工粘贴**最可靠。
+填好后让用户完全退出并重启 Obsidian。
+
+第 7 步：回报
+- 环境就绪 → 「环境初始化完成，BuddyBridge 已可正常使用。请在 Obsidian → 设置 → BuddyBridge 填入 CodeBuddy 路径与 Node 路径，然后完全重启 Obsidian。」
+- 需用户操作 → 「还需要你在 <具体步骤> 完成 <某操作>（例如完成一次登录）。」
+- 无法自动解决的报错 → 原样回报报错文本，并提示可联系 BuddyBridge 作者协助排查。`;
+
+/**
+ * 按当前平台返回内置初始化提示词：Windows 用 WorkBuddy GUI 场景版，macOS/Linux 用系统 node 版。
+ * chat.ts 复制提示词时必须经此函数分流，不能直接引用 BUILTIN_INIT_PROMPT（那会把 Windows 版
+ * 吐给 mac 用户，路径全错）。
+ */
+export function getBuiltinInitPrompt(platform: NodeJS.Platform = process.platform): string {
+    return platform === 'win32' ? BUILTIN_INIT_PROMPT : BUILTIN_INIT_PROMPT_MAC;
+}
+
+/**
  * 判定「未就绪」的错误关键词。当 CLI 会话失败消息命中任一关键词，即判定插件「未就绪」，
  * 驱动引导条显隐（被动触发：不做主动 spawn 探测，只在失败时上引导条）。
  */

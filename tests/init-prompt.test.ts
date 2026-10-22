@@ -1,4 +1,4 @@
-import { BUILTIN_INIT_PROMPT, BUILTIN_PROMPT_VERSION, INIT_READY_KEYWORDS, shouldShowInitBanner } from '../src/init-prompt';
+import { BUILTIN_INIT_PROMPT, BUILTIN_INIT_PROMPT_MAC, BUILTIN_PROMPT_VERSION, INIT_READY_KEYWORDS, shouldShowInitBanner, getBuiltinInitPrompt } from '../src/init-prompt';
 
 describe('init-prompt（档 1 无感初始化内置提示词）', () => {
     it('BUILTIN_PROMPT_VERSION 为稳定版本字符串', () => {
@@ -119,5 +119,47 @@ describe('init-prompt（档 1 无感初始化内置提示词）', () => {
     it('shouldShowInitBanner：node 但非 shim 类错误不误触发', () => {
         const unrelated = ['exec: node not found', 'Node.js is not configured', 'Requires node >= 18', 'node_modules is missing'];
         for (const err of unrelated) expect(shouldShowInitBanner(err)).toBe(false);
+    });
+});
+
+describe('init-prompt mac（P5：macOS/Linux 版内置提示词）', () => {
+    it('mac 版与 Windows 版同结构：执行原则 / 陷阱 / 第 1 步…第 7 步', () => {
+        expect(BUILTIN_INIT_PROMPT_MAC).toContain('执行原则');
+        expect(BUILTIN_INIT_PROMPT_MAC).toMatch(/第 1 步.*第 7 步/s);
+        expect(BUILTIN_INIT_PROMPT_MAC).toContain('/login');
+        expect(BUILTIN_INIT_PROMPT_MAC).toContain('@tencent-ai/codebuddy-code');
+    });
+
+    it('mac 版：POSIX 路径（~/.codebuddy、/opt/homebrew、lib/node_modules、export）', () => {
+        expect(BUILTIN_INIT_PROMPT_MAC).toContain('~/.codebuddy');
+        expect(BUILTIN_INIT_PROMPT_MAC).toContain('/opt/homebrew/bin/node');
+        expect(BUILTIN_INIT_PROMPT_MAC).toContain('/usr/local/bin/node');
+        expect(BUILTIN_INIT_PROMPT_MAC).toMatch(/\.nvm\/versions\/node/);
+        expect(BUILTIN_INIT_PROMPT_MAC).toMatch(/<PREFIX>\/lib\/node_modules\/@tencent-ai/);
+        expect(BUILTIN_INIT_PROMPT_MAC).toContain('export CODEBUDDY_API_KEY');
+        expect(BUILTIN_INIT_PROMPT_MAC).toContain('command -v node');
+    });
+
+    it('mac 版：不带 Windows 专属内容（%VAR%、setx、.cmd、node.exe、.workbuddy）', () => {
+        expect(BUILTIN_INIT_PROMPT_MAC).not.toMatch(/%USERPROFILE%|%APPDATA%|%VAR%/);
+        expect(BUILTIN_INIT_PROMPT_MAC).not.toContain('setx');
+        expect(BUILTIN_INIT_PROMPT_MAC).not.toContain('codebuddy.cmd');
+        expect(BUILTIN_INIT_PROMPT_MAC).not.toContain('node.exe');
+        expect(BUILTIN_INIT_PROMPT_MAC).not.toMatch(/\.workbuddy\\binaries/);
+        expect(BUILTIN_INIT_PROMPT_MAC).not.toContain('app.asar.unpacked');
+    });
+
+    it('getBuiltinInitPrompt：win32 返回 Windows 版，macOS/Linux 返回 mac 版', () => {
+        const original = process.platform;
+        try {
+            Object.defineProperty(process, 'platform', { value: 'win32' });
+            expect(getBuiltinInitPrompt()).toBe(BUILTIN_INIT_PROMPT);
+            Object.defineProperty(process, 'platform', { value: 'darwin' });
+            expect(getBuiltinInitPrompt()).toBe(BUILTIN_INIT_PROMPT_MAC);
+            Object.defineProperty(process, 'platform', { value: 'linux' });
+            expect(getBuiltinInitPrompt()).toBe(BUILTIN_INIT_PROMPT_MAC);
+        } finally {
+            Object.defineProperty(process, 'platform', { value: original });
+        }
     });
 });

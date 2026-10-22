@@ -76,7 +76,11 @@ export class AcpConnection {
 
     private spawnProc(): void {
         const { scriptPath, nodePath, permissionMode, model, cwd } = this.options;
-        const procOptions: SpawnOptions = { stdio: ['pipe', 'pipe', 'pipe'] };
+        const procOptions: SpawnOptions = {
+            stdio: ['pipe', 'pipe', 'pipe'],
+            // POSIX：detached 使进程自成进程组，killProc 才能用负 pid 杀整组
+            detached: process.platform !== 'win32',
+        };
         if (cwd) procOptions.cwd = cwd;
 
         const cliArgs = ['--acp', '--permission-mode', permissionMode];
@@ -241,9 +245,17 @@ export class AcpConnection {
             if (process.platform === 'win32' && proc.pid) {
                 // 杀进程树，避免 .cmd shim 的 node 子进程残留占用 stdout（孤儿自愈）
                 spawn('taskkill', ['/pid', String(proc.pid), '/T', '/F']);
-            } else {
-                proc.kill();
+                return;
             }
+            // POSIX：detached 后自成进程组，负 pid 杀整组（proc.kill() 只杀主进程，遗留幽灵进程）
+            const pid = proc.pid;
+            if (pid) {
+                try {
+                    process.kill(-pid, 'SIGKILL');
+                    return;
+                } catch { /* 组信号失败，回退直杀 */ }
+            }
+            proc.kill();
         } catch { /* ignore */ }
     }
 

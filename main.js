@@ -201,7 +201,11 @@ var AcpConnection = class {
   spawnProc() {
     var _a, _b;
     const { scriptPath, nodePath, permissionMode, model, cwd } = this.options;
-    const procOptions = { stdio: ["pipe", "pipe", "pipe"] };
+    const procOptions = {
+      stdio: ["pipe", "pipe", "pipe"],
+      // POSIX：detached 使进程自成进程组，killProc 才能用负 pid 杀整组
+      detached: process.platform !== "win32"
+    };
     if (cwd)
       procOptions.cwd = cwd;
     const cliArgs = ["--acp", "--permission-mode", permissionMode];
@@ -351,9 +355,17 @@ var AcpConnection = class {
     try {
       if (process.platform === "win32" && proc.pid) {
         (0, import_child_process.spawn)("taskkill", ["/pid", String(proc.pid), "/T", "/F"]);
-      } else {
-        proc.kill();
+        return;
       }
+      const pid = proc.pid;
+      if (pid) {
+        try {
+          process.kill(-pid, "SIGKILL");
+          return;
+        } catch (e) {
+        }
+      }
+      proc.kill();
     } catch (e) {
     }
   }
@@ -785,9 +797,17 @@ function killProcTree(proc) {
   try {
     if (process.platform === "win32" && proc.pid) {
       (0, import_child_process2.spawn)("taskkill", ["/pid", String(proc.pid), "/T", "/F"]);
-    } else {
-      proc.kill();
+      return;
     }
+    const pid = proc.pid;
+    if (pid) {
+      try {
+        process.kill(-pid, "SIGKILL");
+        return;
+      } catch (e) {
+      }
+    }
+    proc.kill();
   } catch (e) {
     console.error("[BB] \u7EC8\u6B62\u8FDB\u7A0B\u5931\u8D25:", e);
   }
@@ -1213,7 +1233,9 @@ var BuddyBridgeAPI = class {
     const scriptPath = this.scriptPath;
     const procOptions = {
       // 不再使用 spawn 的 timeout（P0.3）：改为插件侧计时，超时产出明确错误卡
-      stdio: ["ignore", "pipe", "pipe"]
+      stdio: ["ignore", "pipe", "pipe"],
+      // POSIX：detached 使 CLI 自成进程组（pgid = pid），killProcTree 才能用负 pid 杀整组
+      detached: process.platform !== "win32"
     };
     if (vaultPath) {
       procOptions.cwd = vaultPath;
@@ -1740,6 +1762,7 @@ var ZH = {
   "init.openWorkbuddy": "\u6253\u5F00 WorkBuddy",
   "init.retestBtn": "\u914D\u7F6E\u5B8C\u6210\u540E\u91CD\u65B0\u68C0\u6D4B",
   "init.retestOk": "\u68C0\u6D4B\u901A\u8FC7\uFF1ACodeBuddy CLI \u5DF2\u5C31\u7EEA\u4E14 Vault \u5DF2\u6388\u6743\uFF0C\u5F15\u5BFC\u6761\u5DF2\u6536\u8D77\u3002",
+  "init.autoReady": "\u73AF\u5883\u5DF2\u5C31\u7EEA\uFF0C\u5F15\u5BFC\u6761\u5DF2\u81EA\u52A8\u6536\u8D77\u3002",
   "init.retestFail": "\u4ECD\u672A\u68C0\u6D4B\u5230 CodeBuddy CLI \u767B\u5F55\u8FF9\u8C61\u3002\u8BF7\u5148\u590D\u5236\u914D\u7F6E\u63D0\u793A\u8BCD\u5230 WorkBuddy \u5B8C\u6210\u521D\u59CB\u5316\u4E0E\u767B\u5F55\u3002",
   "init.retestAuthMissing": "\u5DF2\u68C0\u6D4B\u5230\u767B\u5F55\uFF0C\u4F46 Vault \u5C1A\u672A\u6388\u6743\uFF08\u6A21\u578B\u65E0\u6CD5\u8BFB\u5199\u7B14\u8BB0\uFF09\u3002\u8BF7\u70B9\u300C\u4E00\u952E\u6388\u6743\u300D\uFF0C\u6216\u5230 \u8BBE\u7F6E \u2192 \u6587\u4EF6\u8BBF\u95EE\u6388\u6743 \u2192 \u4E00\u952E\u6388\u6743\u3002",
   "init.authBtn": "\u4E00\u952E\u6388\u6743 Vault",
@@ -1909,6 +1932,7 @@ var EN = {
   "init.openWorkbuddy": "Open WorkBuddy",
   "init.retestBtn": "Re-check after setup",
   "init.retestOk": "Check passed: CodeBuddy CLI is signed in and the Vault is authorized, banner hidden.",
+  "init.autoReady": "Environment is ready; the banner was hidden automatically.",
   "init.retestFail": "No CodeBuddy CLI login traces found yet. First copy the setup prompt to WorkBuddy to initialize and sign in.",
   "init.retestAuthMissing": "Signed in, but the Vault is not authorized yet (the model can\u2019t read/write your notes). Click \u201CAuthorize Vault\u201D, or go to Settings \u2192 File-Access Authorization \u2192 One-click authorize.",
   "init.authBtn": "Authorize Vault",
@@ -2540,6 +2564,79 @@ BuddyBridge \u4EE5\u300CLLM Wiki\u300D\u6280\u80FD\u4E3A\u6838\u5FC3\u7528\u9014
 - \u73AF\u5883\u5C31\u7EEA \u2192 \u300C\u73AF\u5883\u521D\u59CB\u5316\u5B8C\u6210\uFF0CBuddyBridge \u5DF2\u53EF\u6B63\u5E38\u4F7F\u7528\u3002\u8BF7\u5728 Obsidian \u2192 \u8BBE\u7F6E \u2192 BuddyBridge \u586B\u5165 CodeBuddy \u8DEF\u5F84\u4E0E Node \u8DEF\u5F84\uFF0C\u7136\u540E\u5B8C\u5168\u91CD\u542F Obsidian\u3002\u300D
 - \u9700\u7528\u6237\u64CD\u4F5C \u2192 \u300C\u8FD8\u9700\u8981\u4F60\u5728 <\u5177\u4F53\u6B65\u9AA4> \u5B8C\u6210 <\u67D0\u64CD\u4F5C>\uFF08\u4F8B\u5982\u5B8C\u6210\u4E00\u6B21\u767B\u5F55\uFF09\u3002\u300D
 - \u65E0\u6CD5\u81EA\u52A8\u89E3\u51B3\u7684\u62A5\u9519 \u2192 \u539F\u6837\u56DE\u62A5\u62A5\u9519\u6587\u672C\uFF0C\u5E76\u63D0\u793A\u53EF\u8054\u7CFB BuddyBridge \u4F5C\u8005\u534F\u52A9\u6392\u67E5\u3002`;
+var BUILTIN_INIT_PROMPT_MAC = `\u8BF7\u4E3A\u8FD9\u53F0\u7535\u8111\u7684 Obsidian BuddyBridge \u63D2\u4EF6\u5B8C\u6210\u73AF\u5883\u521D\u59CB\u5316\u3002BuddyBridge \u4F9D\u8D56\u5B98\u65B9\u72EC\u7ACB\u7684 CodeBuddy CLI\u3002\u8BF7\u6309\u4EE5\u4E0B\u6B65\u9AA4\u6267\u884C\u5E76\u5B9E\u9645\u9A8C\u8BC1\uFF0C\u4E0D\u8981\u8DF3\u8FC7\u9A8C\u8BC1\u3002
+
+## \u26A0\uFE0F \u6267\u884C\u539F\u5219\uFF08\u5148\u8BFB\u8FD9\u6761\uFF0C\u5168\u6D41\u7A0B\u90FD\u8981\u9075\u5B88\uFF09
+
+1. **\u4EA4\u4ED8\u7269\u524D\u7F6E\u3002** \u4F60\u7684\u9996\u8981\u4EA4\u4ED8\u7269\u662F**\u4E24\u6761\u7EDD\u5BF9\u8DEF\u5F84**\uFF1ACodeBuddy \u8DEF\u5F84\uFF08\u771F\u5B9E JS \u5165\u53E3\uFF09\u4E0E Node \u8DEF\u5F84\u3002\u6BCF\u5B8C\u6210\u4E00\u6B65\uFF0C**\u7ACB\u523B\u628A\u8BE5\u6B65\u4EA7\u51FA\u8D34\u7ED9\u7528\u6237**\uFF0C\u4E0D\u8981\u618B\u5230\u6700\u540E\u624D\u7ED9\u3002\u7528\u6237\u8981\u7684\u662F\u80FD\u76F4\u63A5\u590D\u5236\u7C98\u8D34\u7684\u4E1C\u897F\u3002
+2. **\u9A8C\u8BC1\u8981\u771F\u3001\u4E0D\u8981\u5047\u3002** \u4E0B\u65B9\u7684\u300C\u5DF2\u77E5\u9677\u9631\u300D\u5217\u4E86\u51E0\u4E2A\u4F1A\u8BA9\u4F60**\u5F97\u51FA\u9519\u8BEF\u7ED3\u8BBA**\u7684\u5751\u3002\u5728\u5224\u65AD"\u767B\u5F55\u5931\u8D25\u4E86/\u88AB\u963B\u585E\u4E86"\u4E4B\u524D\uFF0C\u5148\u786E\u8BA4\u81EA\u5DF1\u4E0D\u662F\u88AB\u73AF\u5883\u9A97\u4E86\u3002**\u9A8C\u8BC1\u767B\u5F55\u4F18\u5148\u8BFB\u65E5\u5FD7\uFF0C\u522B\u53CD\u590D\u8DD1 CLI \u5B9E\u6D4B\u3002**
+3. **\u4E0D\u8981\u8D8A\u6743\u3002** \`/login\` \u5FC5\u987B\u7528\u6237\u672C\u4EBA\u5728\u6D4F\u89C8\u5668\u5B8C\u6210\uFF0C\u4F60\u65E0\u6CD5\u4EE3\u52B3\uFF0C\u4E5F\u4E0D\u8981\u5C1D\u8BD5\u7ED5\u5F00\u3002
+
+## \u5DF2\u77E5\u9677\u9631\uFF08\u4F1A\u5BFC\u81F4\u9519\u8BEF\u7ED3\u8BBA\uFF0C\u5148\u8BFB\u5B8C\u518D\u52A8\u624B\uFF09
+
+- **\u9677\u9631 A\uFF1A\u4E0D\u8981\u7528 grep \u627E token \u5224\u65AD\u767B\u5F55\u3002** CLI \u4E0D\u628A accessToken \u4EE5\u660E\u6587\u843D\u76D8\u5728 \`~/.codebuddy\`\uFF0C\`grep token\`/\`grep eyJ\` \u5FC5\u7136\u662F\u7A7A\uFF08\u53C8\u4E00\u6B21\u5047\u9634\u6027\uFF09\u3002**\u8BA4\u65E5\u5FD7\u91CC\u7684 \`userId changed\`\u3002**
+- **\u9677\u9631 B\uFF1A\u6B8B\u7559 CLI \u8FDB\u7A0B\u5360\u9ED8\u8BA4\u7AEF\u53E3 51773\u3002** \u65E7 CLI \u8FDB\u7A0B\u4E0D\u5173\u5C31\u4E00\u76F4\u5360\u7740\uFF0C\u62A5 \`EADDRINUSE\`\u3002\u6240\u6709 CLI \u547D\u4EE4\u663E\u5F0F\u5E26 \`--port <\u7A7A\u95F2\u7AEF\u53E3>\`\u3002
+- **\u9677\u9631 C\uFF1A\`/login\` \u6D4F\u89C8\u5668\u6388\u6743\u6709 5 \u5206\u949F\u7A97\u53E3\u3002** \u7528\u6237\u6162\u4E00\u70B9\u5C31\u8D85\u65F6\uFF0C\u767B\u5F55\u4F5C\u5E9F\u5F97\u91CD\u6765\u3002\u52A1\u5FC5\u63D0\u9192\u7528\u6237\u5C3D\u5FEB\u5B8C\u6210\u6388\u6743\u3002
+- **\u9677\u9631 D\uFF1A\u4E0D\u8981\u9884\u586B\u63D2\u4EF6 \`data.json\`\u3002** \u8FD0\u884C\u4E2D\u7684\u63D2\u4EF6\u4F1A\u7528\u5185\u5B58\u7A7A\u503C\u8986\u5199\u56DE\u6587\u4EF6\uFF0C\u4F60\u9884\u586B\u4F1A\u88AB\u51B2\u6389\u3002**\u5F15\u5BFC\u7528\u6237\u5728 UI \u624B\u5DE5\u7C98\u8D34**\u6700\u53EF\u9760\u3002
+- **\u9677\u9631 E\uFF1A\u82E5\u4F60\u6240\u5728\u6267\u884C\u73AF\u5883\u6CE8\u5165\u4E86 \`CODEBUDDY_CONFIG_DIR\` \u7B49\u73AF\u5883\u53D8\u91CF\uFF08\u67D0\u4E9B IDE/\u5185\u7F6E\u7EC8\u7AEF\u4F1A\uFF09\uFF0CCLI \u4F1A\u53BB\u9519\u8BEF\u76EE\u5F55\u8BFB\u767B\u5F55\u6001\u3002** \u5BF9\u7B56\u540C\u6837\u662F\uFF1A\u9A8C\u8BC1\u767B\u5F55\u4E00\u5F8B\u8BFB\u65E5\u5FD7\uFF0C\u4E0D\u8981\u56E0 CLI \u62A5\u6CA1\u767B\u5F55\u5C31\u4EE5\u4E3A\u662F\u5931\u8D25\u3002
+
+---
+
+\u7B2C 1 \u6B65\uFF1A\u5B9A\u4F4D\u7CFB\u7EDF Node.js
+\u4F9D\u6B21\u68C0\u67E5\uFF08\u627E\u5230\u5373\u505C\uFF09\uFF1A
+- \`command -v node\`\uFF08\u82E5\u7CFB\u7EDF PATH \u91CC\u5DF2\u6709 node\uFF09
+- /opt/homebrew/bin/node\uFF08Apple Silicon \u7684 Homebrew\uFF09
+- /usr/local/bin/node\uFF08Intel \u7684 Homebrew / \u5B98\u65B9\u5B89\u88C5\u5305\uFF09
+- ~/.nvm/versions/node/*/bin/node\uFF08nvm \u7BA1\u7406\uFF09
+\u8BB0\u4E0B\u521A\u627E\u5230\u7684 node \u7EDD\u5BF9\u8DEF\u5F84\u4E3A <NODE>\uFF08\u63D2\u4EF6\u53EF\u76F4\u63A5\u7528\uFF0C\u65E0\u9700\u8FDB\u7CFB\u7EDF PATH\uFF09\u3002\u8FD0\u884C "<NODE>" --version \u786E\u8BA4 \u2265 18.20.8\u3002
+> \u82E5\u4EE5\u4E0A\u90FD\u6CA1\u6709 \u2192 \u7528\u6237\u9700\u5148\u88C5 Node\uFF08\u5982 \`brew install node\` \u6216 nodejs.org \u5B98\u65B9\u5B89\u88C5\u5305\uFF09\uFF0C\u88C5\u597D\u540E\u518D\u56DE\u5230\u672C\u6B65\u9AA4\u3002
+> \u27A1\uFE0F **\u7ACB\u523B\u56DE\u62A5 <NODE> \u5B8C\u6574\u8DEF\u5F84\u7ED9\u7528\u6237\u3002** \u8FD9\u662F\u8981\u586B\u8FDB\u63D2\u4EF6\u7684\u4E24\u4E2A\u5730\u5740\u4E4B\u4E00\u3002
+
+\u7B2C 2 \u6B65\uFF1A\u786E\u8BA4 npm \u53EF\u7528
+\u4F18\u5148\u7528 <NODE> \u540C\u76EE\u5F55\u4E0B\u7684 npm\uFF1A"$(dirname "<NODE>")/npm" --version \u786E\u8BA4\u7248\u672C\u53F7\uFF1B\u82E5\u4E0D\u5728\uFF0C\u7528 \`command -v npm\` \u627E\u7CFB\u7EDF npm\u3002\u8BB0 <NPM> \u4E3A\u627E\u5230\u7684 npm \u547D\u4EE4\u3002
+\u26A0\uFE0F \u4E0D\u8981\u7528 "<NODE>" -e "console.log(require('npm/package.json').version)" \u2014\u2014 \u4F1A\u56E0\u6A21\u5757\u8DEF\u5F84\u89E3\u6790\u5931\u8D25\u8BEF\u62A5 npm \u4E0D\u53EF\u7528\uFF08\u5047\u9634\u6027\uFF09\u3002
+
+\u7B2C 3 \u6B65\uFF1A\u5B89\u88C5\u5B98\u65B9\u72EC\u7ACB CodeBuddy CLI\uFF0C\u5E76\u5B9A\u4F4D\u771F\u5B9E JS \u5165\u53E3
+\u7528 <NPM> \u5168\u5C40\u5B89\u88C5\uFF1A"<NPM>" install -g @tencent-ai/codebuddy-code
+\u5B89\u88C5\u8017\u65F6\u53EF\u80FD\u51E0\u5206\u949F\uFF0C\u5EFA\u8BAE\u540E\u53F0\u6267\u884C\u5E76\u628A\u65E5\u5FD7\u5199\u5230\u4E34\u65F6\u6587\u4EF6\u3002
+**\u7136\u540E\uFF0C\u4E0D\u8981\u5047\u8BBE\u8DEF\u5F84\u2014\u2014\u52A8\u6001\u53D6\u5168\u5C40\u524D\u7F00\uFF1A**
+"<NPM>" prefix -g
+\u8BB0\u8F93\u51FA\u4E3A <PREFIX>\uFF0C\u5219 <CLI_JS> = <PREFIX>/lib/node_modules/@tencent-ai/codebuddy-code/bin/codebuddy
+\u26A0\uFE0F \u4E0D\u8981\u786C\u7F16\u7801 /usr/local\uFF1AApple Silicon \u4E0A\u5168\u5C40\u524D\u7F00\u5E38\u662F /opt/homebrew\uFF0C\u7528 prefix -g \u62FF\u5230\u7684\u624D\u662F\u771F\u5B9E\u8DEF\u5F84\u3002
+\u26A0\uFE0F <CLI_JS> \u662F**\u5E26 shebang \u7684 JS \u5165\u53E3\u811A\u672C**\uFF0C\u4E0D\u662F\u7F16\u8BD1\u4EA7\u7269\u3002
+\u9A8C\u8BC1\uFF1A"<NODE>" "<CLI_JS>" --version\uFF0C\u5E94\u8F93\u51FA\u7248\u672C\u53F7\uFF08\u5982 2.167.x\uFF09\u3002
+> \u27A1\uFE0F **\u7ACB\u523B\u628A <CLI_JS> \u5B8C\u6574\u8DEF\u5F84\u8D34\u7ED9\u7528\u6237\u3002\u5230\u8FD9\u4E00\u523B\uFF0C\u6700\u7EC8\u8981\u586B\u7684\u4E24\u4E2A\u5730\u5740\u90FD\u5DF2\u9F50\u5907\uFF0C\u8BF7\u660E\u786E\u544A\u8BC9\u7528\u6237\u73B0\u5728\u5C31\u53EF\u4EE5\u53BB Obsidian \u586B\u4E86\u3002**
+
+\u7B2C 4 \u6B65\uFF1A\u5B8C\u6210 CLI \u767B\u5F55\uFF08\u5FC5\u987B\u7528\u6237\u672C\u4EBA\uFF09
+\u8FD0\u884C "<NODE>" "<CLI_JS>" /login\uFF0C\u5F15\u5BFC\u7528\u6237\u7528\u817E\u8BAF\u4E91\u8D26\u53F7\u5B8C\u6210\u767B\u5F55\uFF08\u4F1A\u5F39\u6D4F\u89C8\u5668\u6216\u7ED9\u8BBE\u5907\u7801\uFF09\u3002**\u5FC5\u987B\u5728\u72EC\u7ACB\u7EC8\u7AEF\u91CC\u8DD1**\uFF08Terminal.app / iTerm\uFF09\uFF0C\u4E0D\u8981\u7528\u6CE8\u5165\u73AF\u5883\u53D8\u91CF\u7684\u5185\u7F6E\u7EC8\u7AEF\u3002
+\u26A0\uFE0F \u5173\u952E\u7EA6\u675F\uFF0C\u539F\u6837\u544A\u77E5\u7528\u6237\uFF1A
+1. \u6D4F\u89C8\u5668\u6388\u6743\u5FC5\u987B\u5728 **5 \u5206\u949F**\u5185\u5B8C\u6210\uFF0C\u5426\u5219 CLI \u62A5 TimeoutError \u5E76\u4F5C\u5E9F\u672C\u6B21\u767B\u5F55\uFF1B
+2. \u6388\u6743\u540E**\u4E0D\u8981\u5173\u7EC8\u7AEF**\uFF0C\u7B49\u5B83\u81EA\u5DF1\u6253\u5370\u6210\u529F\uFF1B
+3. \u82E5\u62A5 EADDRINUSE ... 51773\uFF0C\u6539\u7528 /login --port <\u7A7A\u95F2\u7AEF\u53E3>\u3002
+\uFF08\u82E5\u7528\u6237\u5DF2\u6709 API Key\uFF0C\u53EF\u6539\u7528 \`export CODEBUDDY_API_KEY="<key>"\`\uFF0C\u6B64\u65B9\u5F0F\u4F60\u80FD\u4EE3\u52B3\uFF1B\u6CE8\u610F\u5B83\u662F\u4F1A\u8BDD\u7EA7\u73AF\u5883\u53D8\u91CF\uFF0C\u7528\u6237\u91CD\u542F shell \u540E\u9700\u91CD\u65B0 export\u3002\uFF09
+**\u9A8C\u8BC1\u767B\u5F55\uFF08\u91CD\u8981\uFF09\uFF1A\u4F18\u5148\u7528\u65E5\u5FD7\uFF0C\u6BD4\u8DD1 CLI \u53EF\u9760\u3002** \u67E5\u770B ~/.codebuddy/logs/<\u65E5\u671F>/<\u7528\u6237>__*.log\uFF0C\u641C \`userId changed:  -> <uuid>\`\u3002\u51FA\u73B0\u6709\u6548 uuid = \u767B\u5F55\u6210\u529F\u3002**\u4E0D\u8981\u8DD1 CLI \u5B9E\u6D4B\u53BB\u9A8C\u8BC1\u767B\u5F55\uFF08\u53EF\u80FD\u88AB\u73AF\u5883\u9A97\u6210\u5047\u9634\u6027\uFF09\u3002**
+
+\u7B2C 5 \u6B65\uFF1A\u7ED9 Vault \u914D\u7F6E\u8BFB\u5199\u6743\u9650\uFF08\u4F18\u5148\u7528\u63D2\u4EF6\u81EA\u5E26\u300C\u4E00\u952E\u6388\u6743\u300D\uFF09
+\u4F18\u5148\u63D0\u793A\u7528\u6237\uFF1AObsidian \u2192 \u8BBE\u7F6E \u2192 BuddyBridge \u2192 \u6587\u4EF6\u8BBF\u95EE\u6388\u6743 \u2192 \u4E00\u952E\u6388\u6743 \u2192 \u786E\u8BA4\uFF08\u63D2\u4EF6\u4F1A\u628A Vault \u5199\u5165 ~/.codebuddy/settings.json \u7684 trustedDirectories \u4E0E permissions.allow\uFF0C\u53EA\u8865\u5145\u4E0D\u8986\u76D6\uFF09\u3002
+BuddyBridge \u4EE5\u300CLLM Wiki\u300D\u6280\u80FD\u4E3A\u6838\u5FC3\u7528\u9014\uFF0C\u8BE5\u6280\u80FD\u9700\u8981 Bash \u6743\u9650\uFF0C\u56E0\u6B64\u4E00\u952E\u6388\u6743\u5199\u5165\u7684\u6743\u9650\u96C6\u5305\u542B Bash \u662F\u6B63\u5E38\u4E14\u5FC5\u9700\u7684\u2014\u2014\u8BF7\u653E\u5FC3\u6388\u6743\uFF0C\u4E0D\u8981\u6536\u7D27\u3002
+\u4EC5\u5F53\u63D2\u4EF6\u6309\u94AE\u4E0D\u53EF\u7528\u65F6\u624D\u624B\u5DE5\u5199\u5165\uFF0C\u8981\u6C42\uFF1A\u7F16\u7801\u65E0 BOM \u7684 UTF-8\uFF1B\u4FDD\u7559\u5DF2\u6709\u5B57\u6BB5\u53EA\u8865\u7F3A\u5931\uFF1B\u53EA\u4FE1\u4EFB Vault \u8DEF\u5F84\u3002\u53C2\u8003 JSON\uFF08allow \u987B\u542B Bash \u4EE5\u5339\u914D LLM Wiki \u9700\u6C42\uFF09\uFF1A{ "trustedDirectories": ["<VAULT_PATH>"], "permissions": { "allow": ["Read", "Write", "Edit", "Glob", "Grep", "Bash"] } }\uFF0C\u5176\u4E2D <VAULT_PATH> \u7528\u6B63\u659C\u6760\u3002\u4E0D\u8981\u628A\u6574\u4E2A\u7528\u6237\u5BB6\u76EE\u5F55\u52A0\u5165 trustedDirectories\u3002
+> \u6CE8\uFF1A\u82E5\u7528\u6237\u66FE\u5728\u5BB6\u76EE\u5F55\u624B\u52A8\u8DD1\u8FC7 CLI\uFF0CtrustedDirectories \u91CC\u4F1A\u88AB CLI \u81EA\u52A8\u52A0\u4E0A\u5BB6\u76EE\u5F55\uFF08cwd \u81EA\u52A8\u4FE1\u4EFB\uFF09\u3002\u90A3\u662F CLI \u52A0\u7684\uFF0C\u4E0D\u662F\u63D2\u4EF6\uFF0C\u6E05\u7406\u6389\u5373\u53EF\u3002
+
+\u7B2C 6 \u6B65\uFF1A\u534F\u52A9\u7528\u6237\u628A\u4E24\u4E2A\u5730\u5740\u586B\u8FDB\u63D2\u4EF6\u8BBE\u7F6E
+**\u660E\u786E\u56DE\u62A5\u8FD9\u4E24\u6761\uFF0C\u5F15\u5BFC\u586B\u5165 Obsidian \u2192 \u8BBE\u7F6E \u2192 BuddyBridge\uFF1A**
+- CodeBuddy \u8DEF\u5F84 \u2192 <CLI_JS>
+- Node \u8DEF\u5F84\uFF08\u53EF\u9009\uFF0C\u63A8\u8350\u586B\uFF09\u2192 <NODE>
+\u26A0\uFE0F \u4E0D\u8981\u586B \`codebuddy\` \u53EF\u6267\u884C\u6587\u4EF6\u672C\u8EAB\uFF08\u5B83\u662F symlink \u58F3\uFF0C\u63D2\u4EF6\u9700\u8981 JS \u5165\u53E3 + \u72EC\u7ACB Node \u76F4\u8FDE\uFF09\u3002
+\u26A0\uFE0F \u4E0D\u8981\u5C1D\u8BD5\u5199\u63D2\u4EF6 data.json \u9884\u586B\uFF1A\u8FD0\u884C\u4E2D\u7684\u63D2\u4EF6\u4F1A\u7528\u5185\u5B58\u7A7A\u503C\u8986\u5199\uFF0C\u9884\u586B\u4F1A\u88AB\u51B2\u6389\u3002**\u5F15\u5BFC\u7528\u6237\u5728 UI \u624B\u5DE5\u7C98\u8D34**\u6700\u53EF\u9760\u3002
+\u586B\u597D\u540E\u8BA9\u7528\u6237\u5B8C\u5168\u9000\u51FA\u5E76\u91CD\u542F Obsidian\u3002
+
+\u7B2C 7 \u6B65\uFF1A\u56DE\u62A5
+- \u73AF\u5883\u5C31\u7EEA \u2192 \u300C\u73AF\u5883\u521D\u59CB\u5316\u5B8C\u6210\uFF0CBuddyBridge \u5DF2\u53EF\u6B63\u5E38\u4F7F\u7528\u3002\u8BF7\u5728 Obsidian \u2192 \u8BBE\u7F6E \u2192 BuddyBridge \u586B\u5165 CodeBuddy \u8DEF\u5F84\u4E0E Node \u8DEF\u5F84\uFF0C\u7136\u540E\u5B8C\u5168\u91CD\u542F Obsidian\u3002\u300D
+- \u9700\u7528\u6237\u64CD\u4F5C \u2192 \u300C\u8FD8\u9700\u8981\u4F60\u5728 <\u5177\u4F53\u6B65\u9AA4> \u5B8C\u6210 <\u67D0\u64CD\u4F5C>\uFF08\u4F8B\u5982\u5B8C\u6210\u4E00\u6B21\u767B\u5F55\uFF09\u3002\u300D
+- \u65E0\u6CD5\u81EA\u52A8\u89E3\u51B3\u7684\u62A5\u9519 \u2192 \u539F\u6837\u56DE\u62A5\u62A5\u9519\u6587\u672C\uFF0C\u5E76\u63D0\u793A\u53EF\u8054\u7CFB BuddyBridge \u4F5C\u8005\u534F\u52A9\u6392\u67E5\u3002`;
+function getBuiltinInitPrompt(platform = process.platform) {
+  return platform === "win32" ? BUILTIN_INIT_PROMPT : BUILTIN_INIT_PROMPT_MAC;
+}
 var INIT_READY_KEYWORDS = [
   "dist/codebuddy",
   "MODULE_NOT_FOUND",
@@ -2684,6 +2781,8 @@ var BuddyBridgeChatView = class extends import_obsidian.ItemView {
     this.currentUsage = null;
     /** 模型目录缓存（懒加载一次；面板重开时重置刷新）。 */
     this.modelCatalog = null;
+    /** 引导条可见期间的自动就绪轮询定时器（id）；环境就绪即收起引导条，避免用户手动「重新检测」。 */
+    this.initPollTimer = null;
     /** 各会话当前流式中的 assistant 消息 id（convId → msgId）；多会话各自一条流，互不串窗。 */
     this.streamingMsgIds = /* @__PURE__ */ new Map();
     /** 各会话的停止请求（convId）：只影响该会话当前这条流，队列保留继续。 */
@@ -2935,6 +3034,7 @@ ${final.slice(final.length - MAX_CMD_PROMPT_CHARS)}`;
     }
   }
   async onClose() {
+    this.stopInitPolling();
     this.markdownComponent.unload();
   }
   async loadConversations(conversations) {
@@ -3235,9 +3335,11 @@ ${final.slice(final.length - MAX_CMD_PROMPT_CHARS)}`;
     if (this.initBanner && !this.isInitBannerVisible) {
       this.initBanner.removeClass("buddybridge-hidden");
     }
+    this.startInitPolling();
   }
   /** 收起「无感初始化」引导条（幂等）。CLI 真正就绪（收到真实文本回复）时自动触发。 */
   hideInitBanner() {
+    this.stopInitPolling();
     if (this.initBanner && this.isInitBannerVisible) {
       this.initBanner.addClass("buddybridge-hidden");
     }
@@ -3246,14 +3348,38 @@ ${final.slice(final.length - MAX_CMD_PROMPT_CHARS)}`;
   get isInitBannerVisible() {
     return !!this.initBanner && !this.initBanner.hasClass("buddybridge-hidden");
   }
-  /** 复制内置初始化提示词到剪贴板（用户点按钮触发）。 */
+  /** 启动「就绪自动收起」轮询：每 5s 轻量检测一次，就绪即收引导条并停表。只读文件、不 spawn。 */
+  startInitPolling() {
+    if (this.initPollTimer !== null)
+      return;
+    this.initPollTimer = window.setInterval(async () => {
+      if (!this.isInitBannerVisible) {
+        this.stopInitPolling();
+        return;
+      }
+      if (await this.isInitReady()) {
+        this.stopInitPolling();
+        this.hideInitBanner();
+        new import_obsidian.Notice(t("init.autoReady"));
+      }
+    }, 5e3);
+  }
+  /** 停止「就绪自动收起」轮询。 */
+  stopInitPolling() {
+    if (this.initPollTimer !== null) {
+      window.clearInterval(this.initPollTimer);
+      this.initPollTimer = null;
+    }
+  }
+  /** 复制内置初始化提示词到剪贴板（用户点按钮触发）。按平台取版：Windows=GUI 场景，macOS/Linux=系统 node。 */
   async copyInitPrompt() {
+    const promptText = getBuiltinInitPrompt();
     try {
       if (navigator.clipboard && window.isSecureContext) {
-        await navigator.clipboard.writeText(BUILTIN_INIT_PROMPT);
+        await navigator.clipboard.writeText(promptText);
       } else {
         const ta = document.createElement("textarea");
-        ta.value = BUILTIN_INIT_PROMPT;
+        ta.value = promptText;
         ta.addClass("buddybridge-clipboard-helper");
         document.body.appendChild(ta);
         ta.select();
@@ -3315,25 +3441,33 @@ ${final.slice(final.length - MAX_CMD_PROMPT_CHARS)}`;
     await this.retestInit();
   }
   /**
-   * 「重新检测」：环境是否真正就绪 = ① CLI 已登录（存在登录迹象）② Vault 已授权（写入了权限）。
+   * 纯检测：环境是否真正就绪 = ① CLI 已登录（存在登录迹象）② Vault 已授权（写入了权限）。
    * 只探测存在性/读配置，不 spawn、不读账号内容，守安全边界。
    * 登录态在 ~/.codebuddy 的 local_storage/sessions/user-state.json；授权在 ~/.codebuddy/settings.json。
-   * 二者任一不满足都不算「就绪」，引导条保留并给出对应提示——避免「检测通过但一输入就报错」的误导。
+   * 无副作用（不弹提示、不操作 DOM），供「重新检测」与「自动收起轮询」共用。
+   */
+  async isInitReady() {
+    if (!hasCliLoginTraces())
+      return false;
+    const vaultPath = this.app.vault.adapter.basePath;
+    if (!vaultPath)
+      return false;
+    return isVaultAuthorized(await readCliSettings(), vaultPath);
+  }
+  /**
+   * 「重新检测」（用户点按钮触发）：就绪则收引导条并报「已就绪」；否则保留引导条并给出对应提示，
+   * 避免「检测通过但一输入就报错」的误导。
    */
   async retestInit() {
-    if (!hasCliLoginTraces()) {
+    if (await this.isInitReady()) {
+      this.hideInitBanner();
+      new import_obsidian.Notice(t("init.retestOk"));
+    } else if (!hasCliLoginTraces()) {
       this.showInitBanner();
       new import_obsidian.Notice(t("init.retestFail"));
     } else {
-      const vaultPath = this.app.vault.adapter.basePath;
-      const authorized = vaultPath ? isVaultAuthorized(await readCliSettings(), vaultPath) : false;
-      if (authorized) {
-        this.hideInitBanner();
-        new import_obsidian.Notice(t("init.retestOk"));
-      } else {
-        this.showInitBanner();
-        new import_obsidian.Notice(t("init.retestAuthMissing"));
-      }
+      this.showInitBanner();
+      new import_obsidian.Notice(t("init.retestAuthMissing"));
     }
     if (this.messageContainer)
       this.messageContainer.empty();

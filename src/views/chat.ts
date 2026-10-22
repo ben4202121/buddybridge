@@ -10,7 +10,7 @@ import { t, tF } from '../i18n';
 import { getModelCatalog, modelDisplayName, type ModelInfo } from '../models';
 import { SendQueue, type QueueItem } from '../chat/queue';
 import { isGatewayEmptyStream } from '../chat/failure';
-import { BUILTIN_INIT_PROMPT, shouldShowInitBanner } from '../init-prompt';
+import { getBuiltinInitPrompt, shouldShowInitBanner } from '../init-prompt';
 import { hasCliLoginTraces, readCliSettings, isVaultAuthorized, applyVaultAuth } from '../auth-assist';
 
 export const VIEW_TYPE_CHAT = "buddybridge-panel";
@@ -56,6 +56,8 @@ export class BuddyBridgeChatView extends ItemView {
     private attachBar!: HTMLElement;
     /** 档 1 无感初始化：未就绪引导条（被动触发，见 showInitBanner）。 */
     private initBanner!: HTMLElement;
+    /** 引导条可见期间的自动就绪轮询定时器（id）；环境就绪即收起引导条，避免用户手动「重新检测」。 */
+    private initPollTimer: number | null = null;
     private commandDropdown!: HTMLElement | null;
     /** 各会话当前流式中的 assistant 消息 id（convId → msgId）；多会话各自一条流，互不串窗。 */
     private streamingMsgIds = new Map<string, string>();
@@ -357,6 +359,7 @@ export class BuddyBridgeChatView extends ItemView {
     }
 
     async onClose() {
+        this.stopInitPolling();
         this.markdownComponent.unload();
     }
 
@@ -703,10 +706,14 @@ export class BuddyBridgeChatView extends ItemView {
         if (this.initBanner && !this.isInitBannerVisible) {
             this.initBanner.removeClass('buddybridge-hidden');
         }
+        // 引导条可见期间轮询「就绪」：用户在外部完成 CLI 安装/登录/授权后回到 Obsidian，
+        // 引导条应自动收起，无需手动点「重新检测」（无感初始化目标）。
+        this.startInitPolling();
     }
 
     /** 收起「无感初始化」引导条（幂等）。CLI 真正就绪（收到真实文本回复）时自动触发。 */
     private hideInitBanner(): void {
+        this.stopInitPolling();
         // 只以 DOM 状态为准：即使布尔/引用漂移，只要元素还在，就把它真正隐藏。
         if (this.initBanner && this.isInitBannerVisible) {
             this.initBanner.addClass('buddybridge-hidden');
@@ -718,15 +725,40 @@ export class BuddyBridgeChatView extends ItemView {
         return !!this.initBanner && !this.initBanner.hasClass('buddybridge-hidden');
     }
 
-    /** 复制内置初始化提示词到剪贴板（用户点按钮触发）。 */
+    /** 启动「就绪自动收起」轮询：每 5s 轻量检测一次，就绪即收引导条并停表。只读文件、不 spawn。 */
+    private startInitPolling(): void {
+        if (this.initPollTimer !== null) return; // 已在轮询
+        this.initPollTimer = window.setInterval(async () => {
+            if (!this.isInitBannerVisible) {
+                this.stopInitPolling();
+                return;
+            }
+            if (await this.isInitReady()) {
+                this.stopInitPolling();
+                this.hideInitBanner();
+                new Notice(t('init.autoReady'));
+            }
+        }, 5000);
+    }
+
+    /** 停止「就绪自动收起」轮询。 */
+    private stopInitPolling(): void {
+        if (this.initPollTimer !== null) {
+            window.clearInterval(this.initPollTimer);
+            this.initPollTimer = null;
+        }
+    }
+
+    /** 复制内置初始化提示词到剪贴板（用户点按钮触发）。按平台取版：Windows=GUI 场景，macOS/Linux=系统 node。 */
     private async copyInitPrompt(): Promise<void> {
+        const promptText = getBuiltinInitPrompt();
         try {
             if (navigator.clipboard && window.isSecureContext) {
-                await navigator.clipboard.writeText(BUILTIN_INIT_PROMPT);
+                await navigator.clipboard.writeText(promptText);
             } else {
                 // 非安全上下文 fallback：textarea + execCommand（Obsidian 桌面大概率走这条据 Obsidian 规格）
                 const ta = document.createElement('textarea');
-                ta.value = BUILTIN_INIT_PROMPT;
+                ta.value = promptText;
                 ta.addClass('buddybridge-clipboard-helper');
                 document.body.appendChild(ta);
                 ta.select();
@@ -793,28 +825,32 @@ export class BuddyBridgeChatView extends ItemView {
     }
 
     /**
-     * 「重新检测」：环境是否真正就绪 = ① CLI 已登录（存在登录迹象）② Vault 已授权（写入了权限）。
+     * 纯检测：环境是否真正就绪 = ① CLI 已登录（存在登录迹象）② Vault 已授权（写入了权限）。
      * 只探测存在性/读配置，不 spawn、不读账号内容，守安全边界。
      * 登录态在 ~/.codebuddy 的 local_storage/sessions/user-state.json；授权在 ~/.codebuddy/settings.json。
-     * 二者任一不满足都不算「就绪」，引导条保留并给出对应提示——避免「检测通过但一输入就报错」的误导。
+     * 无副作用（不弹提示、不操作 DOM），供「重新检测」与「自动收起轮询」共用。
+     */
+    private async isInitReady(): Promise<boolean> {
+        if (!hasCliLoginTraces()) return false;
+        const vaultPath = (this.app.vault.adapter as { basePath?: string }).basePath;
+        if (!vaultPath) return false;
+        return isVaultAuthorized(await readCliSettings(), vaultPath);
+    }
+
+    /**
+     * 「重新检测」（用户点按钮触发）：就绪则收引导条并报「已就绪」；否则保留引导条并给出对应提示，
+     * 避免「检测通过但一输入就报错」的误导。
      */
     private async retestInit(): Promise<void> {
-        if (!hasCliLoginTraces()) {
+        if (await this.isInitReady()) {
+            this.hideInitBanner();
+            new Notice(t('init.retestOk'));
+        } else if (!hasCliLoginTraces()) {
             this.showInitBanner();
             new Notice(t('init.retestFail'));
         } else {
-            // 已登录 → 再看 Vault 授权是否也满足
-            const vaultPath = (this.app.vault.adapter as { basePath?: string }).basePath;
-            const authorized = vaultPath
-                ? isVaultAuthorized(await readCliSettings(), vaultPath)
-                : false;
-            if (authorized) {
-                this.hideInitBanner();
-                new Notice(t('init.retestOk'));
-            } else {
-                this.showInitBanner();
-                new Notice(t('init.retestAuthMissing'));
-            }
+            this.showInitBanner();
+            new Notice(t('init.retestAuthMissing'));
         }
         // 重新检测后重排当前会话消息（空态/历史），让用户就地重试
         if (this.messageContainer) this.messageContainer.empty();

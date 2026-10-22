@@ -1,5 +1,5 @@
 import { spawn } from 'child_process';
-import { BuddyBridgeAPI, parseStreamLine, parseMessageBlock, blockToChunk, parseStreamEvent, isWindowsWrapper, isBareFallback, needsWindowsShell, escapeCmdArg, isStartupBanner, resolveCodebuddyPath, extractUsage, usagePercent, usageLevel, type StreamChunk } from '../src/api';
+import { BuddyBridgeAPI, parseStreamLine, parseMessageBlock, blockToChunk, parseStreamEvent, isWindowsWrapper, isBareFallback, needsWindowsShell, escapeCmdArg, isStartupBanner, resolveCodebuddyPath, killProcTree, extractUsage, usagePercent, usageLevel, type StreamChunk } from '../src/api';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -414,6 +414,54 @@ describe('resolveCodebuddyPath', () => {
     it('resolves codebuddy from known candidate paths', () => {
         const result = resolveCodebuddyPath('');
         expect(result).toBe(path.join(tempDir, 'npm', 'codebuddy.cmd'));
+    });
+});
+
+describe('killProcTree', () => {
+    const originalPlatform = process.platform;
+    let killSpy: jest.SpyInstance;
+
+    beforeEach(() => {
+        // 默认站在非 Windows；单个用例内再覆写成 win32 测 taskkill 分支
+        Object.defineProperty(process, 'platform', { value: 'darwin' });
+        killSpy = jest.spyOn(process, 'kill').mockImplementation(() => true);
+    });
+    afterEach(() => {
+        killSpy.mockRestore();
+        Object.defineProperty(process, 'platform', { value: originalPlatform });
+    });
+
+    it('POSIX: sends negative-pid SIGKILL to kill the whole process group', () => {
+        const proc = { pid: 123, kill: jest.fn() } as any;
+        killProcTree(proc);
+        expect(killSpy).toHaveBeenCalledWith(-123, 'SIGKILL');
+        expect(proc.kill).not.toHaveBeenCalled();
+        // 非 Windows 分支不得走 taskkill
+        expect(mockedSpawn).not.toHaveBeenCalledWith('taskkill', expect.anything());
+    });
+
+    it('POSIX: falls back to proc.kill() when group signal fails', () => {
+        const proc = { pid: 123, kill: jest.fn() } as any;
+        killSpy.mockImplementationOnce(() => { throw new Error('ESRCH'); });
+        killProcTree(proc);
+        expect(proc.kill).toHaveBeenCalled();
+    });
+
+    it('POSIX: falls back to proc.kill() when pid is absent', () => {
+        const proc = { pid: null, kill: jest.fn() } as any;
+        killProcTree(proc);
+        expect(killSpy).not.toHaveBeenCalledWith(-1, 'SIGKILL');
+        expect(proc.kill).toHaveBeenCalled();
+    });
+
+    it('win32: uses taskkill /T /F to kill the tree (unchanged)', () => {
+        Object.defineProperty(process, 'platform', { value: 'win32' });
+        const before = mockedSpawn.mock.calls.length;
+        const proc = { pid: 456, kill: jest.fn() } as any;
+        killProcTree(proc);
+        const newCalls = mockedSpawn.mock.calls.slice(before);
+        expect(newCalls).toEqual([['taskkill', ['/pid', '456', '/T', '/F']]]);
+        expect(killSpy).not.toHaveBeenCalledWith(-456, 'SIGKILL');
     });
 });
 

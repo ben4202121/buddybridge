@@ -10,13 +10,22 @@ const TIMEOUT = 60_000; // 60 秒空闲超时：连续无输出即判卡死（v2
  * 终止 CLI 进程（含子进程树）。Windows 上 spawn .cmd/.exe wrapper 时 proc.kill() 只杀 shell，
  * 真正的 codebuddy 子进程仍存活（= 幽灵进程，前端报错后仍在后台继续执行），故用 taskkill /T /F 杀整棵树。
  */
-function killProcTree(proc: ReturnType<typeof spawn>): void {
+export function killProcTree(proc: ReturnType<typeof spawn>): void {
     try {
         if (process.platform === 'win32' && proc.pid) {
             spawn('taskkill', ['/pid', String(proc.pid), '/T', '/F']);
-        } else {
-            proc.kill();
+            return;
         }
+        // POSIX（macOS/Linux）：CLI 以 detached 启动、自成进程组（pgid = pid），向 -pid 发
+        // SIGKILL 杀整组，避免 proc.kill() 只杀主进程、遗留子进程继续后台执行（幽灵进程）。
+        const pid = proc.pid;
+        if (pid) {
+            try {
+                process.kill(-pid, 'SIGKILL');
+                return;
+            } catch { /* 组信号失败（进程已退/无权限），回退直杀 */ }
+        }
+        proc.kill();
     } catch (e) {
         console.error('[BB] 终止进程失败:', e);
     }
@@ -563,6 +572,8 @@ export class BuddyBridgeAPI {
         const procOptions: SpawnOptions = {
             // 不再使用 spawn 的 timeout（P0.3）：改为插件侧计时，超时产出明确错误卡
             stdio: ['ignore', 'pipe', 'pipe'],
+            // POSIX：detached 使 CLI 自成进程组（pgid = pid），killProcTree 才能用负 pid 杀整组
+            detached: process.platform !== 'win32',
         };
         if (vaultPath) {
             procOptions.cwd = vaultPath;
