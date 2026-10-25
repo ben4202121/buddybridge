@@ -1320,6 +1320,7 @@ var BuddyBridgeAPI = class {
       });
       proc.stderr.on("data", (d) => {
         errOut += d.toString();
+        armIdleTimer();
         console.log("[BB] stderr:", errOut);
       });
       proc.on("close", (code, signal) => {

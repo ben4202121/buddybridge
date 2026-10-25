@@ -677,6 +677,7 @@ export class BuddyBridgeAPI {
 
             proc.stderr.on('data', (d: Buffer) => {
                 errOut += d.toString();
+                armIdleTimer(); // stderr 有进展也算活跃：长任务思考/干活的日志通常走 stderr，避免误杀
                 console.log('[BB] stderr:', errOut);
             });
 

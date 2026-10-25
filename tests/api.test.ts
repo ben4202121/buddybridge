@@ -85,6 +85,48 @@ describe('BuddyBridgeAPI', () => {
             await expect(firstPromise).rejects.toThrow('command not found');
         });
 
+        it('fires idle timeout when stdout AND stderr stay silent (control)', async () => {
+            const { proc, emit } = createFakeProc();
+            mockedSpawn.mockReturnValue(proc as any);
+
+            const api = new BuddyBridgeAPI(40);
+            api.setCodebuddyPath('C:\\fake\\codebuddy.exe');
+            const gen = api.sendMessage('session-idle-silent', 'hello');
+
+            const firstPromise = gen.next();
+            // 两流都无任何输出，超过 40ms 空闲阈值 → 判超时
+            await new Promise((r) => setTimeout(r, 80));
+            const first = await firstPromise;
+            expect(first.done).toBe(false);
+            expect(first.value.type).toBe('error');
+            expect(first.value.content).toContain('超时');
+            expect(first.value.content).toContain('无响应');
+        });
+
+        it('stderr progress keeps the stream alive past the idle timeout (does not 误杀长任务)', async () => {
+            const { proc, emit } = createFakeProc();
+            mockedSpawn.mockReturnValue(proc as any);
+
+            const api = new BuddyBridgeAPI(40);
+            api.setCodebuddyPath('C:\\fake\\codebuddy.exe');
+            const gen = api.sendMessage('session-idle-stderr', 'hello');
+
+            const firstPromise = gen.next();
+            // 长任务"思考/干活"阶段：循环往 stderr 写进展日志（间隔 20ms < 空闲阈值 40ms）
+            const interval = setInterval(() => {
+                emit('stderr', 'data', Buffer.from(`[progress] ${Date.now()}`));
+            }, 20);
+            await new Promise((r) => setTimeout(r, 130)); // 覆盖 > 3 个空闲阈值周期
+            clearInterval(interval);
+            emit('', 'close', 0, null);
+
+            const first = await firstPromise;
+            // 必须正常 done（生成器返回 value:undefined）而非中途被空闲超时杀死：
+            // 若 stderr 不算活跃，timer 会先行产出 error 卡（done:false），first.done 即为 false
+            expect(first.done).toBe(true);
+            expect(first.value).not.toEqual({ type: 'error', content: expect.stringContaining('无响应') });
+        });
+
         it('runs two concurrent streams independently (per-session state)', async () => {
             const { proc: procA, emit: emitA } = createFakeProc();
             const { proc: procB, emit: emitB } = createFakeProc();
